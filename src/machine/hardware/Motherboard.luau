@@ -215,9 +215,10 @@ function Motherboard:activateDesktop()
 	if not self.kernel then
 		return false, "kernel not running"
 	end
-	local DE_M_source = self.kernel.vfs:readFileStr("/usr/lib/novade.lua")
-	if not DE_M_source then
-		return false, "desktop not installed (run: pkgmgr install desktop)"
+
+	local source = self.kernel.vfs:readFileStr("/usr/lib/novade/init.lua")
+	if not source then
+		return false, "desktop not installed"
 	end
 
 	local vm = self.luauvm
@@ -225,32 +226,54 @@ function Motherboard:activateDesktop()
 		return false, "LuauVM not available"
 	end
 
-	local ok, DE_M, closure = pcall(function()
-		return vm(nil, DE_M_source, false)
+	local sandbox = {
+		kernel = self.kernel,
+
+		string = string,
+		math = math,
+		table = table,
+		pairs = pairs,
+		ipairs = ipairs,
+		next = next,
+
+		tostring = tostring,
+		tonumber = tonumber,
+		type = type,
+
+		os = os,
+
+		setmetatable = setmetatable,
+		getmetatable = getmetatable,
+
+		error = error,
+		pcall = pcall,
+		xpcall = xpcall,
+	}
+
+	local ok, DE = pcall(function()
+		local chunk = vm(source, false, sandbox)
+		return chunk()
 	end)
-	if not ok or not DE_M then
-		return false, tostring(DE_M)
+
+	if not ok then
+		return false, tostring(DE)
 	end
 
-	-- Inject kernel into closure
-	if closure then
-		closure.kernel = self.kernel
+	if type(DE) ~= "table" or type(DE.new) ~= "function" then
+		return false, "desktop module invalid"
 	end
 
-	local runOk, de = pcall(function()
-		if closure then
-			closure.kernel = self.kernel
-		end
-		return DE_M()
-	end)
-	if not runOk then
-		return false, tostring(de)
+	local de = DE.new(self.kernel)
+	if not de or type(de.start) ~= "function" then
+		return false, "desktop instance invalid"
 	end
 
-	if de and de.start then
-		de:start()
-		self.kernel._desktop = de
+	local started, err = de:start()
+	if started == false then
+		return false, tostring(err)
 	end
+
+	self.kernel._desktop = de
 	return true
 end
 

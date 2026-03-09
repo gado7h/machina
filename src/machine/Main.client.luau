@@ -356,7 +356,7 @@ local function main()
 	end)
 
 	-- Auto-boot on join (change to false to require button press)
-	local AUTO_POWER = true
+	local AUTO_POWER = false
 	if AUTO_POWER then
 		task.delay(0.3, function()
 			if not powered then

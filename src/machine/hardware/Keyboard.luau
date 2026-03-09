@@ -294,15 +294,34 @@ function Keyboard:_onKeyDown(input)
 	end
 
 	-- Resolve ASCII
-	local shifted = self._shift or self._capsLock
-	local ascii = (shifted and SC_TO_ASCII_UPPER[sc]) or SC_TO_ASCII_LOWER[sc]
+	local lower = SC_TO_ASCII_LOWER[sc]
+	local upper = SC_TO_ASCII_UPPER[sc]
+	local ascii
+
+	if lower and upper then
+		local isLetter = lower:match("^[a-z]$") ~= nil
+
+		if isLetter then
+			-- For letters: Shift XOR CapsLock
+			local useUpper = (self._shift and not self._capsLock) or (self._capsLock and not self._shift)
+			ascii = useUpper and upper or lower
+		else
+			-- For non-letters: only Shift matters
+			ascii = self._shift and upper or lower
+		end
+	else
+		ascii = lower or upper
+	end
+
 	if self._ctrl and ascii and #ascii == 1 then
-		-- Control codes: Ctrl+C = 0x03, etc.
-		local code = string.byte(ascii) - 64
+		local upperAscii = string.upper(ascii)
+		local byte = string.byte(upperAscii)
+		local code = byte - 64
 		if code > 0 and code < 32 then
 			ascii = string.char(code)
 		end
 	end
+
 	if ascii then
 		if #self._ascii < 64 then
 			table.insert(self._ascii, ascii)

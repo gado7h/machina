@@ -148,7 +148,9 @@ function Init:_populateBin()
 		["/bin/tail"] = 'local n=10;local p;for i=2,#args do if args[i]=="-n" then n=tonumber(args[i+1])or 10 elseif not p then p=args[i]end end;local c=p and(fs.read(p)or"")or(process._pipeInput or"");local t={};for l in(c.."\\n"):gmatch("([^\\n]*)\\n") do table.insert(t,l)end;for i=math.max(1,#t-n+1),#t do tty.writeln(t[i])end;return 0',
 		["/sbin/init"] = "return 0",
 		["/sbin/shutdown"] = 'tty.writeln("Shutting down...",tty.color(14,0));os.exit(0)',
-		["/usr/bin/lua"] = 'tty.writeln("LuauVM Lua REPL. Use lua <file> to run scripts.",tty.color(11,0));if args[2] then local c=fs.read(args[2]);if c and luauvm then local ok,f,cl=pcall(function()return luauvm.load(c,false)end);if ok and f then local rk,e=pcall(f);if not rk then tty.writeln(tostring(e),tty.color(12,0))end end end end;return 0',
+		["/usr/bin/lua"] = [[
+		tty.writeln("LuauVM Lua REPL. Use lua <file> to run scripts.",tty.color(11,0));if args[2] then local c=fs.read(args[2]);if c and luauvm then local ok,f,cl=pcall(function()return luauvm.load(c,false)end);if ok and f then local rk,e=pcall(f);if not rk then tty.writeln(tostring(e),tty.color(12,0))end end end end;return 0
+		]],
 	}
 	for path, src in pairs(scripts) do
 		if not self.vfs:exists(path) then
@@ -271,15 +273,10 @@ function Init:_rcLocal()
 			f()
 		end },
 	}
-	local ok, f, c = pcall(function()
-		return self.luauvm(src, false)
+	local ok, f = pcall(function()
+		return self.luauvm(src, false, sandbox)
 	end)
 	if ok and f then
-		if c then
-			for k, v in pairs(sandbox) do
-				c[k] = v
-			end
-		end
 		pcall(f)
 	end
 end
