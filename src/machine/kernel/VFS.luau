@@ -670,6 +670,11 @@ function VFS:writeFile(path, data)
 
 	-- Allocate blocks for data
 	local nBlocks = math.ceil(#data / SECTOR_SIZE)
+
+	if nBlocks > DIRECT_BLOCKS then
+		return false, "file too large: exceeds direct block limit (" .. DIRECT_BLOCKS .. " blocks)"
+	end
+
 	local ptrs = { 0, 0, 0, 0, 0, 0, 0, 0 }
 	for i = 1, math.min(nBlocks, DIRECT_BLOCKS) do
 		local blk = self:_allocBlock()

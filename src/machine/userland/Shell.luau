@@ -17,6 +17,11 @@ function Shell.new(kernel, username)
 	self.config = kernel.config
 	self.luauvm = kernel.machine and kernel.machine.luauvm
 
+	self._foreground = nil
+	self._foregroundInput = nil
+	self._foregroundCleanup = nil
+	self._suppressPrompt = false
+
 	self.username = username or "user"
 	self.hostname = kernel._hostname or kernel.config.HOSTNAME
 	self.cwd = (username == "root") and "/root" or ("/home/" .. username)
@@ -110,10 +115,24 @@ end
 
 function Shell:_handleChar(ch)
 	local g = self.gpu
+
+	-- Foreground app owns input first
+	if self._foreground then
+		if ch == "\3" then -- Ctrl+C
+			self:interruptForeground()
+			return
+		end
+
+		if self:sendForegroundInput(ch) then
+			return
+		end
+	end
+
 	if ch == "\n" or ch == "\r" then
 		local line = table.concat(self._lineBuf)
 		self._lineBuf = {}
 		g:println("")
+
 		if line:match("%S") then
 			if self._history[1] ~= line then
 				table.insert(self._history, 1, line)
@@ -122,11 +141,16 @@ function Shell:_handleChar(ch)
 				end
 			end
 		end
+
 		self._histIdx = 0
+
 		if line:match("%S") then
 			self:_executeLine(line)
 		end
-		self:_prompt()
+
+		if self._running and not self._suppressPrompt and not self._foreground then
+			self:_prompt()
+		end
 	elseif ch == "\b" then
 		if #self._lineBuf > 0 then
 			table.remove(self._lineBuf)
@@ -135,7 +159,9 @@ function Shell:_handleChar(ch)
 	elseif ch == "\3" then -- Ctrl+C
 		g:println("^C", 0x0C)
 		self._lineBuf = {}
-		self:_prompt()
+		if self._running and not self._foreground then
+			self:_prompt()
+		end
 	elseif ch == "\4" then -- Ctrl+D
 		g:println("exit", 0x07)
 		self._running = false
@@ -376,7 +402,13 @@ function Shell:_parseCommand(cmdStr)
 	if #tokens == 0 then
 		return nil
 	end
-	return { cmd = tokens[1], args = tokens, redirectIn = redirectIn, redirectOut = redirectOut, redirectAppend = redirectAppend }
+	return {
+		cmd = tokens[1],
+		args = tokens,
+		redirectIn = redirectIn,
+		redirectOut = redirectOut,
+		redirectAppend = redirectAppend,
+	}
 end
 
 -- ─────────────────────────────────────────────
@@ -385,20 +417,22 @@ end
 function Shell:_executeCommand(cmdStr)
 	local parsed = self:_parseCommand(cmdStr)
 	if not parsed then
-		return
+		return 0
 	end
+
 	local cmd, args = parsed.cmd, parsed.args
 
-	-- Handle redirections
 	local savedPrint, outLines
 	if parsed.redirectOut or parsed.redirectAppend then
 		outLines = {}
 		savedPrint = { print = self.gpu.print, println = self.gpu.println }
-		local function capture(_, s, a)
-			table.insert(outLines, s)
+
+		local function capture(_, s)
+			table.insert(outLines, s or "")
 		end
+
 		self.gpu.print = capture
-		self.gpu.println = function(g, s, a)
+		self.gpu.println = function(_, s)
 			table.insert(outLines, (s or "") .. "\n")
 		end
 	end
@@ -413,8 +447,10 @@ function Shell:_executeCommand(cmdStr)
 	if savedPrint then
 		self.gpu.print = savedPrint.print
 		self.gpu.println = savedPrint.println
+
 		local content = table.concat(outLines)
 		local path = parsed.redirectOut or parsed.redirectAppend
+
 		if parsed.redirectAppend then
 			self.vfs:appendFile(path, self:_strBytes(content))
 		else
@@ -422,9 +458,7 @@ function Shell:_executeCommand(cmdStr)
 		end
 	end
 
-	if parsed.redirectIn then
-		-- already consumed above if needed
-	end
+	return self.exitCode
 end
 
 function Shell:_executePipeline(stages)
@@ -497,8 +531,8 @@ function Shell:_runScript(path, args, parsed)
 
 	local sandbox = self:_makeSandbox(args, parsed)
 
-	local ok, func, closure = pcall(function()
-		return vm(content, false)
+	local ok, func = pcall(function()
+		return vm(content, false, sandbox)
 	end)
 
 	if not ok or not func then
@@ -507,16 +541,16 @@ function Shell:_runScript(path, args, parsed)
 		return 1
 	end
 
-	-- Inject sandbox as the closure's environment
-	if type(closure) == "table" then
-		for k, v in pairs(sandbox) do
-			closure[k] = v
-		end
-	end
-
 	local runOk, result = pcall(func)
 	if not runOk then
+		if type(result) == "table" and result.__exit then
+			return tonumber(result.code) or 0
+		end
+
 		self.gpu:println(path .. ": " .. tostring(result), 0x0C)
+		if self._foreground then
+			self:endForeground()
+		end
 		return 1
 	end
 
@@ -630,7 +664,29 @@ function Shell:_makeSandbox(args, parsed)
 			return env[v] or nil
 		end,
 		execute = function(cmd)
-			shell:_executeLine(tostring(cmd))
+			cmd = tostring(cmd)
+
+			-- Host hooks
+			if cmd == "__host_activate_desktop__" then
+				if shell.kernel.machine and shell.kernel.machine.activateDesktop then
+					local ok, err = pcall(function()
+						shell.kernel.machine:activateDesktop()
+					end)
+
+					if not ok then
+						shell.gpu:println("desktop activation error: " .. tostring(err), 0x0C)
+						return false
+					end
+
+					return true
+				end
+
+				shell.gpu:println("desktop subsystem unavailable", 0x0C)
+				return false
+			end
+
+			-- normal shell command
+			shell:_executeLine(cmd)
 			return shell.exitCode == 0
 		end,
 	}
@@ -655,6 +711,8 @@ function Shell:_makeSandbox(args, parsed)
 	sandbox.getmetatable = getmetatable
 	sandbox.next = next
 	sandbox.ipairs = ipairs
+	sandbox.task = task
+	sandbox.coroutine = coroutine
 
 	-- Filesystem API (POSIX-like)
 	sandbox.fs = {
@@ -689,16 +747,35 @@ function Shell:_makeSandbox(args, parsed)
 	-- Process API
 	sandbox.process = {
 		pid = self.kernel.pm and self.kernel.pm._currentPid or 0,
-		exit = function(c)
-			sandbox.os.exit(c)
+
+		exit = function(code)
+			if shell:isForegroundBusy() then
+				shell:endForeground()
+			end
+			error({ __exit = true, code = code or 0 })
 		end,
+
 		env = env,
+
 		cwd = function()
 			return shell.cwd
 		end,
+
 		exec = function(cmd)
 			shell:_executeLine(tostring(cmd))
 			return shell.exitCode
+		end,
+
+		beginForeground = function(name, onInput, onCleanup)
+			return shell:beginForeground(name, onInput, onCleanup)
+		end,
+
+		endForeground = function()
+			shell:endForeground()
+		end,
+
+		isForeground = function()
+			return shell:isForegroundBusy()
 		end,
 	}
 
@@ -758,12 +835,7 @@ function Shell:_makeSandbox(args, parsed)
 				return self.luauvm.compile(src)
 			end,
 			load = function(src, isPureBytecode)
-				local f, c = self.luauvm(src, isPureBytecode)
-				if c then
-					for k, v in pairs(sandbox) do
-						c[k] = v
-					end
-				end
+				local f, c = self.luauvm(src, isPureBytecode, sandbox)
 				return f, c
 			end,
 		}
@@ -1816,27 +1888,44 @@ function Shell:_buildBuiltins()
 			outln("usage: nano <file>", 0x0C)
 			return 1
 		end
+
 		local path = absPath(args[2])
 		local content = vfs():readFileStr(path) or ""
 		local lines = {}
+
 		for l in (content .. "\n"):gmatch("([^\n]*)\n") do
 			table.insert(lines, l)
 		end
 		if #lines == 0 then
 			lines = { "" }
 		end
-		-- Dump content and inform user
+
 		self.gpu:clearScreen()
 		outln(" GNU nano  (NovaOS edition)  File: " .. args[2], 0x0B)
 		outln(string.rep("-", self.config.TEXT_COLS), 0x08)
+
 		for i, l in ipairs(lines) do
 			if i > self.config.TEXT_ROWS - 4 then
 				break
 			end
 			outln(l)
 		end
+
 		outln(string.rep("-", self.config.TEXT_COLS), 0x08)
-		outln(" ^X Exit  ^S Save  (editing not yet interactive in this terminal)", 0x08)
+		outln(" Ctrl+X or Esc to exit", 0x08)
+
+		local function handleInput(ch)
+			if ch == "\24" or ch == "\27" then
+				self:endForeground()
+			end
+		end
+
+		local ok, err = self:beginForeground("nano", handleInput)
+		if not ok then
+			outln("nano: " .. tostring(err), 0x0C)
+			return 1
+		end
+
 		return 0
 	end
 	B["vi"] = B["nano"]
@@ -2037,75 +2126,141 @@ function Shell:_buildBuiltins()
 
 	-- lua (interactive Lua REPL via LuauVM)
 	B["lua"] = function(args)
-		if args[2] then
-			return self:_runScript(absPath(args[2]), args, {}) or 0
-		end
-		outln("NovaLua REPL (LuauVM powered). Type 'exit' to quit.", 0x0B)
-		-- Mini REPL: reads input one line at a time via keyboard poll
-		local replBuf = {}
-		local function replPoll()
-			local ch = self.keyboard and self.keyboard:readChar()
-			if not ch then
-				task.delay(0.05, replPoll)
-				return
+		B["lua"] = function(args)
+			if args[2] then
+				return self:_runScript(absPath(args[2]), args, {}) or 0
 			end
-			if ch == "\n" or ch == "\r" then
-				local line = table.concat(replBuf)
-				replBuf = {}
-				self.gpu:println("")
-				if line == "exit" or line == "quit" then
-					self:_prompt()
-					return
-				end
-				if line ~= "" then
-					local vm = self.luauvm
-					if vm then
-						local sandbox = self:_makeSandbox({}, {})
-						local ok, f, closure = pcall(function()
-							return vm("return " .. line, false)
-						end)
-						if not ok then
-							ok, f, closure = pcall(function()
-								return vm(line, false)
+
+			outln("NovaLua REPL (LuauVM powered). Type 'exit' to quit.", 0x0B)
+
+			local replBuf = {}
+
+			local function renderPrompt()
+				self.gpu:print("> ")
+			end
+
+			local function handleInput(ch)
+				if ch == "\n" or ch == "\r" then
+					local line = table.concat(replBuf)
+					replBuf = {}
+					self.gpu:println("")
+
+					if line == "exit" or line == "quit" then
+						self:endForeground()
+						return
+					end
+
+					if line ~= "" then
+						local vm = self.luauvm
+						if vm then
+							local sandbox = self:_makeSandbox({}, {})
+
+							local ok, f = pcall(function()
+								return vm("return " .. line, false, sandbox)
 							end)
-						end
-						if ok and f then
-							if closure then
-								for k, v in pairs(sandbox) do
-									closure[k] = v
+
+							if not ok then
+								ok, f = pcall(function()
+									return vm(line, false, sandbox)
+								end)
+							end
+
+							if ok and f then
+								local rok, result = pcall(f)
+								if rok and result ~= nil then
+									outln(tostring(result), 0x0A)
+								elseif not rok then
+									outln("error: " .. tostring(result), 0x0C)
 								end
+							else
+								outln("compile error: " .. tostring(f), 0x0C)
 							end
-							local rok, result = pcall(f)
-							if rok and result ~= nil then
-								outln(tostring(result), 0x0A)
-							elseif not rok then
-								outln("error: " .. tostring(result), 0x0C)
-							end
-						else
-							outln("compile error: " .. tostring(f), 0x0C)
 						end
 					end
+
+					renderPrompt()
+				elseif ch == "\b" then
+					if #replBuf > 0 then
+						table.remove(replBuf)
+						self.gpu:print("\b")
+					end
+				else
+					table.insert(replBuf, ch)
+					self.gpu:print(ch)
 				end
-				self.gpu:print("> ")
-				task.delay(0.04, replPoll)
-			elseif ch == "\b" then
-				if #replBuf > 0 then
-					table.remove(replBuf)
-					self.gpu:print("\b")
-				end
-				task.delay(0.04, replPoll)
-			else
-				table.insert(replBuf, ch)
-				self.gpu:print(ch)
-				task.delay(0.04, replPoll)
 			end
+
+			local ok, err = self:beginForeground("lua-repl", handleInput)
+			if not ok then
+				outln("lua: " .. tostring(err), 0x0C)
+				return 1
+			end
+
+			renderPrompt()
+			return 0
 		end
-		self.gpu:print("> ")
-		task.delay(0.04, replPoll)
-		return 0
 	end
 
 	return B
+end
+
+function Shell:isForegroundBusy()
+	return self._foreground ~= nil
+end
+
+function Shell:beginForeground(name, onInput, onCleanup)
+	if self._foreground then
+		return false, "foreground already active"
+	end
+
+	self._foreground = {
+		name = name or "app",
+		startedAt = os.clock(),
+	}
+
+	self._foregroundInput = onInput
+	self._foregroundCleanup = onCleanup
+	self._suppressPrompt = true
+	return true
+end
+
+function Shell:endForeground()
+	local cleanup = self._foregroundCleanup
+
+	self._foreground = nil
+	self._foregroundInput = nil
+	self._foregroundCleanup = nil
+	self._suppressPrompt = false
+
+	if cleanup then
+		pcall(cleanup)
+	end
+
+	if self._running then
+		self:_prompt()
+	end
+end
+
+function Shell:sendForegroundInput(ch)
+	if self._foregroundInput then
+		local ok, err = pcall(self._foregroundInput, ch)
+		if not ok then
+			self.gpu:println("[foreground crash] " .. tostring(err), 0x0C)
+			self:endForeground()
+		end
+		return true
+	end
+	return false
+end
+
+function Shell:interruptForeground()
+	if not self._foreground then
+		return false
+	end
+
+	self.gpu:println("^C", 0x0C)
+	self:endForeground()
+	return true
 end
 
 return Shell

@@ -566,35 +566,271 @@ return 0
 	-- ─────────────────────────────────────────
 	{
 		name = "desktop",
-		version = "1.0.0",
+		version = "1.2.0",
 		desc = "NovaDE graphical desktop environment",
 		deps = { "coreutils", "lua-stdlib" },
-		size = 18000,
-		postinst = [[
-fs.write("/etc/desktop.conf", "DESKTOP=novade\nWM=novawm\nTERMINAL=nterm\n")
-
-local startxSrc =
-	"tty.writeln('Starting NovaDE...', tty.color(11,0))\n" ..
-	"tty.writeln('NovaDE files are installed.', tty.color(10,0))\n" ..
-	"tty.writeln('Full GUI launch must be wired through Motherboard:activateDesktop().', tty.color(7,0))\n" ..
-	"return 0\n"
-
-fs.write("/bin/startx", startxSrc)
-tty.writeln("Desktop installed. Type 'startx' to verify installation.", tty.color(10,0))
-tty.writeln("Kernel/host GUI launch still needs integration.", tty.color(7,0))
-]],
+		size = 12000,
 		files = {
-			["/usr/lib/novade.lua"] = [[
--- keep your existing novade.lua here
+			["/etc/desktop.conf"] = [[
+DESKTOP=novade
+WM=novawm
+TERMINAL=nterm
 ]],
-			["/bin/startx"] = [[
-tty.writeln("NovaDE files are installed.", tty.color(10,0))
-tty.writeln("Full GUI launch must be wired through Motherboard:activateDesktop().", tty.color(7,0))
-return 0
+
+			["/usr/lib/novade/wallpaper.lua"] = [[
+return function(DE)
+	function DE:_drawWallpaper()
+		local g = self.gpu
+		local function packARGB(a, r, g2, b)
+			return a * 16777216 + r * 65536 + g2 * 256 + b
+		end
+
+		for y = 0, 187 do
+			local t = y / 187
+			local r = math.floor(18 + (8 * t))
+			local gr = math.floor(34 + (24 * t))
+			local b = math.floor(48 + (60 * t))
+			g:fillRect(0, y, 320, 1, packARGB(255, r, gr, b))
+		end
+
+		for y = 0, 187, 16 do
+			for x = 0, 319, 16 do
+				if ((x + y) / 16) % 2 == 0 then
+					g:setPixel(x, y, packARGB(48, 255, 255, 255))
+				end
+			end
+		end
+	end
+end
 ]],
+
+			["/usr/lib/novade/taskbar.lua"] = [[
+return function(DE)
+	function DE:_drawTaskbar()
+		local g = self.gpu
+
+		local function packARGB(a, r, g2, b)
+			return a * 16777216 + r * 65536 + g2 * 256 + b
+		end
+
+		local y = 188
+		g:fillRect(0, y, 320, 12, packARGB(255, 10, 18, 30))
+		g:fillRect(0, y, 320, 1, packARGB(255, 0, 220, 255))
+
+		g:fillRect(2, y + 1, 30, 10, packARGB(255, 22, 44, 72))
+		local title = "NOVA"
+		for i = 1, #title do
+			g:drawChar(
+				4 + (i - 1) * 4,
+				y + 2,
+				title:sub(i, i),
+				packARGB(255, 0, 240, 255),
+				packARGB(255, 22, 44, 72)
+			)
+		end
+
+		local timeStr = os.date("%H:%M")
+		for i = 1, #timeStr do
+			g:drawChar(
+				298 + (i - 1) * 4,
+				y + 2,
+				timeStr:sub(i, i),
+				packARGB(255, 180, 255, 180),
+				packARGB(255, 10, 18, 30)
+			)
+		end
+	end
+end
+]],
+
+			["/usr/lib/novade/icons.lua"] = [[
+return function(DE)
+	function DE:_drawIcons()
+		local g = self.gpu
+
+		local function packARGB(a, r, g2, b)
+			return a * 16777216 + r * 65536 + g2 * 256 + b
+		end
+
+		local icons = {
+			{x=12,  y=20,  label="TERM",  char="T", color=packARGB(255,  0,220,255)},
+			{x=52,  y=20,  label="FILES", char="F", color=packARGB(255,255,210,  0)},
+			{x=92,  y=20,  label="TEXT",  char="E", color=packARGB(255,120,255,120)},
+			{x=132, y=20,  label="PKG",   char="P", color=packARGB(255,255,140,  0)},
+			{x=172, y=20,  label="INFO",  char="I", color=packARGB(255,210,100,255)},
+		}
+
+		for _, ic in ipairs(icons) do
+			local bg = packARGB(255, 20, 34, 50)
+
+			g:fillRect(ic.x, ic.y, 24, 20, bg)
+			g:fillRect(ic.x, ic.y, 24, 1, ic.color)
+			g:fillRect(ic.x, ic.y + 19, 24, 1, ic.color)
+			g:fillRect(ic.x, ic.y, 1, 20, ic.color)
+			g:fillRect(ic.x + 23, ic.y, 1, 20, ic.color)
+
+			g:drawChar(ic.x + 10, ic.y + 6, ic.char, ic.color, bg)
+
+			for i = 1, #ic.label do
+				g:drawChar(
+					ic.x + (i - 1) * 4,
+					ic.y + 22,
+					ic.label:sub(i, i),
+					packARGB(255, 220, 220, 220),
+					packARGB(255, 24, 44, 70)
+				)
+			end
+		end
+	end
+end
+]],
+
+			["/usr/lib/novade/window.lua"] = [[
+return function(DE)
+	local function packARGB(a, r, g, b)
+		return a * 16777216 + r * 65536 + g * 256 + b
+	end
+
+	local function clamp(n, lo, hi)
+		if n < lo then return lo end
+		if n > hi then return hi end
+		return n
+	end
+
+	function DE:openWindow(title, x, y, w, h, content)
+		local win = {
+			title = title or "Window",
+			x = clamp(x or 40, 0, 319),
+			y = clamp(y or 30, 0, 199),
+			w = clamp(w or 120, 40, 320),
+			h = clamp(h or 80, 20, 200),
+			content = content or {},
+			visible = true,
+		}
+
+		table.insert(self.windows, win)
+		self.focused = win
+		self:_renderWindow(win)
+		self.gpu:flush()
+		return win
+	end
+
+	function DE:_renderWindow(win)
+		local g = self.gpu
+		local bg = packARGB(255, 12, 22, 36)
+		local titleBG = packARGB(255, 28, 56, 92)
+		local accent = packARGB(255, 0, 220, 255)
+		local shadow = packARGB(120, 0, 0, 0)
+		local white = packARGB(255, 255, 255, 255)
+		local red = packARGB(255, 150, 16, 16)
+
+		g:fillRect(win.x + 2, win.y + 2, win.w, win.h, shadow)
+		g:fillRect(win.x, win.y, win.w, win.h, bg)
+		g:fillRect(win.x, win.y, win.w, 10, titleBG)
+		g:fillRect(win.x, win.y, win.w, 1, accent)
+		g:fillRect(win.x, win.y, 1, win.h, accent)
+		g:fillRect(win.x + win.w - 1, win.y, 1, win.h, accent)
+		g:fillRect(win.x, win.y + win.h - 1, win.w, 1, accent)
+
+		for i = 1, math.min(#win.title, math.floor((win.w - 14) / 4)) do
+			g:drawChar(win.x + 2 + (i - 1) * 4, win.y + 2, win.title:sub(i, i), accent, titleBG)
+		end
+
+		g:fillRect(win.x + win.w - 10, win.y + 1, 8, 8, red)
+		g:drawChar(win.x + win.w - 9, win.y + 1, "X", white, red)
+
+		local cy = win.y + 12
+		for _, line in ipairs(win.content) do
+			line = tostring(line)
+			if cy + 8 >= win.y + win.h - 2 then
+				break
+			end
+			for j = 1, math.min(#line, math.floor((win.w - 4) / 4)) do
+				g:drawChar(win.x + 2 + (j - 1) * 4, cy, line:sub(j, j), packARGB(255, 210, 255, 210), bg)
+			end
+			cy = cy + 9
+		end
+	end
+end
+]],
+
+			["/usr/lib/novade/init.lua"] = [[
+local DE = {}
+DE.__index = DE
+
+function DE.new(kernel)
+	local self = setmetatable({}, DE)
+	self.kernel = kernel
+	self.gpu = kernel.gpu
+	self.windows = {}
+	self.focused = nil
+	return self
+end
+
+function DE:start()
+	if not self.gpu then
+		return false, "GPU unavailable"
+	end
+
+	self.gpu:setMode("PIXEL")
+	self:_drawWallpaper()
+	self:_drawTaskbar()
+	self:_drawIcons()
+	self.gpu:flush()
+	return true
+end
+
+local function loadPart(kernel, path)
+	local src = kernel.vfs:readFileStr(path)
+	if not src then
+		error("missing NovaDE part: " .. path)
+	end
+
+	local vm = kernel.machine and kernel.machine.luauvm
+	if not vm then
+		error("LuauVM unavailable")
+	end
+
+	local fn = vm(src, false, {
+		string = string,
+		math = math,
+		table = table,
+		pairs = pairs,
+		ipairs = ipairs,
+		tostring = tostring,
+		tonumber = tonumber,
+		type = type,
+		os = os,
+	})
+	return fn()
+end
+
+loadPart(kernel, "/usr/lib/novade/wallpaper.lua")(DE)
+loadPart(kernel, "/usr/lib/novade/taskbar.lua")(DE)
+loadPart(kernel, "/usr/lib/novade/icons.lua")(DE)
+loadPart(kernel, "/usr/lib/novade/window.lua")(DE)
+
+return DE
+]],
+
 			["/bin/novade"] = [[
-tty.writeln("NovaDE launcher is not wired to a syscall yet.", tty.color(14,0))
-tty.writeln("Use motherboard:activateDesktop() from the host side.", tty.color(7,0))
+tty.writeln("Launching NovaDE...", tty.color(11, 0))
+local ok = os.execute("__host_activate_desktop__")
+if ok then
+	tty.writeln("NovaDE activated.", tty.color(10, 0))
+	return 0
+end
+tty.writeln("novade: desktop activation failed", tty.color(12, 0))
+return 1
+]],
+
+			["/bin/startx"] = [[
+tty.writeln("Starting NovaDE...", tty.color(11, 0))
+local rc = process.exec("novade")
+if rc ~= 0 then
+	tty.writeln("startx: novade failed", tty.color(12, 0))
+	return rc or 1
+end
 return 0
 ]],
 		},
@@ -701,129 +937,317 @@ return 0
 	-- ─────────────────────────────────────────
 	{
 		name = "games",
-		version = "1.0.0",
+		version = "1.1.0",
 		desc = "Terminal games: mandelbrot, tictactoe, life",
 		deps = {},
-		size = 4200,
+		size = 5200,
 		files = {
 			["/bin/mandelbrot"] = [[
-local cols, rows = tty.size()
-local W = cols - 1; local H = rows - 4
+local function tclear()
+	if tty and tty.clear then tty.clear() end
+end
+
+local function twrite(s, c)
+	if tty and tty.writeln then tty.writeln(s, c) else print(s) end
+end
+
+local cols, rows = 80, 25
+if tty and tty.size then
+	cols, rows = tty.size()
+end
+
+local W = math.max(10, cols - 1)
+local H = math.max(4, rows - 4)
 local x1, x2 = -2.5, 1.0
 local y1, y2 = -1.1, 1.1
-local maxIter  = 32
-local chars    = " .,:-=+*#%@"
-tty.clear()
-tty.writeln("Mandelbrot Set  (Ctrl+C to exit)")
-for row = 0, H-1 do
-	local cy = y1 + (y2-y1)*(row/H)
+local maxIter = 32
+local chars = " .,:-=+*#%@"
+
+tclear()
+twrite("Mandelbrot Set")
+
+for row = 0, H - 1 do
+	local cy = y1 + (y2 - y1) * (row / H)
 	local lineChars = {}
-	for col = 0, W-1 do
-		local cx = x1 + (x2-x1)*(col/W)
-		local zx, zy = 0, 0; local iter = 0
-		while zx*zx + zy*zy <= 4 and iter < maxIter do
-			local tmp = zx*zx - zy*zy + cx
-			zy = 2*zx*zy + cy; zx = tmp; iter = iter + 1
+	for col = 0, W - 1 do
+		local cx = x1 + (x2 - x1) * (col / W)
+		local zx, zy = 0, 0
+		local iter = 0
+		while zx * zx + zy * zy <= 4 and iter < maxIter do
+			local tmp = zx * zx - zy * zy + cx
+			zy = 2 * zx * zy + cy
+			zx = tmp
+			iter = iter + 1
 		end
-		local ci = math.floor(iter / maxIter * (#chars-1)) + 1
-		table.insert(lineChars, chars:sub(ci,ci))
+		local ci = math.floor(iter / maxIter * (#chars - 1)) + 1
+		lineChars[#lineChars + 1] = chars:sub(ci, ci)
 	end
-	tty.writeln(table.concat(lineChars))
+	twrite(table.concat(lineChars))
 end
+
 return 0
 ]],
+
 			["/bin/tictactoe"] = [[
-local board = {" "," "," "," "," "," "," "," "," "}
-local function draw()
-	tty.clear()
-	tty.writeln("TicTacToe  You=X  Computer=O", tty.color(11,0))
-	tty.writeln("")
-	for r = 0, 2 do
-		local row = {}
-		for c = 0, 2 do table.insert(row, board[r*3+c+1]) end
-		tty.writeln(" "..row[1].." | "..row[2].." | "..row[3])
-		if r < 2 then tty.writeln("---+---+---") end
-	end
-	tty.writeln("")
+local function tclear()
+	if tty and tty.clear then tty.clear() end
 end
-local function checkWin(p)
-	local lines = {{1,2,3},{4,5,6},{7,8,9},{1,4,7},{2,5,8},{3,6,9},{1,5,9},{3,5,7}}
-	for _, line in ipairs(lines) do
-		if board[ line[1] ]==p and board[ line[2] ]==p and board[ line[3] ]==p then return true end
+
+local function twrite(s, c)
+	if tty and tty.writeln then tty.writeln(s, c) else print(s) end
 end
-return false
-end
-local function aiMove()
-	if board[5]==" " then board[5]="O"; return end
-	for _, i in ipairs({1,3,7,9,2,4,6,8}) do
-		if board[i]==" " then board[i]="O"; return end
-	end
-end
-draw()
-tty.writeln("Enter cell 1-9:")
-local moveCount = 0; local polling = true
-local function poll()
-	if not polling then return end
-	local ch = syscall and syscall(3,0,1) or nil
-	if ch and ch ~= "" then
-		local n = tonumber(ch)
-		if n and n >= 1 and n <= 9 and board[n]==" " then
-			board[n]="X"; moveCount=moveCount+1; draw()
-			if checkWin("X") then tty.writeln("You WIN!",tty.color(10,0)); polling=false; return end
-			if moveCount >= 5  then tty.writeln("Draw!"); polling=false; return end
-			aiMove(); draw()
-			if checkWin("O") then tty.writeln("Computer wins.",tty.color(12,0)); polling=false; return end
+
+local function tread()
+	if syscall then
+		local a, b = syscall(3, 0, 1)
+		if type(a) == "string" then
+			return a
+		end
+		if type(b) == "string" then
+			return b
 		end
 	end
-	if polling then task.delay(0.1, poll) end
+	if io and io.read then
+		return io.read(1)
+	end
+	return nil
 end
-task.delay(0.1, poll)
+
+local board = {" "," "," "," "," "," "," "," "," "}
+local running = true
+local moveCount = 0
+
+local function draw()
+	tclear()
+	twrite("TicTacToe  You=X  CPU=O", tty and tty.color and tty.color(11,0) or nil)
+	twrite("")
+	twrite(" " .. board[1] .. " | " .. board[2] .. " | " .. board[3])
+	twrite("---+---+---")
+	twrite(" " .. board[4] .. " | " .. board[5] .. " | " .. board[6])
+	twrite("---+---+---")
+	twrite(" " .. board[7] .. " | " .. board[8] .. " | " .. board[9])
+	twrite("")
+	twrite("Press 1-9 to place. Ctrl+C to quit.")
+end
+
+local function winner(p)
+	local lines = {
+		{1,2,3},{4,5,6},{7,8,9},
+		{1,4,7},{2,5,8},{3,6,9},
+		{1,5,9},{3,5,7},
+	}
+	for _, line in ipairs(lines) do
+		if board[ line[1] ] == p and board[line[2] ] == p and board[ line[3] ] == p then
+			return true
+		end
+	end
+	return false
+end
+
+local function full()
+	for i = 1, 9 do
+		if board[i] == " " then
+			return false
+		end
+	end
+	return true
+end
+
+local function bestMoveFor(p)
+	local lines = {
+		{1,2,3},{4,5,6},{7,8,9},
+		{1,4,7},{2,5,8},{3,6,9},
+		{1,5,9},{3,5,7},
+	}
+	for _, line in ipairs(lines) do
+		local a, b, c = line[1], line[2], line[3]
+		local vals = {board[a], board[b], board[c]}
+		local countP, countEmpty, emptyIdx = 0, 0, nil
+		for i = 1, 3 do
+			if vals[i] == p then countP = countP + 1 end
+			if vals[i] == " " then
+				countEmpty = countEmpty + 1
+				emptyIdx = line[i]
+			end
+		end
+		if countP == 2 and countEmpty == 1 then
+			return emptyIdx
+		end
+	end
+	return nil
+end
+
+local function cpuMove()
+	local move =
+		bestMoveFor("O") or
+		bestMoveFor("X") or
+		(board[5] == " " and 5) or
+		nil
+
+	if not move then
+		for _, idx in ipairs({1,3,7,9,2,4,6,8}) do
+			if board[idx] == " " then
+				move = idx
+				break
+			end
+		end
+	end
+
+	if move then
+		board[move] = "O"
+	end
+end
+
+draw()
+
+local function poll()
+	if not running then
+		return
+	end
+
+	local ch = tread()
+	if ch and ch ~= "" then
+		if ch == "\3" then
+			running = false
+			twrite("Quit.")
+			return
+		end
+
+		local n = tonumber(ch)
+		if n and n >= 1 and n <= 9 and board[n] == " " then
+			board[n] = "X"
+			moveCount = moveCount + 1
+			draw()
+
+			if winner("X") then
+				twrite("")
+				twrite("You win.", tty and tty.color and tty.color(10,0) or nil)
+				running = false
+				return
+			end
+
+			if full() then
+				twrite("")
+				twrite("Draw.")
+				running = false
+				return
+			end
+
+			cpuMove()
+			draw()
+
+			if winner("O") then
+				twrite("")
+				twrite("CPU wins.", tty and tty.color and tty.color(12,0) or nil)
+				running = false
+				return
+			end
+
+			if full() then
+				twrite("")
+				twrite("Draw.")
+				running = false
+				return
+			end
+		end
+	end
+
+	if running and task and task.delay then
+		task.delay(0.08, poll)
+	end
+end
+
+if task and task.delay then
+	task.delay(0.08, poll)
+else
+	return 0
+end
+
 return 0
 ]],
+
 			["/bin/life"] = [[
-local cols, rows = tty.size()
-local W = cols; local H = rows - 3
+local function tclear()
+	if tty and tty.clear then tty.clear() end
+end
+
+local function twrite(s, c)
+	if tty and tty.writeln then tty.writeln(s, c) else print(s) end
+end
+
+local cols, rows = 80, 25
+if tty and tty.size then
+	cols, rows = tty.size()
+end
+
+local W = math.max(10, cols)
+local H = math.max(4, rows - 3)
 local grid = {}
+local gen = 0
+local running = true
+
 for y = 1, H do
 	grid[y] = {}
-	for x = 1, W do grid[y][x] = math.random() < 0.3 end
+	for x = 1, W do
+		grid[y][x] = math.random() < 0.28
+	end
 end
-local gen = 0; local running = true
+
 local function step()
 	local nxt = {}
 	for y = 1, H do
 		nxt[y] = {}
 		for x = 1, W do
-			local alive = grid[y][x]; local n = 0
-			for dy = -1, 1 do for dx = -1, 1 do
-				if not (dy==0 and dx==0) then
-					local ny = ((y+dy-1)%H)+1
-					local nx = ((x+dx-1)%W)+1
-					if grid[ny][nx] then n=n+1 end
+			local n = 0
+			for dy = -1, 1 do
+				for dx = -1, 1 do
+					if not (dx == 0 and dy == 0) then
+						local ny = ((y + dy - 1) % H) + 1
+						local nx = ((x + dx - 1) % W) + 1
+						if grid[ny][nx] then
+							n = n + 1
+						end
+					end
 				end
-			end end
-			nxt[y][x] = n==3 or (alive and n==2)
+			end
+			local alive = grid[y][x]
+			nxt[y][x] = (n == 3) or (alive and n == 2)
 		end
 	end
-	grid = nxt; gen = gen + 1
+	grid = nxt
+	gen = gen + 1
 end
+
 local function render()
-	tty.clear()
-	tty.writeln(string.format("Conway's Game of Life  Gen:%d  [Ctrl+C to exit]",gen), tty.color(11,0))
+	tclear()
+	twrite("Conway's Game of Life  Gen:" .. tostring(gen))
 	for y = 1, H do
-		local line = {}
-		for x = 1, W do table.insert(line, grid[y][x] and "#" or " ") end
-		tty.write(table.concat(line))
-		if y < H then tty.write("\n") end
+		local row = {}
+		for x = 1, W do
+			row[x] = grid[y][x] and "#" or " "
+		end
+		twrite(table.concat(row))
 	end
 end
-local iters = 0
+
+local ticks = 0
 local function tick()
-	if not running or iters > 200 then return end
-	step(); render(); iters = iters + 1
+	if not running or ticks >= 180 then
+		return
+	end
+	step()
+	render()
+	ticks = ticks + 1
+	if task and task.delay then
+		task.delay(0.12, tick)
+	end
+end
+
+render()
+if task and task.delay then
 	task.delay(0.12, tick)
 end
-render(); task.delay(0.12, tick)
+
 return 0
 ]],
 		},

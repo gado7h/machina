@@ -6,14 +6,14 @@ local PKG = {}
 PKG.__index = PKG
 
 function PKG.new(kernel)
-	local self      = setmetatable({}, PKG)
-	self.kernel     = kernel
-	self.vfs        = kernel.vfs
-	self.gpu        = kernel.gpu
-	self.luauvm     = kernel.machine and kernel.machine.luauvm
-	self._dbModule  = nil   -- lazy-loaded PackageDB
-	self._installed = {}    -- name → {name,version,installTime}
-	self._logFile   = "/var/log/pkgmgr.log"
+	local self = setmetatable({}, PKG)
+	self.kernel = kernel
+	self.vfs = kernel.vfs
+	self.gpu = kernel.gpu
+	self.luauvm = kernel.machine and kernel.machine.luauvm
+	self._dbModule = nil -- lazy-loaded PackageDB
+	self._installed = {} -- name → {name,version,installTime}
+	self._logFile = "/var/log/pkgmgr.log"
 	return self
 end
 
@@ -31,7 +31,9 @@ end
 
 function PKG:_strBytes(s)
 	local b = {}
-	for i = 1, #s do b[i] = string.byte(s, i) end
+	for i = 1, #s do
+		b[i] = string.byte(s, i)
+	end
 	return b
 end
 
@@ -40,13 +42,17 @@ end
 -- ─────────────────────────────────────────────
 function PKG:_loadInstalled()
 	local dbPath = "/pkg/db/installed.db"
-	if not self.vfs:exists(dbPath) then return end
+	if not self.vfs:exists(dbPath) then
+		return
+	end
 	local content = self.vfs:readFileStr(dbPath)
-	if not content then return end
-	for line in (content.."\n"):gmatch("([^\n]+)") do
+	if not content then
+		return
+	end
+	for line in (content .. "\n"):gmatch("([^\n]+)") do
 		local name, version, t = line:match("^([%w%-%.]+)\t([%w%.%-]+)\t(%d+)$")
 		if name then
-			self._installed[name] = { name=name, version=version, installTime=tonumber(t) or 0 }
+			self._installed[name] = { name = name, version = version, installTime = tonumber(t) or 0 }
 		end
 	end
 end
@@ -64,11 +70,15 @@ end
 -- ─────────────────────────────────────────────
 function PKG:_resolveDeps(name, visited, order)
 	visited = visited or {}
-	order   = order   or {}
-	if visited[name] then return order end
+	order = order or {}
+	if visited[name] then
+		return order
+	end
 	visited[name] = true
 	local pkg = self:_db().get(name)
-	if not pkg then return order end
+	if not pkg then
+		return order
+	end
 	for _, dep in ipairs(pkg.deps or {}) do
 		self:_resolveDeps(dep, visited, order)
 	end
@@ -96,7 +106,9 @@ function PKG:install(name)
 	for _, depName in ipairs(order) do
 		if depName ~= name and not self._installed[depName] then
 			local ok, err = self:install(depName)
-			if not ok then return false, "dependency '" .. depName .. "' failed: " .. tostring(err) end
+			if not ok then
+				return false, "dependency '" .. depName .. "' failed: " .. tostring(err)
+			end
 		end
 	end
 
@@ -127,10 +139,7 @@ function PKG:install(name)
 				end)
 
 				if not ok then
-					self.gpu:println(
-						string.format("  WARN: %s failed syntax check: %s", path, tostring(result)),
-						0x0E
-					)
+					self.gpu:println(string.format("  WARN: %s failed syntax check: %s", path, tostring(result)), 0x0E)
 				end
 			end
 		end
@@ -149,8 +158,8 @@ function PKG:install(name)
 
 	-- Record installation
 	self._installed[name] = {
-		name        = name,
-		version     = pkg.version,
+		name = name,
+		version = pkg.version,
 		installTime = os.time and os.time() or 0,
 	}
 	self:_saveInstalled()
@@ -228,17 +237,17 @@ end
 -- ─────────────────────────────────────────────
 function PKG:list()
 	self:_loadInstalled()
-	local all  = self:_db().getAll()
-	local out  = {}
+	local all = self:_db().getAll()
+	local out = {}
 	for _, pkg in ipairs(all) do
 		local inst = self._installed[pkg.name]
 		table.insert(out, {
-			name      = pkg.name,
-			version   = pkg.version,
-			desc      = pkg.desc,
-			size      = pkg.size,
+			name = pkg.name,
+			version = pkg.version,
+			desc = pkg.desc,
+			size = pkg.size,
 			installed = inst ~= nil,
-			instVer   = inst and inst.version or nil,
+			instVer = inst and inst.version or nil,
 		})
 	end
 	return out
@@ -255,8 +264,10 @@ end
 --  Info
 -- ─────────────────────────────────────────────
 function PKG:info(name)
-	local pkg  = self:_db().get(name)
-	if not pkg then return nil end
+	local pkg = self:_db().get(name)
+	if not pkg then
+		return nil
+	end
 	self:_loadInstalled()
 	local inst = self._installed[name]
 
@@ -266,14 +277,14 @@ function PKG:info(name)
 	end
 
 	return {
-		name      = pkg.name,
-		version   = pkg.version,
+		name = pkg.name,
+		version = pkg.version,
 		installed = inst and inst.version or "no",
 		installDate = inst and os.date("%Y-%m-%d %H:%M", inst.installTime) or "-",
 		description = pkg.desc,
-		size      = string.format("%d bytes", pkg.size or 0),
-		depends   = #(pkg.deps or {}) > 0 and table.concat(pkg.deps, ", ") or "none",
-		files     = tostring(fileCount),
+		size = string.format("%d bytes", pkg.size or 0),
+		depends = #(pkg.deps or {}) > 0 and table.concat(pkg.deps, ", ") or "none",
+		files = tostring(fileCount),
 	}
 end
 
@@ -287,20 +298,14 @@ function PKG:_runHook(source, pkgName, hookName)
 
 	local vm = self.luauvm
 	if not vm then
-		self.gpu:println(
-			string.format("  [%s/%s] LuauVM unavailable, skipping hook", pkgName, hookName),
-			0x0E
-		)
+		self.gpu:println(string.format("  [%s/%s] LuauVM unavailable, skipping hook", pkgName, hookName), 0x0E)
 		return
 	end
 
 	local vfs = self.vfs
 	local gpu = self.gpu
 	if not vfs then
-		self.gpu:println(
-			string.format("  [%s/%s] VFS unavailable", pkgName, hookName),
-			0x0C
-		)
+		self.gpu:println(string.format("  [%s/%s] VFS unavailable", pkgName, hookName), 0x0C)
 		return
 	end
 
@@ -312,20 +317,37 @@ function PKG:_runHook(source, pkgName, hookName)
 			end
 			gpu:println(table.concat(parts, "\t"), 0x07)
 		end,
-
 		tty = {
-			writeln = function(s, attr) gpu:println(tostring(s), attr or 0x07) end,
-			write   = function(s, attr) gpu:print(tostring(s), attr or 0x07) end,
-			color   = function(fg, bg) return (bg or 0) * 16 + (fg or 7) end,
-			size    = function() return 80, 25 end,
-			clear   = function() gpu:clearScreen() end,
+			writeln = function(s, attr)
+				gpu:println(tostring(s), attr or 0x07)
+			end,
+			write = function(s, attr)
+				gpu:print(tostring(s), attr or 0x07)
+			end,
+			color = function(fg, bg)
+				return (bg or 0) * 16 + (fg or 7)
+			end,
+			size = function()
+				return 80, 25
+			end,
+			clear = function()
+				gpu:clearScreen()
+			end,
 		},
 
 		fs = {
-			read   = function(p) return vfs:readFileStr(p) end,
-			write  = function(p, s) return vfs:writeFileStr(p, tostring(s)) end,
-			exists = function(p) return vfs:exists(p) end,
-			mkdir  = function(p) return vfs:mkdir(p) end,
+			read = function(p)
+				return vfs:readFileStr(p)
+			end,
+			write = function(p, s)
+				return vfs:writeFileStr(p, tostring(s))
+			end,
+			exists = function(p)
+				return vfs:exists(p)
+			end,
+			mkdir = function(p)
+				return vfs:mkdir(p)
+			end,
 		},
 
 		syscall = function(num, ...)
@@ -336,8 +358,8 @@ function PKG:_runHook(source, pkgName, hookName)
 		end,
 
 		os = {
-			time  = os.time,
-			date  = os.date,
+			time = os.time,
+			date = os.date,
 			clock = os.clock,
 		},
 
@@ -354,35 +376,22 @@ function PKG:_runHook(source, pkgName, hookName)
 		select = select,
 		next = next,
 		unpack = table.unpack or unpack,
-		task = {
-			delay = task and task.delay or function(_, f) f() end,
-		},
+		task = task,
+		coroutine = coroutine,
 	}
 
-	local ok, func, closure = pcall(function()
-		return vm(source, false)
+	local ok, func = pcall(function()
+		return vm(source, false, sandbox)
 	end)
 
 	if not ok or type(func) ~= "function" then
-		self.gpu:println(
-			string.format("  [%s/%s] compile error: %s", pkgName, hookName, tostring(func)),
-			0x0C
-		)
+		self.gpu:println(string.format("  [%s/%s] compile error: %s", pkgName, hookName, tostring(func)), 0x0C)
 		return
-	end
-
-	if type(closure) == "table" then
-		for k, v in pairs(sandbox) do
-			closure[k] = v
-		end
 	end
 
 	local runOk, err = pcall(func)
 	if not runOk then
-		self.gpu:println(
-			string.format("  [%s/%s] error: %s", pkgName, hookName, tostring(err)),
-			0x0C
-		)
+		self.gpu:println(string.format("  [%s/%s] error: %s", pkgName, hookName, tostring(err)), 0x0C)
 	end
 end
 
