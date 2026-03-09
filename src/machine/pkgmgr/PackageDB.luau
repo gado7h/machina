@@ -433,7 +433,7 @@ end
 	--  nano
 	{
 		name = "nano",
-		version = "7.2",
+		version = "7.3",
 		desc = "Simple terminal text editor",
 		deps = {},
 		size = 3400,
@@ -527,18 +527,21 @@ local function handleKey(ch)
 	return true
 end
 render()
-local function poll()
-	if not running then return end
-	if syscall then
-		local res = syscall(3, 0, 1)
-		if res and res ~= "" then
-			running = handleKey(res)
-			render()
-		end
+local ok, err = process.beginForeground("nano", function(ch)
+	if not running then
+		process.endForeground()
+		return
 	end
-	if running then task.delay(0.04, poll) end
+	running = handleKey(ch)
+	render()
+	if not running then
+		process.endForeground()
+	end
+end)
+if not ok then
+	tty.writeln("nano: " .. tostring(err), tty.color(12,0))
+	return 1
 end
-task.delay(0.04, poll)
 return 0
 ]],
 		},
@@ -549,7 +552,7 @@ return 0
 	--  The startx script is written via string concat.
 	{
 		name = "desktop",
-		version = "1.2.0",
+		version = "2.0.0",
 		desc = "NovaDE graphical desktop environment",
 		deps = { "coreutils", "lua-stdlib" },
 		size = 12000,
@@ -628,6 +631,15 @@ end
 
 			["/usr/lib/novade/icons.lua"] = [[
 return function(DE)
+	function DE:_hitIcon(px, py)
+		for _, ic in ipairs(self.icons or {}) do
+			if px >= ic.x and px < ic.x + 24 and py >= ic.y and py < ic.y + 20 then
+				return ic
+			end
+		end
+		return nil
+	end
+
 	function DE:_drawIcons()
 		local g = self.gpu
 
@@ -638,10 +650,11 @@ return function(DE)
 		local icons = {
 			{x=12,  y=20,  label="TERM",  char="T", color=packARGB(255,  0,220,255)},
 			{x=52,  y=20,  label="FILES", char="F", color=packARGB(255,255,210,  0)},
-			{x=92,  y=20,  label="TEXT",  char="E", color=packARGB(255,120,255,120)},
-			{x=132, y=20,  label="PKG",   char="P", color=packARGB(255,255,140,  0)},
+			{x=92,  y=20,  label="SET",   char="S", color=packARGB(255,120,255,120)},
+			{x=132, y=20,  label="SHELL", char=">", color=packARGB(255,255,140,  0)},
 			{x=172, y=20,  label="INFO",  char="I", color=packARGB(255,210,100,255)},
 		}
+		self.icons = icons
 
 		for _, ic in ipairs(icons) do
 			local bg = packARGB(255, 20, 34, 50)
@@ -664,6 +677,80 @@ return function(DE)
 				)
 			end
 		end
+	end
+end
+]],
+
+			["/usr/lib/novade/cursor.lua"] = [[
+return function(DE)
+	local function packARGB(a, r, g, b)
+		return a * 16777216 + r * 65536 + g * 256 + b
+	end
+
+	function DE:_drawCursor()
+		local g = self.gpu
+		local x = math.floor(self.cursor.x)
+		local y = math.floor(self.cursor.y)
+		local c1 = packARGB(255, 255, 255, 255)
+		local c2 = packARGB(255, 20, 20, 20)
+		g:fillRect(x, y, 1, 8, c1)
+		g:fillRect(x, y, 6, 1, c1)
+		g:fillRect(x + 1, y + 1, 1, 6, c2)
+		g:fillRect(x + 1, y + 1, 4, 1, c2)
+	end
+end
+]],
+
+			["/usr/lib/novade/apps.lua"] = [[
+return function(DE)
+	function DE:_openFileManager()
+		local files = self.kernel.vfs:listDir("/home") or {}
+		table.sort(files, function(a, b) return a.name < b.name end)
+		local lines = {"File Manager", "Path: /home", ""}
+		for i, e in ipairs(files) do
+			if i > 10 then break end
+			lines[#lines + 1] = (e.isDir and "[D] " or "[F] ") .. e.name
+		end
+		if #files == 0 then lines[#lines + 1] = "(empty)" end
+		self:openWindow("Files", 20, 44, 180, 110, lines)
+	end
+
+	function DE:_openSettings()
+		local c = self.kernel.config
+		self:openWindow("Settings", 64, 36, 190, 116, {
+			"Nova Settings",
+			"HOST: " .. tostring(c.HOSTNAME),
+			"TEXT: " .. tostring(c.TEXT_COLS) .. "x" .. tostring(c.TEXT_ROWS),
+			"GPU: " .. tostring(c.GPU_MODE),
+			"Use arrows/WASD to move cursor",
+			"Enter to open icons",
+		})
+	end
+
+	function DE:_openTerminal()
+		self:openWindow("Terminal", 34, 60, 160, 70, {
+			"Run in shell:",
+			"  startx",
+			"  pkgmgr list",
+			"  ls -la",
+		})
+	end
+
+	function DE:_openInfo()
+		self:openWindow("System Info", 112, 52, 180, 96, {
+			"NovaDE 2.0",
+			"Windows: " .. tostring(#self.windows),
+			"User: " .. tostring(self.kernel._username or "user"),
+			"Time: " .. os.date("%Y-%m-%d %H:%M:%S"),
+		})
+	end
+
+	function DE:_openFromIcon(ic)
+		if not ic then return end
+		if ic.label == "TERM" or ic.label == "SHELL" then return self:_openTerminal() end
+		if ic.label == "FILES" then return self:_openFileManager() end
+		if ic.label == "SET" then return self:_openSettings() end
+		return self:_openInfo()
 	end
 end
 ]],
@@ -747,7 +834,14 @@ function DE.new(kernel)
 	self.gpu = kernel.gpu
 	self.windows = {}
 	self.focused = nil
+	self.cursor = { x = 12, y = 20 }
 	return self
+end
+
+local function clamp(n, lo, hi)
+	if n < lo then return lo end
+	if n > hi then return hi end
+	return n
 end
 
 function DE:start()
@@ -759,8 +853,48 @@ function DE:start()
 	self:_drawWallpaper()
 	self:_drawTaskbar()
 	self:_drawIcons()
+	self:_drawCursor()
 	self.gpu:flush()
+
+	if self.kernel.keyboard then
+		task.delay(0.04, function()
+			self:_pollInput()
+		end)
+	end
 	return true
+end
+
+function DE:_redraw()
+	self:_drawWallpaper()
+	self:_drawTaskbar()
+	self:_drawIcons()
+	for _, win in ipairs(self.windows) do
+		if win.visible then
+			self:_renderWindow(win)
+		end
+	end
+	self:_drawCursor()
+	self.gpu:flush()
+end
+
+function DE:_pollInput()
+	if not self.kernel.keyboard then return end
+	while true do
+		local ch = self.kernel.keyboard:readChar()
+		if not ch then break end
+		if ch == "[LEFT]" or ch == "a" then self.cursor.x = clamp(self.cursor.x - 4, 0, 319) end
+		if ch == "[RIGHT]" or ch == "d" then self.cursor.x = clamp(self.cursor.x + 4, 0, 319) end
+		if ch == "[UP]" or ch == "w" then self.cursor.y = clamp(self.cursor.y - 4, 0, 187) end
+		if ch == "[DOWN]" or ch == "s" then self.cursor.y = clamp(self.cursor.y + 4, 0, 187) end
+		if ch == "\n" or ch == "\r" then
+			self:_openFromIcon(self:_hitIcon(self.cursor.x, self.cursor.y))
+		end
+		if ch == "\27" then
+			self.windows = {}
+		end
+		self:_redraw()
+	end
+	task.delay(0.04, function() self:_pollInput() end)
 end
 
 local function loadPart(kernel, path)
@@ -792,6 +926,8 @@ loadPart(kernel, "/usr/lib/novade/wallpaper.lua")(DE)
 loadPart(kernel, "/usr/lib/novade/taskbar.lua")(DE)
 loadPart(kernel, "/usr/lib/novade/icons.lua")(DE)
 loadPart(kernel, "/usr/lib/novade/window.lua")(DE)
+loadPart(kernel, "/usr/lib/novade/cursor.lua")(DE)
+loadPart(kernel, "/usr/lib/novade/apps.lua")(DE)
 
 return DE
 ]],
@@ -916,7 +1052,7 @@ return 0
 	--  games
 	{
 		name = "games",
-		version = "1.1.0",
+		version = "1.2.0",
 		desc = "Terminal games: mandelbrot, tictactoe, life",
 		deps = {},
 		size = 5200,
@@ -976,25 +1112,8 @@ local function twrite(s, c)
 	if tty and tty.writeln then tty.writeln(s, c) else print(s) end
 end
 
-local function tread()
-	if syscall then
-		local a, b = syscall(3, 0, 1)
-		if type(a) == "string" then
-			return a
-		end
-		if type(b) == "string" then
-			return b
-		end
-	end
-	if io and io.read then
-		return io.read(1)
-	end
-	return nil
-end
-
 local board = {" "," "," "," "," "," "," "," "," "}
 local running = true
-local moveCount = 0
 
 local function draw()
 	tclear()
@@ -1078,38 +1197,36 @@ local function cpuMove()
 end
 
 draw()
-
-local function poll()
+local ok, err = process.beginForeground("tictactoe", function(ch)
 	if not running then
+		process.endForeground()
 		return
 	end
-
-	local ch = tread()
 	if ch and ch ~= "" then
 		if ch == "\3" then
 			running = false
 			twrite("Quit.")
+			process.endForeground()
 			return
 		end
 
 		local n = tonumber(ch)
 		if n and n >= 1 and n <= 9 and board[n] == " " then
 			board[n] = "X"
-			moveCount = moveCount + 1
 			draw()
 
 			if winner("X") then
 				twrite("")
 				twrite("You win.", tty and tty.color and tty.color(10,0) or nil)
 				running = false
-				return
+				process.endForeground(); return
 			end
 
 			if full() then
 				twrite("")
 				twrite("Draw.")
 				running = false
-				return
+				process.endForeground(); return
 			end
 
 			cpuMove()
@@ -1119,27 +1236,23 @@ local function poll()
 				twrite("")
 				twrite("CPU wins.", tty and tty.color and tty.color(12,0) or nil)
 				running = false
-				return
+				process.endForeground(); return
 			end
 
 			if full() then
 				twrite("")
 				twrite("Draw.")
 				running = false
-				return
+				process.endForeground(); return
 			end
 		end
 	end
+	if not running then process.endForeground() end
+end)
 
-	if running and task and task.delay then
-		task.delay(0.08, poll)
-	end
-end
-
-if task and task.delay then
-	task.delay(0.08, poll)
-else
-	return 0
+if not ok then
+	tty.writeln("tictactoe: " .. tostring(err), tty.color(12,0))
+	return 1
 end
 
 return 0
@@ -1154,11 +1267,7 @@ local function twrite(s, c)
 	if tty and tty.writeln then tty.writeln(s, c) else print(s) end
 end
 
-local cols, rows = 80, 25
-if tty and tty.size then
-	cols, rows = tty.size()
-end
-
+local cols, rows = tty.size()
 local W = math.max(10, cols)
 local H = math.max(4, rows - 3)
 local grid = {}
@@ -1209,23 +1318,28 @@ local function render()
 	end
 end
 
+render()
 local ticks = 0
 local function tick()
 	if not running or ticks >= 180 then
+		process.endForeground()
 		return
 	end
-	step()
-	render()
-	ticks = ticks + 1
-	if task and task.delay then
-		task.delay(0.12, tick)
-	end
-end
-
-render()
-if task and task.delay then
+	step(); render(); ticks = ticks + 1
 	task.delay(0.12, tick)
 end
+
+local ok, err = process.beginForeground("life", function(ch)
+	if ch == "\3" or ch == "q" then
+		running = false
+		process.endForeground()
+	end
+end)
+if not ok then
+	tty.writeln("life: " .. tostring(err), tty.color(12,0))
+	return 1
+end
+task.delay(0.12, tick)
 
 return 0
 ]],
