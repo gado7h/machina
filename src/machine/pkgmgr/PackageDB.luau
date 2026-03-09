@@ -771,9 +771,7 @@ return function(DE)
 		if win.type == "settings" then
 			if ch == "[UP]" then win.selected = math.max(1, win.selected - 1); return true end
 			if ch == "[DOWN]" then win.selected = math.min(#win.items, win.selected + 1); return true end
-			if ch == "[LEFT]" or ch == "[RIGHT]" or ch == "
-" or ch == "
-" then
+			if ch == "[LEFT]" or ch == "[RIGHT]" or ch == "\n" or ch == "\r" then
 				if win.selected == 1 then
 					self.settings.theme = (self.settings.theme == "dark") and "light" or "dark"
 				elseif win.selected == 2 then
@@ -792,7 +790,7 @@ return function(DE)
 		if win.type == "filemanager" then
 			if ch == "[UP]" then win.selected = math.max(1, win.selected - 1); return true end
 			if ch == "[DOWN]" then win.selected = math.min(math.max(#win.entries,1), win.selected + 1); return true end
-			if ch == "" or ch == "[LEFT]" then
+			if ch == "\b" or ch == "[LEFT]" then
 				win.path = parent(win.path)
 				win.selected = 1
 				self:_refreshFocusedFileManager()
@@ -800,9 +798,7 @@ return function(DE)
 			end
 			if ch == "n" then self:_createInFocusedFileManager("file"); return true end
 			if ch == "N" then self:_createInFocusedFileManager("dir"); return true end
-			if ch == "
-" or ch == "
-" or ch == "[RIGHT]" then
+			if ch == "\n" or ch == "\r" or ch == "[RIGHT]" then
 				local e = win.entries[win.selected]
 				if e and e.isDir then
 					local base = (win.path == "/") and "" or win.path
