@@ -1,29 +1,8 @@
--- NovaMachine/hardware/CPU.lua
--- NovaCPU-32 — 32-bit RISC processor emulation.
---
--- Register file:  R0-R7  general purpose  (R0 is always 0 / zero register)
---                 PC     program counter
---                 SP     stack pointer
---                 LR     link register (return address)
---                 FLAGS  condition codes
---                 CR0    control register 0 (PE, PG bits)
---                 CR3    page directory base
---
--- FLAGS bits:     bit 0 = CF (carry)
---                 bit 1 = ZF (zero)
---                 bit 2 = SF (sign)
---                 bit 3 = OF (overflow)
---                 bit 4 = IF (interrupt enable)
---                 bit 5 = HLT (halted)
---
--- Instruction encoding (32-bit words):
---   [31:26] opcode  [25:21] rd  [20:16] rs1  [15:11] rs2  [10:0] imm11
---   For load/store: [15:0] = imm16 (signed offset)
+-- CPU module
 
 local CPU = {}
 CPU.__index = CPU
 
--- ── Opcodes ────────────────────────────────
 local OP = {
 	NOP = 0,
 	MOV = 1, -- rd = rs1
@@ -76,7 +55,6 @@ for k, v in pairs(OP) do
 	OP_NAME[v] = k
 end
 
--- ── FLAGS bit positions ──
 local FLAG_CF = 1
 local FLAG_ZF = 2
 local FLAG_SF = 4
@@ -91,7 +69,6 @@ for i, n in ipairs(REG_NAMES) do
 	REG_IDX[n] = i
 end
 
--- ────────────────────────────────────────────
 function CPU.new(bus, config)
 	local self = setmetatable({}, CPU)
 	self.bus = bus
@@ -134,7 +111,6 @@ function CPU.new(bus, config)
 	return self
 end
 
--- ────────────────────────────────────────────
 function CPU:reset()
 	for i = 1, #REG_NAMES do
 		self.reg[i] = 0
@@ -149,9 +125,7 @@ function CPU:reset()
 	self.stats.instructions = 0
 end
 
--- ────────────────────────────────────────────
 --  Register helpers
--- ────────────────────────────────────────────
 
 function CPU:getReg(name)
 	local idx = REG_IDX[name]
@@ -182,9 +156,7 @@ function CPU:setRegIdx(i, v)
 	self.reg[i] = v % 0x100000000
 end
 
--- ────────────────────────────────────────────
 --  FLAGS helpers
--- ────────────────────────────────────────────
 
 function CPU:flag(bit)
 	return (self.reg[REG_IDX.FLAGS] % (bit * 2)) >= bit
@@ -213,9 +185,7 @@ local function signExt16(v)
 	return v
 end
 
--- ────────────────────────────────────────────
 --  ALU
--- ────────────────────────────────────────────
 
 function CPU:alu(op, a, b)
 	-- returns {result, CF, ZF, SF, OF}
@@ -261,9 +231,7 @@ function CPU:alu(op, a, b)
 	return r, cf, r == 0, r >= 0x80000000, of
 end
 
--- ────────────────────────────────────────────
 --  Instruction Fetch  (with I-cache sim)
--- ────────────────────────────────────────────
 
 function CPU:fetch(addr)
 	-- L1 I-cache: 256-entry direct mapped, 4-byte lines
@@ -278,9 +246,7 @@ function CPU:fetch(addr)
 	return w
 end
 
--- ────────────────────────────────────────────
 --  Instruction Decode
--- ────────────────────────────────────────────
 
 local function decode(word)
 	local opcode = math.floor(word / (2 ^ 26)) % 64
@@ -293,9 +259,7 @@ local function decode(word)
 	return opcode, rd + 1, rs1 + 1, rs2 + 1, imm11, imm16, imm8 -- +1 for Lua 1-based reg array
 end
 
--- ────────────────────────────────────────────
 --  Execute one instruction
--- ────────────────────────────────────────────
 
 function CPU:step()
 	local flags = self.reg[REG_IDX.FLAGS]
@@ -310,16 +274,13 @@ function CPU:step()
 
 	local pc = self.reg[REG_IDX.PC]
 
-	-- ── IF stage ──
 	self.pipeline.IF = string.format("%08X", pc)
 	local word = self:fetch(pc)
 
-	-- ── ID stage ──
 	local opcode, rd, rs1, rs2, imm11, imm16, imm8 = decode(word)
 	local opname = OP_NAME[opcode] or "???"
 	self.pipeline.ID = opname
 
-	-- ── RF stage ──
 	local a = self:getRegIdx(rs1)
 	local b = self:getRegIdx(rs2)
 	self.pipeline.RF = string.format("r%d=%08X r%d=%08X", rs1 - 1, a, rs2 - 1, b)
@@ -327,7 +288,6 @@ function CPU:step()
 	-- advance PC (before EX so relative jumps work from current PC)
 	self.reg[REG_IDX.PC] = (pc + 4) % 0x100000000
 
-	-- ── EX + MA + WB stages ──
 	local branched = false
 
 	if opcode == OP.NOP then
@@ -476,9 +436,7 @@ function CPU:step()
 	return opname
 end
 
--- ────────────────────────────────────────────
 --  Interrupt handling
--- ────────────────────────────────────────────
 
 --- Called by bus/devices to raise an external interrupt.
 function CPU:interrupt(vector)
@@ -520,9 +478,7 @@ function CPU:setIDTBase(addr)
 	self.reg[REG_IDX.IDTR] = addr
 end
 
--- ────────────────────────────────────────────
 --  Run N ticks (called by Motherboard each heartbeat)
--- ────────────────────────────────────────────
 
 function CPU:tick(n)
 	n = n or 1
@@ -534,9 +490,7 @@ function CPU:tick(n)
 	return ops
 end
 
--- ────────────────────────────────────────────
 --  Debug / inspection
--- ────────────────────────────────────────────
 
 function CPU:dumpRegisters()
 	local out = {}

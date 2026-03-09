@@ -1,12 +1,4 @@
--- NovaMachine/kernel/Kernel.lua
--- NovaKernel — central kernel module.
---
--- Responsibilities:
---   • Kernel initialization (kmain)
---   • Subsystem bring-up (MM, PM, VFS, Syscall, DevMgr)
---   • Timer tick dispatch
---   • Init process (PID 1)
---   • Panic / reboot handling
+-- Kernel module
 
 local Kernel = {}
 Kernel.__index = Kernel
@@ -26,9 +18,7 @@ function Kernel.new(machine)
 	return self
 end
 
--- ────────────────────────────────────────────
 --  kmain — kernel entry point
--- ────────────────────────────────────────────
 
 function Kernel:kmain(fs, kernelLoadAddr, kernelData)
 	local g = self.gpu
@@ -39,7 +29,6 @@ function Kernel:kmain(fs, kernelLoadAddr, kernelData)
 
 	self:_klog("0.000", "NovaKernel starting")
 
-	-- ── Memory Manager ──
 	self:_klog("0.001", "initializing memory manager")
 	local MM = require(script.Parent.MemoryManager)
 	self.mm = MM.new(self.config, self.ram)
@@ -53,39 +42,32 @@ function Kernel:kmain(fs, kernelLoadAddr, kernelData)
 		0x07
 	)
 
-	-- ── Process Manager ──
 	self:_klog("0.002", "initializing process manager")
 	local PMod = require(script.Parent.ProcessManager)
 	self.pm = PMod.new(self.config, self.mm)
 	self.pm:spawnIdle()
 	g:println("[    0.002] Process manager: OK  (max PIDs: 65535)", 0x07)
 
-	-- ── VFS ──
 	self:_klog("0.003", "mounting root filesystem")
 	self.vfs = fs
 	g:println("[    0.003] NovaFS mounted on /", 0x07)
 
-	-- ── Syscall Table ──
 	self:_klog("0.004", "registering syscall table")
 	local SC = require(script.Parent.Syscall)
 	self.syscall = SC.new(self)
 	g:println("[    0.004] Syscall table: 64 entries registered", 0x07)
 
-	-- ── Device Manager ──
 	self:_klog("0.005", "initializing device manager")
 	self:_initDeviceManager()
 	g:println("[    0.005] devtmpfs mounted on /dev", 0x07)
 
-	-- ── IRQ handlers ──
 	self:_klog("0.006", "registering IRQ handlers")
 	self:_registerIRQs()
 
-	-- ── proc/sys pseudo-FS ──
 	self:_initProcFS()
 	g:println("[    0.007] procfs mounted on /proc", 0x07)
 	g:println("[    0.008] sysfs mounted on /sys", 0x07)
 
-	-- ── tmpfs ──
 	self.vfs:mkdir("/tmp")
 
 	self:_klog("0.010", "kernel init complete")
@@ -95,15 +77,12 @@ function Kernel:kmain(fs, kernelLoadAddr, kernelData)
 
 	self._running = true
 
-	-- ── Spawn init (PID 1) ──
 	task.delay(0.3, function()
 		self:_spawnInit()
 	end)
 end
 
--- ────────────────────────────────────────────
 --  Device Manager
--- ────────────────────────────────────────────
 
 function Kernel:_initDeviceManager()
 	-- Create /dev entries
@@ -142,9 +121,7 @@ function Kernel:_initDeviceManager()
 	-- These are handled specially in Syscall:_sysRead
 end
 
--- ────────────────────────────────────────────
 --  IRQ registration
--- ────────────────────────────────────────────
 
 function Kernel:_registerIRQs()
 	-- IRQ 0: Timer
@@ -159,9 +136,7 @@ function Kernel:_registerIRQs()
 	end)
 end
 
--- ────────────────────────────────────────────
 --  /proc pseudo-filesystem
--- ────────────────────────────────────────────
 
 function Kernel:_initProcFS()
 	self.vfs:mkdir("/proc")
@@ -236,9 +211,7 @@ function Kernel:_updateProcFS()
 	self.vfs:writeFileStr("/proc/filesystems", "nodev\tproc\nnodev\tsysfs\nnodev\ttmpfs\n\tnovafs\n")
 end
 
--- ────────────────────────────────────────────
 --  init process (PID 1)
--- ────────────────────────────────────────────
 
 function Kernel:_spawnInit()
 	local InitMod = require(script.Parent.Parent.userland.Init)
@@ -246,9 +219,7 @@ function Kernel:_spawnInit()
 	self.initModule:run()
 end
 
--- ────────────────────────────────────────────
 --  Timer tick (called by Motherboard heartbeat)
--- ────────────────────────────────────────────
 
 function Kernel:tick(dt)
 	if not self._running then
@@ -275,9 +246,7 @@ function Kernel:tick(dt)
 	end
 end
 
--- ────────────────────────────────────────────
 --  Kernel panic
--- ────────────────────────────────────────────
 
 function Kernel:panic(msg)
 	self._running = false
@@ -297,9 +266,7 @@ function Kernel:panic(msg)
 	error("KERNEL PANIC: " .. tostring(msg))
 end
 
--- ────────────────────────────────────────────
 --  Reboot
--- ────────────────────────────────────────────
 
 function Kernel:reboot()
 	self._running = false
@@ -314,9 +281,7 @@ function Kernel:reboot()
 	end)
 end
 
--- ────────────────────────────────────────────
 --  Logging
--- ────────────────────────────────────────────
 
 function Kernel:_klog(time, msg)
 	local entry = string.format("[%9s] %s", time, msg)

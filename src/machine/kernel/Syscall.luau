@@ -1,11 +1,4 @@
--- NovaMachine/kernel/Syscall.lua
--- System Call Interface — userland ↔ kernel boundary.
---
--- Usage (from a process body):
---   local result, err = syscall(SYS.write, 1, "Hello\n")
---
--- Syscall numbers follow a Linux-like convention.
--- All syscalls execute synchronously within the Lua coroutine model.
+-- Syscall module
 
 local Syscall = {}
 Syscall.__index = Syscall
@@ -124,9 +117,7 @@ function Syscall.new(kernel)
 	return self
 end
 
--- ────────────────────────────────────────────
 --  Main dispatch
--- ────────────────────────────────────────────
 
 --- Dispatch a syscall.
 --- pid: calling process pid
@@ -280,9 +271,7 @@ function Syscall:call(pid, num, ...)
 	end
 end
 
--- ────────────────────────────────────────────
 --  File descriptor operations
--- ────────────────────────────────────────────
 
 function Syscall:_fdKey(pid, fd)
 	return pid .. ":" .. fd

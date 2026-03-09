@@ -1,17 +1,4 @@
--- NovaMachine/bootloader/Bootloader.lua
--- NovaLoader — Two-stage bootloader.
---
--- Stage 1 (MBR, sector 0):  already installed by HDD:_initMBR()
---   → finds active partition, loads stage 2
---
--- Stage 2 (sectors 1-62):   this module (Lua abstraction)
---   → reads NovaFS superblock from partition start
---   → locates /boot/kernel.bin inode
---   → copies kernel blocks into RAM at KERNEL_LOAD_ADDR
---   → jumps to kernel entry point
---
--- The bootloader communicates via a BootInfo struct written to RAM
--- at address 0x600, which the kernel reads during early init.
+-- Bootloader module
 
 local Bootloader = {}
 Bootloader.__index = Bootloader
@@ -41,9 +28,7 @@ function Bootloader.new(machine)
 	return self
 end
 
--- ────────────────────────────────────────────
 --  Entry point
--- ────────────────────────────────────────────
 
 function Bootloader:run(memMap, onKernelLoaded)
 	self._onKernelLoaded = onKernelLoaded
@@ -68,9 +53,7 @@ function Bootloader:run(memMap, onKernelLoaded)
 	end)
 end
 
--- ────────────────────────────────────────────
 --  Stage 1: Parse MBR partition table
--- ────────────────────────────────────────────
 
 function Bootloader:_parsePartitionTable()
 	local mbr = self.hdd:readSector(0)
@@ -95,9 +78,7 @@ function Bootloader:_parsePartitionTable()
 	}
 end
 
--- ────────────────────────────────────────────
 --  Stage 2: Mount FS, find kernel, load it
--- ────────────────────────────────────────────
 
 function Bootloader:_stage2(partition)
 	self.gpu:println("NovaLoader Stage2 — mounting NovaFS...", 0x07)
@@ -154,9 +135,7 @@ function Bootloader:_stage2(partition)
 	end)
 end
 
--- ────────────────────────────────────────────
 --  Write BootInfo struct to RAM
--- ────────────────────────────────────────────
 
 function Bootloader:_writeBootInfo(kernelEntry, kernelSize)
 	local ramBase = self.config.RAM_BASE
@@ -178,9 +157,7 @@ function Bootloader:_writeBootInfo(kernelEntry, kernelSize)
 	self.ram:memWrite(0x700 + #cmdline, 0) -- null terminator
 end
 
--- ────────────────────────────────────────────
 --  Fresh filesystem install (first boot)
--- ────────────────────────────────────────────
 
 function Bootloader:_installBaseSystem(fs)
 	self.gpu:println("  Installing base filesystem...", 0x0E)

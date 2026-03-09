@@ -1,6 +1,4 @@
--- NovaMachine/userland/Init.lua
--- PID 1 — init process. Runs rc scripts, populates /bin, launches shell.
--- All user-executable scripts are compiled through LuauVM.
+-- Init module
 
 local Init = {}
 Init.__index = Init

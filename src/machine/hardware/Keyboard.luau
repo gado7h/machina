@@ -1,6 +1,4 @@
--- NovaMachine/hardware/Keyboard.lua
--- PS/2 Keyboard controller emulation.
--- Roblox UserInputService events → keyboard scan codes → IRQ 1
+-- Keyboard module
 
 local Keyboard = {}
 Keyboard.__index = Keyboard
@@ -348,7 +346,6 @@ function Keyboard:_onKeyUp(input)
 	end
 end
 
--- ── Port read/write ──
 function Keyboard:_readData()
 	return table.remove(self._buffer, 1) or 0
 end

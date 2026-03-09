@@ -1,6 +1,4 @@
--- NovaMachine/hardware/Bus.lua
--- System Bus — connects CPU, RAM, ROM, GPU, HDD, I/O devices.
--- Implements memory-mapped I/O, port I/O, DMA, and IRQ dispatch.
+-- Bus module
 
 local Bus = {}
 Bus.__index = Bus
@@ -27,9 +25,7 @@ function Bus.new(config)
 	return self
 end
 
--- ─────────────────────────────────────────────
 --  Device Registration
--- ─────────────────────────────────────────────
 
 function Bus:registerDevice(name, device)
 	assert(not self._devices[name], "Bus: device '" .. name .. "' already registered")
@@ -41,9 +37,7 @@ function Bus:getDevice(name)
 	return self._devices[name]
 end
 
--- ─────────────────────────────────────────────
 --  Memory Map
--- ─────────────────────────────────────────────
 
 --- Map a device into physical address space.
 --- device must implement :memRead(offset) and :memWrite(offset, value)
@@ -101,9 +95,7 @@ function Bus:memWrite32(addr, value)
 	self:memWrite(addr + 3, math.floor(value / 16777216) % 256)
 end
 
--- ─────────────────────────────────────────────
 --  Port I/O
--- ─────────────────────────────────────────────
 
 function Bus:registerPort(port, readFn, writeFn, label)
 	self._portmap[port] = { read = readFn, write = writeFn, label = label or string.format("0x%04X", port) }
@@ -126,9 +118,7 @@ function Bus:portWrite(port, value)
 	end
 end
 
--- ─────────────────────────────────────────────
 --  IRQ (Interrupt Request Lines)
--- ─────────────────────────────────────────────
 
 function Bus:registerIRQ(irqNum, device, handler)
 	if not self._irqLines[irqNum] then
@@ -166,9 +156,7 @@ function Bus:getIRQStats()
 	return out
 end
 
--- ─────────────────────────────────────────────
 --  DMA (Direct Memory Access)
--- ─────────────────────────────────────────────
 
 --- Enqueue a DMA transfer.  src/dst are physical addresses; callback fires on completion.
 function Bus:dmaTransfer(src, dst, length, callback)
@@ -200,9 +188,7 @@ function Bus:processDMA()
 	self._dmaQueue = live
 end
 
--- ─────────────────────────────────────────────
 --  Internal logging
--- ─────────────────────────────────────────────
 
 function Bus:_log(tag, msg)
 	local entry = string.format("[%s] %s", tag, msg)

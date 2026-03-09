@@ -1,33 +1,4 @@
--- NovaMachine/kernel/VFS.lua
--- NovaFS — Virtual Filesystem (ext2-inspired).
---
--- Disk layout from partition start (all offsets in sectors):
---   Sector 0      : Superblock (512 bytes)
---   Sector 1-8    : Block group descriptor table
---   Sector 9-40   : Block allocation bitmap (1 bit per block)
---   Sector 41-296 : Inode table (128 bytes per inode, 4 inodes/sector)
---   Sector 297+   : Data blocks (512 bytes each)
---
--- Inode structure (128 bytes):
---   [0-3]   mode       (type + permissions)
---   [4-7]   uid
---   [8-11]  size (bytes)
---   [12-15] atime
---   [16-19] mtime
---   [20-23] ctime
---   [24-27] links_count
---   [28-31] blocks     (number of 512-byte blocks used)
---   [32-63] direct block pointers (8 × 4B)
---   [64-67] single-indirect block pointer
---   [68-71] double-indirect block pointer
---   [72-127] reserved / extended attributes
---
--- Directory entry (variable length, 32-byte minimum):
---   [0-3]   inode number
---   [4-5]   rec_len
---   [6]     name_len
---   [7]     file_type (1=regular, 2=dir, 7=symlink)
---   [8+]    name bytes
+-- VFS module
 
 local VFS = {}
 VFS.__index = VFS
@@ -68,7 +39,6 @@ local S_IRWXU = 0x01C0
 local S_IRWXG = 0x0038
 local S_IRWXO = 0x0007
 
--- ────────────────────────────────────────────
 function VFS.new(hdd, partStartLBA, config)
 	local self = setmetatable({}, VFS)
 	self.hdd = hdd
@@ -81,9 +51,7 @@ function VFS.new(hdd, partStartLBA, config)
 	return self
 end
 
--- ────────────────────────────────────────────
 --  Low-level sector I/O (relative to partition)
--- ────────────────────────────────────────────
 
 function VFS:_readSec(relSec)
 	return self.hdd:readSector(self.partStart + relSec)
@@ -143,9 +111,7 @@ local function now()
 	return os.time and os.time() or 0
 end
 
--- ────────────────────────────────────────────
 --  Format (create fresh filesystem)
--- ────────────────────────────────────────────
 
 function VFS:format()
 	-- Write superblock
@@ -211,9 +177,7 @@ function VFS:format()
 	return true
 end
 
--- ────────────────────────────────────────────
 --  Mount
--- ────────────────────────────────────────────
 
 function VFS:mount()
 	local sb = self:_readSec(SEC_SUPERBLOCK)
@@ -247,9 +211,7 @@ function VFS:isMounted()
 	return self._mounted
 end
 
--- ────────────────────────────────────────────
 --  Inode table
--- ────────────────────────────────────────────
 
 function VFS:_readInode(ino)
 	if self._inodeCache[ino] then
@@ -306,9 +268,7 @@ function VFS:_writeInode(ino, inode)
 	self:_writeSec(sec, s)
 end
 
--- ────────────────────────────────────────────
 --  Block allocation
--- ────────────────────────────────────────────
 
 function VFS:_setBitmapBit(blockIdx, used)
 	local byteOff = math.floor(blockIdx / 8)
@@ -366,9 +326,7 @@ function VFS:_writeDataBlock(blockIdx, data)
 	self:_writeSec(SEC_DATA_START + blockIdx, s)
 end
 
--- ────────────────────────────────────────────
 --  Inode allocation
--- ────────────────────────────────────────────
 
 function VFS:_allocInode()
 	for ino = 2, MAX_INODES do
@@ -383,9 +341,7 @@ function VFS:_allocInode()
 	return nil -- no free inodes
 end
 
--- ────────────────────────────────────────────
 --  Path resolution
--- ────────────────────────────────────────────
 
 function VFS:_resolvePath(path)
 	if path == "/" then
@@ -434,9 +390,7 @@ function VFS:_resolvePath(path)
 	return curIno, parIno, parts[#parts] or "/"
 end
 
--- ────────────────────────────────────────────
 --  Directory operations
--- ────────────────────────────────────────────
 
 function VFS:_readDir(dirIno)
 	local inode = self:_readInode(dirIno)
@@ -567,9 +521,7 @@ function VFS:_makeDirBlock(entries)
 	return block
 end
 
--- ────────────────────────────────────────────
 --  Public API
--- ────────────────────────────────────────────
 
 --- Create directory
 function VFS:mkdir(path)

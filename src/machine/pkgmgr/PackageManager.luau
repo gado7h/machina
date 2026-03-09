@@ -1,6 +1,4 @@
--- NovaMachine/pkgmgr/PackageManager.lua
--- Nova Package Manager (npm... but Nova Package Manager).
--- Compiles every package script through LuauVM before installing to VFS.
+-- PackageManager module
 
 local PKG = {}
 PKG.__index = PKG
@@ -37,9 +35,7 @@ function PKG:_strBytes(s)
 	return b
 end
 
--- ─────────────────────────────────────────────
 --  Load installed package list from disk
--- ─────────────────────────────────────────────
 function PKG:_loadInstalled()
 	local dbPath = "/pkg/db/installed.db"
 	if not self.vfs:exists(dbPath) then
@@ -65,9 +61,7 @@ function PKG:_saveInstalled()
 	self.vfs:writeFileStr("/pkg/db/installed.db", table.concat(lines, "\n"))
 end
 
--- ─────────────────────────────────────────────
 --  Dependency resolution (topological sort)
--- ─────────────────────────────────────────────
 function PKG:_resolveDeps(name, visited, order)
 	visited = visited or {}
 	order = order or {}
@@ -86,9 +80,7 @@ function PKG:_resolveDeps(name, visited, order)
 	return order
 end
 
--- ─────────────────────────────────────────────
 --  Install
--- ─────────────────────────────────────────────
 function PKG:install(name)
 	self:_loadInstalled()
 
@@ -169,9 +161,7 @@ function PKG:install(name)
 	return true
 end
 
--- ─────────────────────────────────────────────
 --  Remove
--- ─────────────────────────────────────────────
 function PKG:remove(name)
 	self:_loadInstalled()
 
@@ -211,9 +201,7 @@ function PKG:remove(name)
 	return true
 end
 
--- ─────────────────────────────────────────────
 --  Update (re-install)
--- ─────────────────────────────────────────────
 function PKG:update()
 	self:_loadInstalled()
 	local updated = 0
@@ -232,9 +220,7 @@ function PKG:update()
 	return true
 end
 
--- ─────────────────────────────────────────────
 --  List
--- ─────────────────────────────────────────────
 function PKG:list()
 	self:_loadInstalled()
 	local all = self:_db().getAll()
@@ -253,16 +239,12 @@ function PKG:list()
 	return out
 end
 
--- ─────────────────────────────────────────────
 --  Search
--- ─────────────────────────────────────────────
 function PKG:search(query)
 	return self:_db().search(query or "")
 end
 
--- ─────────────────────────────────────────────
 --  Info
--- ─────────────────────────────────────────────
 function PKG:info(name)
 	local pkg = self:_db().get(name)
 	if not pkg then
@@ -288,9 +270,7 @@ function PKG:info(name)
 	}
 end
 
--- ─────────────────────────────────────────────
 --  Hook runner (pre/postinst scripts via LuauVM)
--- ─────────────────────────────────────────────
 function PKG:_runHook(source, pkgName, hookName)
 	if type(source) ~= "string" or source == "" then
 		return

@@ -1,23 +1,10 @@
--- NovaMachine/hardware/HDD.lua
--- NovaDisk — Block-addressable virtual hard disk.
---
--- Layout:
---   LBA 0         : MBR (512 bytes) — partition table + boot code
---   LBA 1-62      : Reserved / second-stage bootloader
---   LBA 63        : Start of Partition 0 (NovaFS superblock)
---   LBA 63+1      : Block allocation bitmap
---   LBA 63+9      : Inode table (starts here)
---   LBA 63+1033   : Data blocks
---
--- Partition table (in MBR at offset 446):
---   4 entries × 16 bytes each, followed by 0x55AA signature
+-- HDD module
 
 local HDD = {}
 HDD.__index = HDD
 
 local SECTOR_SIZE = 512
 
--- ── MBR signature ──
 local MBR_SIGNATURE_LO = 0x55
 local MBR_SIGNATURE_HI = 0xAA
 
@@ -37,9 +24,7 @@ function HDD.new(config)
 	return self
 end
 
--- ────────────────────────────────────────────
 --  Low-level sector I/O
--- ────────────────────────────────────────────
 
 local function blankSector()
 	local s = {}
@@ -105,9 +90,7 @@ function HDD:writeSectors(startLba, bytes)
 	end
 end
 
--- ────────────────────────────────────────────
 --  Memory-mapped bus interface
--- ────────────────────────────────────────────
 -- Maps as MMIO: command register at offset 0, data buffer at offset 512
 
 function HDD:memRead(offset)
@@ -137,9 +120,7 @@ function HDD:memWrite(offset, value)
 	end
 end
 
--- ────────────────────────────────────────────
 --  MBR initialization
--- ────────────────────────────────────────────
 
 function HDD:_initMBR()
 	local mbr = blankSector()
@@ -184,9 +165,7 @@ function HDD:_initMBR()
 	self._sectors[0] = mbr
 end
 
--- ────────────────────────────────────────────
 --  Helpers: byte packing / unpacking
--- ────────────────────────────────────────────
 
 function HDD:readUInt32(sector, offset)
 	local s = self:readSector(sector)

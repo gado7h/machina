@@ -1,16 +1,4 @@
--- NovaMachine/kernel/MemoryManager.lua
--- Nova Memory Manager — page frame allocator, virtual memory, slab allocator.
---
--- Physical memory layout (managed by MM):
---   0x00010000 – 0x000FFFFF  : Low memory / DMA zone (kernel)
---   0x00100000 – 0x007FFFFF  : High memory / user zone
---
--- Page frames: 4KB each.  Physical page frame number (PFN) = physAddr >> 12.
--- Page table:  2-level (directory → table → page) like i386.
---   CR3 → Page Directory (1024 entries × 4B)
---   Each PDE → Page Table  (1024 entries × 4B)
---   Each PTE → Physical page frame
--- PTE flags: P(0) R/W(1) U/S(2) A(5) D(6)
+-- MemoryManager module
 
 local MM = {}
 MM.__index = MM
@@ -66,9 +54,7 @@ function MM.new(config, ram)
 	return self
 end
 
--- ────────────────────────────────────────────
 --  Bitmap helpers
--- ────────────────────────────────────────────
 
 function MM:_setPage(pfn, used)
 	local word = math.floor(pfn / 32) + 1
@@ -86,9 +72,7 @@ function MM:_isPageUsed(pfn)
 	return (bit32.band((self._freeBitmap[word] or 0), (2 ^ bit))) ~= 0
 end
 
--- ────────────────────────────────────────────
 --  Physical page frame allocation
--- ────────────────────────────────────────────
 
 --- Allocate n contiguous physical pages.  Returns {base, size, pfn} or nil.
 function MM:allocPages(n)
@@ -135,9 +119,7 @@ function MM:freePages(block)
 	self.stats.freePages = self.stats.freePages + block.pages
 end
 
--- ────────────────────────────────────────────
 --  Page Table management
--- ────────────────────────────────────────────
 
 --- Build a minimal page directory for kernel space.
 --- Maps virtual 0x00100000–0x007FFFFF → physical RAM.
@@ -164,9 +146,7 @@ function MM:buildKernelPageDir()
 	return pd
 end
 
--- ────────────────────────────────────────────
 --  Virtual Memory Area (VMA) management
--- ────────────────────────────────────────────
 
 function MM:mmap(pid, size, flags, name)
 	-- Allocate physical memory and record VMA
@@ -219,9 +199,7 @@ function MM:cleanupProcess(pid)
 	self._vmas[pid] = nil
 end
 
--- ────────────────────────────────────────────
 --  Slab / kernel heap allocator
--- ────────────────────────────────────────────
 -- Sizes: 8, 16, 32, 64, 128, 256, 512
 
 local SLAB_SIZES = { 8, 16, 32, 64, 128, 256, 512 }
@@ -273,9 +251,7 @@ function MM:kfree(addr, size)
 	end
 end
 
--- ────────────────────────────────────────────
 --  Stats & info
--- ────────────────────────────────────────────
 
 function MM:getStats()
 	return self.stats

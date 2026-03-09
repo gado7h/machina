@@ -1,16 +1,4 @@
--- NovaMachine/hardware/GPU.lua
--- NovaGFX-400 — Virtual GPU with EditableImage rendering.
---
--- Two modes:
---   TEXT  (default): 80×25 character grid, 4×8 bitmap font, 16 CGA colours
---   PIXEL:           320×200 direct ARGB framebuffer
---
--- GPU:flush() is called by the Motherboard heartbeat (~20×/sec).
--- Uses WritePixelsBuffer (native buffer API) for maximum throughput —
--- avoids per-frame Lua table allocation that WritePixels(table) requires.
---
--- IMPORTANT: The EditableImage passed in must be exactly 320×200.
--- Any other size causes WritePixelsBuffer to write to the wrong region.
+-- GPU module
 
 local GPU = {}
 GPU.__index = GPU
@@ -147,7 +135,6 @@ local function getGlyph(ch)
 	return FONT[ch] or GLYPH_DEFAULT
 end
 
--- ────────────────────────────────────────────────────────
 function GPU.new(config, editableImage)
 	local self = setmetatable({}, GPU)
 	self.config = config
@@ -193,9 +180,7 @@ function GPU.new(config, editableImage)
 	return self
 end
 
--- ────────────────────────────────────────────────────────
 --  Bus / VRAM interface
--- ────────────────────────────────────────────────────────
 
 function GPU:memRead(offset)
 	return self._vram[offset] or 0
@@ -231,9 +216,7 @@ function GPU:memWrite(offset, value)
 	end
 end
 
--- ────────────────────────────────────────────────────────
 --  High-level text API  (called by BIOS / kernel / shell)
--- ────────────────────────────────────────────────────────
 
 function GPU:setMode(mode)
 	self.mode = mode
@@ -336,9 +319,7 @@ function GPU:toggleCursor()
 	self._dirty = true
 end
 
--- ────────────────────────────────────────────────────────
 --  Pixel API
--- ────────────────────────────────────────────────────────
 
 function GPU:setPixel(x, y, argb)
 	if x < 0 or x >= self.W or y < 0 or y >= self.H then
@@ -384,13 +365,11 @@ function GPU:drawChar(x, y, ch, fgARGB, bgARGB)
 	end
 end
 
--- ────────────────────────────────────────────────────────
 --  Flush to EditableImage via WritePixelsBuffer
 --
 --  WritePixelsBuffer takes a native Luau buffer (RGBA u8, row-major).
 --  This is ~10× faster than WritePixels(table) because it avoids
 --  allocating and iterating a 64k-entry Lua table on every frame.
--- ────────────────────────────────────────────────────────
 
 function GPU:flush()
 	if not self._dirty then

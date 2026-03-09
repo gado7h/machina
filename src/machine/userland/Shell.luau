@@ -1,6 +1,4 @@
--- NovaMachine/userland/Shell.lua
--- /bin/sh — NovaShell (nsh)
--- Full Unix-like command interpreter. All scripts execute through LuauVM.
+-- Shell module
 
 local Shell = {}
 Shell.__index = Shell
@@ -52,9 +50,7 @@ function Shell.new(kernel, username)
 	return self
 end
 
--- ─────────────────────────────────────────────
 --  Start
--- ─────────────────────────────────────────────
 function Shell:start()
 	self._running = true
 	if not self.vfs:exists(self.cwd) then
@@ -88,9 +84,7 @@ function Shell:_prompt()
 	self.gpu:print(string.format("[%s@%s %s]%s ", self.username, self.hostname, cwd, sym), 0x0A)
 end
 
--- ─────────────────────────────────────────────
 --  Input loop
--- ─────────────────────────────────────────────
 function Shell:_pollLoop()
 	if not self._running then
 		return
@@ -258,9 +252,7 @@ function Shell:_tabComplete()
 	end
 end
 
--- ─────────────────────────────────────────────
 --  Line execution
--- ─────────────────────────────────────────────
 function Shell:_executeLine(line)
 	-- Expand aliases
 	local firstWord = line:match("^%s*(%S+)")
@@ -329,9 +321,7 @@ function Shell:_executeLine(line)
 	end
 end
 
--- ─────────────────────────────────────────────
 --  Parsing
--- ─────────────────────────────────────────────
 function Shell:_parseCommand(cmdStr)
 	local s = cmdStr
 	local redirectIn, redirectOut, redirectAppend
@@ -411,9 +401,7 @@ function Shell:_parseCommand(cmdStr)
 	}
 end
 
--- ─────────────────────────────────────────────
 --  Execute
--- ─────────────────────────────────────────────
 function Shell:_executeCommand(cmdStr)
 	local parsed = self:_parseCommand(cmdStr)
 	if not parsed then
@@ -513,9 +501,7 @@ function Shell:_execFromPath(cmd, args, parsed)
 	return 127
 end
 
--- ─────────────────────────────────────────────
 --  LuauVM script execution
--- ─────────────────────────────────────────────
 function Shell:_runScript(path, args, parsed)
 	local content, err = self.vfs:readFileStr(path)
 	if not content then
@@ -557,9 +543,7 @@ function Shell:_runScript(path, args, parsed)
 	return type(result) == "number" and result or 0
 end
 
--- ─────────────────────────────────────────────
 --  Process sandbox (given to every script)
--- ─────────────────────────────────────────────
 function Shell:_makeSandbox(args, parsed)
 	local vfs = self.vfs
 	local gpu = self.gpu
@@ -852,9 +836,7 @@ function Shell:_strBytes(s)
 	return b
 end
 
--- ─────────────────────────────────────────────
 --  Built-in commands
--- ─────────────────────────────────────────────
 function Shell:_buildBuiltins()
 	local B = {}
 	local vfs = function()

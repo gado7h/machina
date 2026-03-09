@@ -1,20 +1,4 @@
--- NovaMachine/Main.lua
--- Root LocalScript — place in StarterPlayerScripts.
---
--- Setup in Roblox:
---   1.  ReplicatedStorage
---         NovaMachine (Folder)
---           Main (this file as a LocalScript)
---           Config (ModuleScript)
---           hardware/  (Folder)
---           firmware/  (Folder)
---           bootloader/(Folder)
---           kernel/    (Folder)
---           userland/  (Folder)
---           pkgmgr/    (Folder)
---           LuauVM     (ModuleScript)
---
--- The computer boots automatically on join (AUTO_POWER = true).
+-- Main.client module
 
 local StarterGui = game:GetService("StarterGui")
 local Players = game:GetService("Players")
@@ -25,17 +9,13 @@ local UserInputService = game:GetService("UserInputService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
--- ─────────────────────────────────────────────
 --  Module imports
--- ─────────────────────────────────────────────
 local NovaMachine = script.Parent
 local Config = require(NovaMachine:WaitForChild("Config"))
 local Motherboard = require(NovaMachine.hardware:WaitForChild("Motherboard"))
 local LuauVM = require(NovaMachine:WaitForChild("LuauVM"))
 
--- ─────────────────────────────────────────────
 --  GUI setup
--- ─────────────────────────────────────────────
 local function setupGUI()
 	local existing = playerGui:FindFirstChild("NovaMachineGui")
 	if existing then
@@ -140,14 +120,12 @@ local function setupGUI()
 	return gui, screen, imgLabel, powerLED
 end
 
--- ─────────────────────────────────────────────
 --  EditableImage — MUST be exactly 320×200
 --
 --  KEY FIX: GPU:flush() calls WritePixels with size Vector2(320,200).
 --  If the EditableImage is any other size (e.g. 1920×1080), the write
 --  only fills the top-left corner and the rest of the image stays black,
 --  making the screen appear completely black.
--- ─────────────────────────────────────────────
 local function createEditableImage(imageLabel)
 	local ei = AssetService:CreateEditableImage({
 		Size = Vector2.new(Config.SCREEN_W, Config.SCREEN_H), -- 320×200
@@ -156,9 +134,7 @@ local function createEditableImage(imageLabel)
 	return ei
 end
 
--- ─────────────────────────────────────────────
 --  Power / Reboot button strip
--- ─────────────────────────────────────────────
 local function addPowerButton(bezelFrame, onPower, onReboot)
 	local btnFrame = Instance.new("Frame")
 	btnFrame.Size = UDim2.fromOffset(120, 30)
@@ -189,9 +165,7 @@ local function addPowerButton(bezelFrame, onPower, onReboot)
 	makeBtn("↺ REBOOT", 64, Color3.fromRGB(60, 40, 10), onReboot)
 end
 
--- ─────────────────────────────────────────────
 --  Power LED colour based on boot stage
--- ─────────────────────────────────────────────
 local function startLEDBlink(led, getMachine)
 	local t = 0
 	RunService.Heartbeat:Connect(function(dt)
@@ -215,9 +189,7 @@ local function startLEDBlink(led, getMachine)
 	end)
 end
 
--- ─────────────────────────────────────────────
 --  HDD activity LED
--- ─────────────────────────────────────────────
 local function addHDDLED(screenFrame, getMachine)
 	local led = Instance.new("Frame")
 	led.Name = "HddLED"
@@ -239,9 +211,7 @@ local function addHDDLED(screenFrame, getMachine)
 	end)
 end
 
--- ─────────────────────────────────────────────
 --  F12 stats overlay
--- ─────────────────────────────────────────────
 local function addStatsOverlay(bezelFrame, getMachine)
 	local overlay = Instance.new("Frame")
 	overlay.Name = "StatsOverlay"
@@ -320,9 +290,7 @@ local function addStatsOverlay(bezelFrame, getMachine)
 	end)
 end
 
--- ─────────────────────────────────────────────
 --  Entrypoint
--- ─────────────────────────────────────────────
 local machine = nil
 local function getMachine()
 	return machine

@@ -1,12 +1,8 @@
--- NovaMachine/Config.lua
--- System-wide constants used by every layer.
--- Place as ModuleScript named "Config" inside ReplicatedStorage.NovaMachine
+-- Config module
 
 local Config = {}
 
--- ─────────────────────────────────────────────
 --  CPU
--- ─────────────────────────────────────────────
 Config.CPU_CLOCK_HZ = 20 -- simulated ticks/second (Roblox-safe)
 Config.CPU_REGISTERS = { -- general-purpose register names
 	"R0",
@@ -35,9 +31,7 @@ Config.CPU_PIPELINE_STAGES = {
 	"WB", -- Fetch Decode RegFetch Execute MemAccess Writeback
 }
 
--- ─────────────────────────────────────────────
 --  Memory (all sizes in bytes)
--- ─────────────────────────────────────────────
 Config.ROM_BASE = 0x00000000
 Config.ROM_SIZE = 0x00010000 -- 64 KB  firmware image
 Config.RAM_BASE = 0x00010000
@@ -51,9 +45,7 @@ Config.USER_SPACE_TOP = 0x00800000
 Config.PAGE_SIZE = 4096 -- 4 KB pages
 Config.MAX_PAGES = math.floor(0x00800000 / 4096)
 
--- ─────────────────────────────────────────────
 --  Display
--- ─────────────────────────────────────────────
 Config.SCREEN_W = 480
 Config.SCREEN_H = 250
 Config.TEXT_COLS = 80
@@ -67,23 +59,17 @@ Config.GLYPH_H = 8
 Config.PAD_X = 1
 Config.PAD_Y = 1
 
--- ─────────────────────────────────────────────
 --  Storage
--- ─────────────────────────────────────────────
 Config.DISK_BLOCK_SIZE = 512 -- bytes per sector
 Config.DISK_BLOCKS = 204800 -- ~100 MB
 Config.FS_MAGIC = "NOVAFS1"
 
--- ─────────────────────────────────────────────
 --  Scheduler
--- ─────────────────────────────────────────────
 Config.SCHED_QUANTUM_MS = 50 -- ms per time slice (Roblox heartbeat granularity)
 Config.MAX_PROCESSES = 64
 Config.MAX_PRIORITY = 39 -- Linux-like nice range -20..+19 mapped 0..39
 
--- ─────────────────────────────────────────────
 --  IRQ Lines
--- ─────────────────────────────────────────────
 Config.IRQ = {
 	TIMER = 0,
 	KEYBOARD = 1,
@@ -95,9 +81,7 @@ Config.IRQ = {
 	ATA = 14,
 }
 
--- ─────────────────────────────────────────────
 --  I/O Ports (virtual)
--- ─────────────────────────────────────────────
 Config.PORT = {
 	PIC_MASTER_CMD = 0x0020,
 	PIC_MASTER_DATA = 0x0021,
@@ -119,9 +103,7 @@ Config.PORT = {
 	PCI_CONFIG_DATA = 0x0CFC,
 }
 
--- ─────────────────────────────────────────────
 --  PCI Device IDs
--- ─────────────────────────────────────────────
 Config.PCI = {
 	{ bus = 0, dev = 0, fn = 0, vendor = 0x8086, device = 0x1237, class = "Host Bridge", subclass = "PCI" },
 	{ bus = 0, dev = 1, fn = 0, vendor = 0x8086, device = 0x7000, class = "ISA Bridge", subclass = "PCI-ISA" },
@@ -130,9 +112,7 @@ Config.PCI = {
 	{ bus = 0, dev = 4, fn = 0, vendor = 0x1AF4, device = 0x1000, class = "Network", subclass = "Ethernet" },
 }
 
--- ─────────────────────────────────────────────
 --  Kernel version string
--- ─────────────────────────────────────────────
 Config.OS_NAME = "NovaOS"
 Config.KERNEL_VERSION = "1.0.0-nova"
 Config.ARCH = "nova32"

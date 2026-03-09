@@ -1,18 +1,4 @@
--- NovaMachine/firmware/BIOS.lua
--- NovaFW v2.1 — BIOS/UEFI-style firmware.
---
--- Performs Power-On Self-Test (POST), builds memory map,
--- detects hardware, then locates and hands off to the bootloader.
---
--- Boot sequence:
---   1. POST  — test CPU registers, RAM, ROM integrity
---   2. PIC   — initialize interrupt controller
---   3. PIT   — set timer frequency
---   4. VGA   — set video mode (80×25 text)
---   5. CMOS  — read RTC, detect RAM size
---   6. PCI   — enumerate PCI bus
---   7. HDD   — detect storage, read MBR
---   8. Hand off to bootloader
+-- BIOS module
 
 local BIOS = {}
 BIOS.__index = BIOS
@@ -31,9 +17,7 @@ function BIOS.new(machine)
 	return self
 end
 
--- ────────────────────────────────────────────
 --  Main POST entry point
--- ────────────────────────────────────────────
 
 function BIOS:run(onComplete)
 	self._onComplete = onComplete
@@ -152,9 +136,7 @@ function BIOS:_post()
 	runSteps(1)
 end
 
--- ────────────────────────────────────────────
 --  POST Steps
--- ────────────────────────────────────────────
 
 function BIOS:_testCPU()
 	local cpu = self.machine.cpu
@@ -319,9 +301,7 @@ function BIOS:_writeMemMapToRAM()
 	end
 end
 
--- ────────────────────────────────────────────
 --  POST Complete → load bootloader
--- ────────────────────────────────────────────
 
 function BIOS:_postDone()
 	local g = self.gpu

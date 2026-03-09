@@ -1,5 +1,4 @@
--- NovaMachine/hardware/RAM.lua
--- DDR5 SDRAM emulation — byte-addressable, with page-granularity dirty tracking.
+-- RAM module
 
 local RAM = {}
 RAM.__index = RAM

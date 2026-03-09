@@ -1,15 +1,4 @@
--- NovaMachine/kernel/ProcessManager.lua
--- Nova Process Manager — PCB, process lifecycle, scheduler.
---
--- Process states:
---   RUNNING  — currently executing on CPU
---   READY    — in run queue, waiting for CPU
---   SLEEPING — blocked, waiting for timer/event
---   ZOMBIE   — terminated, waiting for parent to wait()
---   STOPPED  — suspended by signal
---
--- Scheduler: Multi-level feedback queue (MLFQ) with 4 priority queues.
--- Time quantum: 50ms (one Roblox heartbeat).
+-- ProcessManager module
 
 local PM = {}
 PM.__index = PM
@@ -57,9 +46,7 @@ function PM.new(config, memMgr)
 	return self
 end
 
--- ────────────────────────────────────────────
 --  PCB creation
--- ────────────────────────────────────────────
 
 --- Create a new process.
 --- body: function(process) called as the process coroutine
@@ -151,9 +138,7 @@ function PM:spawnIdle()
 	return pid
 end
 
--- ────────────────────────────────────────────
 --  Coroutine management
--- ────────────────────────────────────────────
 
 function PM:_startCoroutine(pcb)
 	local body = pcb._body
@@ -168,9 +153,7 @@ function PM:_startCoroutine(pcb)
 	pcb._started = true
 end
 
--- ────────────────────────────────────────────
 --  Scheduler (MLFQ)
--- ────────────────────────────────────────────
 
 --- Advance the scheduler by one tick.
 --- Returns the pid that ran, or nil.
@@ -258,9 +241,7 @@ function PM:_dequeue()
 	return nil
 end
 
--- ────────────────────────────────────────────
 --  Process lifecycle
--- ────────────────────────────────────────────
 
 function PM:exit(pid, code)
 	local pcb = self._procs[pid]
@@ -344,9 +325,7 @@ function PM:sendSignal(pid, sig)
 	return true
 end
 
--- ────────────────────────────────────────────
 --  Sleep / wakeup
--- ────────────────────────────────────────────
 
 function PM:sleep(pid, seconds)
 	local pcb = self._procs[pid]
@@ -369,9 +348,7 @@ function PM:wakeup(pid)
 	end
 end
 
--- ────────────────────────────────────────────
 --  Process info
--- ────────────────────────────────────────────
 
 function PM:getProcess(pid)
 	return self._procs[pid]

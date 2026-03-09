@@ -1,6 +1,4 @@
--- NovaMachine/hardware/ROM.lua
--- NOR Flash ROM — contains firmware image. Read-only during normal operation.
--- Flash programming (erase/write) is only possible with special unlock sequence.
+-- ROM module
 
 local ROM = {}
 ROM.__index = ROM

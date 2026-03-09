@@ -1,6 +1,4 @@
--- NovaMachine/hardware/Motherboard.lua
--- NovaBoard Z1 — System integrator.
--- Instantiates all hardware, wires the bus, runs the heartbeat.
+-- Motherboard module
 
 local Motherboard = {}
 Motherboard.__index = Motherboard
@@ -18,9 +16,7 @@ function Motherboard.new(config, editableImage, luauvm)
 	return self
 end
 
--- ─────────────────────────────────────────────
 --  Power On
--- ─────────────────────────────────────────────
 function Motherboard:powerOn()
 	if self._powered then
 		return
@@ -29,7 +25,6 @@ function Motherboard:powerOn()
 	self._uptimeStart = os.clock()
 	self._bootStage = "BIOS"
 
-	-- ── Instantiate hardware ──
 	local Bus_M = require(script.Parent.Bus)
 	local CPU_M = require(script.Parent.CPU)
 	local RAM_M = require(script.Parent.RAM)
@@ -53,7 +48,6 @@ function Motherboard:powerOn()
 	-- Simulated NIC state
 	self.nic = { link = "DOWN", ip = "unassigned", mac = "00:1A:2B:3C:4D:5E" }
 
-	-- ── Register devices on bus ──
 	self.bus:registerDevice("cpu", self.cpu)
 	self.bus:registerDevice("ram", self.ram)
 	self.bus:registerDevice("rom", self.rom)
@@ -61,13 +55,11 @@ function Motherboard:powerOn()
 	self.bus:registerDevice("hdd", self.hdd)
 	self.bus:registerDevice("keyboard", self.keyboard)
 
-	-- ── Memory map ──
 	self.bus:mapMemory(self.config.ROM_BASE, self.config.ROM_SIZE, self.rom, "ROM")
 	self.bus:mapMemory(self.config.RAM_BASE, self.config.RAM_SIZE, self.ram, "RAM")
 	self.bus:mapMemory(self.config.VRAM_BASE, self.config.VRAM_SIZE, self.gpu, "VRAM")
 	self.bus:mapMemory(self.config.MMIO_BASE, 0x1000, self.hdd, "HDD-MMIO")
 
-	-- ── Flash ROM with a minimal firmware stub ──
 	-- Real firmware logic is in BIOS.lua; ROM just needs a non-0xFF first byte.
 	local romStub = {}
 	local header = "NOVAFIRMWARE2.1"
@@ -79,14 +71,11 @@ function Motherboard:powerOn()
 	end
 	self.rom:flash(romStub)
 
-	-- ── Bind keyboard to Roblox input ──
 	-- The keyboard module auto-connects to UserInputService from Roblox
 	-- caller must pass UIS: Motherboard:bindInput(UIS)
 
-	-- ── Start heartbeat ──
 	self:_startHeartbeat()
 
-	-- ── Kick off BIOS ──
 	local BIOS_M = require(script.Parent.Parent.firmware.BIOS)
 	self.bios = BIOS_M.new(self)
 	self.bios:run(function(memMap)
@@ -94,9 +83,7 @@ function Motherboard:powerOn()
 	end)
 end
 
--- ─────────────────────────────────────────────
 --  Heartbeat
--- ─────────────────────────────────────────────
 function Motherboard:_startHeartbeat()
 	local function tick()
 		if not self._powered then
@@ -142,9 +129,7 @@ function Motherboard:_startHeartbeat()
 	task.delay(1 / self.config.CPU_CLOCK_HZ, tick)
 end
 
--- ─────────────────────────────────────────────
 --  Boot chain callbacks
--- ─────────────────────────────────────────────
 function Motherboard:_onBIOSComplete(memMap)
 	self._bootStage = "BOOT"
 	local BL_M = require(script.Parent.Parent.bootloader.Bootloader)
@@ -174,9 +159,7 @@ function Motherboard:_onKernelLoaded(fs, loadAddr, kdata)
 	self._bootStage = "RUNNING"
 end
 
--- ─────────────────────────────────────────────
 --  Input binding
--- ─────────────────────────────────────────────
 function Motherboard:bindInput(UIS)
 	self._inputService = UIS
 	if self.keyboard then
@@ -184,9 +167,7 @@ function Motherboard:bindInput(UIS)
 	end
 end
 
--- ─────────────────────────────────────────────
 --  Reboot
--- ─────────────────────────────────────────────
 function Motherboard:reboot()
 	if self.keyboard then
 		self.keyboard:unbind()
@@ -208,9 +189,7 @@ function Motherboard:reboot()
 	end)
 end
 
--- ─────────────────────────────────────────────
 --  Desktop activation (called by pkgmgr postinst)
--- ─────────────────────────────────────────────
 function Motherboard:activateDesktop()
 	if not self.kernel then
 		return false, "kernel not running"
@@ -277,9 +256,7 @@ function Motherboard:activateDesktop()
 	return true
 end
 
--- ─────────────────────────────────────────────
 --  Stats
--- ─────────────────────────────────────────────
 function Motherboard:getStats()
 	return {
 		powered = self._powered,
