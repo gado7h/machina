@@ -662,6 +662,23 @@ function Shell:_makeSandbox(args, parsed)
 						return false
 					end
 
+					local de = shell.kernel._desktop
+					if de and type(de._input) == "function" then
+						shell:beginForeground("novade", function(ch)
+							if ch == "\3" then
+								shell:endForeground()
+								return
+							end
+							de:_input(ch)
+							de:_draw()
+						end, function()
+							shell.kernel._desktop = nil
+							if shell.gpu then
+								shell.gpu:setMode("TEXT")
+							end
+						end)
+					end
+
 					return true
 				end
 
