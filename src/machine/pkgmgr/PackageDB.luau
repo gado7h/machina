@@ -825,49 +825,75 @@ local function clamp(v, lo, hi)
 	return v
 end
 
+local function pack(a, r, g, b)
+	return a * 16777216 + r * 65536 + g * 256 + b
+end
+
 function DE.new(kernel)
 	local self = setmetatable({}, DE)
 	self.kernel = kernel
 	self.gpu = kernel.gpu
 	self.W = kernel.config.SCREEN_W or 320
 	self.H = kernel.config.SCREEN_H or 200
-	self.cursor = { x = 24, y = 28 }
-	self.settings = { theme = "dark", clock24 = true, wallpaperStrength = 28 }
+	self.cursor = { x = math.floor(self.W * 0.35), y = math.floor(self.H * 0.45) }
+	self.theme = {
+		panel = pack(255, 32, 35, 46),
+		panelText = pack(255, 240, 243, 255),
+		dock = pack(180, 26, 28, 38),
+		dockActive = pack(255, 72, 114, 255),
+		window = pack(255, 244, 246, 252),
+		windowText = pack(255, 34, 38, 52),
+		subtle = pack(255, 95, 103, 126),
+		accent = pack(255, 66, 132, 255),
+		accent2 = pack(255, 124, 84, 255),
+	}
 	self.windows = {}
 	self.focused = nil
-	self.contextMenu = nil
-	self.icons = {
-		{ label = "Files", x = 12, y = 28, launch = function(de) de:_launchFileManager() end },
-		{ label = "Settings", x = 12, y = 56, launch = function(de) de:_launchSettings() end },
-		{ label = "Terminal", x = 12, y = 84, launch = function(de) de:_launchTerminalHelp() end },
-		{ label = "About", x = 12, y = 112, launch = function(de) de:_launchAbout() end },
+	self.apps = {
+		{ id = "files", label = "Files", glyph = "F" },
+		{ id = "browser", label = "Web", glyph = "W" },
+		{ id = "settings", label = "Settings", glyph = "S" },
+		{ id = "about", label = "About", glyph = "i" },
 	}
+	self.timeText = ""
 	return self
 end
 
-function DE:openWindow(opts)
-	local w = {
-		type = opts.type or "window",
-		title = opts.title or "Window",
-		w = clamp(opts.w or 140, 80, self.W - 12),
-		h = clamp(opts.h or 92, 50, self.H - 18),
-		x = opts.x or math.floor((self.W - (opts.w or 140)) / 2),
-		y = opts.y or math.floor((self.H - (opts.h or 92)) / 2),
-		lines = opts.lines,
-		items = opts.items,
-		selected = opts.selected or 1,
-		path = opts.path,
-		entries = opts.entries or {},
-		scroll = opts.scroll or 1,
-	}
-	table.insert(self.windows, w)
-	self.focused = w
-	return w
+function DE:_text(x, y, text, fg, bg)
+	text = tostring(text or "")
+	for i = 1, #text do
+		self.gpu:drawChar(x + (i - 1) * 4, y, text:sub(i, i), fg, bg)
+	end
 end
 
-function DE:closeWindow(win)
+function DE:_open(id)
+	local map = {
+		files = { title = "Files", lines = {"Home", "Documents", "Downloads", "Pictures", "Music"}, w = 200, h = 120 },
+		browser = { title = "Web", lines = {"Nova Browser", "", "No network in this VM.", "Use pkgmgr for software installs."}, w = 210, h = 100 },
+		settings = { title = "Settings", lines = {"Appearance: Yaru", "Theme: Dark", "Animations: On", "Sound: On"}, w = 210, h = 110 },
+		about = { title = "About NovaDE", lines = {"NovaDE 4.0", "Ubuntu-inspired modern shell", "Keyboard: arrows/WASD + Enter", "Ctrl+C exits desktop"}, w = 210, h = 105 },
+	}
+	local app = map[id]
+	if not app then return end
+	local w = {
+		id = id,
+		title = app.title,
+		lines = app.lines,
+		w = app.w,
+		h = app.h,
+		x = math.floor((self.W - app.w) / 2 + (#self.windows * 6)),
+		y = math.floor((self.H - app.h) / 2 + (#self.windows * 4)),
+	}
+	w.x = clamp(w.x, 8, self.W - w.w - 8)
+	w.y = clamp(w.y, 16, self.H - w.h - 20)
+	table.insert(self.windows, w)
+	self.focused = w
+end
+
+function DE:_closeFocused()
+	if not self.focused then return end
 	for i, w in ipairs(self.windows) do
-		if w == win then
+		if w == self.focused then
 			table.remove(self.windows, i)
 			break
 		end
@@ -875,268 +901,141 @@ function DE:closeWindow(win)
 	self.focused = self.windows[#self.windows]
 end
 
-function DE:_drawWallpaper()
-	local t = self:_theme()
-	local strength = self.settings.wallpaperStrength
-	for y = 0, self.H - 1 do
-		local s = y / math.max(1, self.H - 1)
-		local r = math.floor((math.floor(t.bgTop / 65536)) % 256 * (1 - s) + (math.floor(t.bgBottom / 65536)) % 256 * s)
-		local g = math.floor((math.floor(t.bgTop / 256)) % 256 * (1 - s) + (math.floor(t.bgBottom / 256)) % 256 * s)
-		local b = math.floor((t.bgTop) % 256 * (1 - s) + (t.bgBottom) % 256 * s)
-		self.gpu:fillRect(0, y, self.W, 1, 255 * 16777216 + r * 65536 + g * 256 + b)
+function DE:_hitWindow(x, y)
+	for i = #self.windows, 1, -1 do
+		local w = self.windows[i]
+		if x >= w.x and x < w.x + w.w and y >= w.y and y < w.y + w.h then
+			return w, i
+		end
 	end
-	for y = 12, self.H - 18, 16 do
-		for x = 0, self.W - 1, 16 do
-			if ((x + y) / 16) % 2 == 0 then
-				self.gpu:setPixel(x, y, 60 * 16777216 + strength * 65536 + strength * 256 + strength)
+	return nil
+end
+
+function DE:_focus(w, idx)
+	if not w then return end
+	if idx and idx ~= #self.windows then
+		table.remove(self.windows, idx)
+		table.insert(self.windows, w)
+	end
+	self.focused = w
+end
+
+function DE:_click()
+	local wx, idx = self:_hitWindow(self.cursor.x, self.cursor.y)
+	if wx then
+		self:_focus(wx, idx)
+		if self.cursor.y < wx.y + 12 and self.cursor.x > wx.x + wx.w - 12 then
+			self:_closeFocused()
+		end
+		return
+	end
+
+	local dockY = self.H - 18
+	if self.cursor.y >= dockY and self.cursor.y < dockY + 14 then
+		for i, app in ipairs(self.apps) do
+			local bx = 8 + (i - 1) * 22
+			if self.cursor.x >= bx and self.cursor.x < bx + 18 then
+				self:_open(app.id)
+				return
+			end
+		end
+	end
+end
+
+function DE:_drawBackground()
+	for y = 0, self.H - 1 do
+		local t = y / math.max(1, self.H - 1)
+		local r = math.floor(52 + (106 - 52) * t)
+		local g = math.floor(64 + (44 - 64) * t)
+		local b = math.floor(108 + (132 - 108) * t)
+		self.gpu:fillRect(0, y, self.W, 1, pack(255, r, g, b))
+	end
+	for y = 18, self.H - 24, 18 do
+		for x = 0, self.W - 1, 18 do
+			if ((x + y) / 18) % 2 == 0 then
+				self.gpu:setPixel(x, y, pack(72, 255, 255, 255))
 			end
 		end
 	end
 end
 
 function DE:_drawTopBar()
-	local t = self:_theme()
+	local t = self.theme
 	self.gpu:fillRect(0, 0, self.W, 12, t.panel)
 	self:_text(4, 2, "Activities", t.panelText, t.panel)
-	self:_text(44, 2, "NovaDE", t.accent, t.panel)
-	local tm = self.settings.clock24 and os.date("%H:%M") or os.date("%I:%M %p")
-	self:_text(self.W - (#tm * 4) - 4, 2, tm, t.panelText, t.panel)
+	self:_text(48, 2, "NovaDE", t.accent, t.panel)
+	self.timeText = os.date("%a %H:%M")
+	self:_text(self.W - (#self.timeText * 4) - 4, 2, self.timeText, t.panelText, t.panel)
 end
 
 function DE:_drawDock()
-	local t = self:_theme()
-	local y = self.H - 14
-	self.gpu:fillRect(0, y, self.W, 14, t.panel)
-	self:_button(4, y + 2, 34, 10, "Apps", false)
-	self:_button(42, y + 2, 38, 10, "Files", self.focused and self.focused.type == "filemanager")
-	self:_button(84, y + 2, 50, 10, "Settings", self.focused and self.focused.type == "settings")
-	self:_button(138, y + 2, 42, 10, "Term", self.focused and self.focused.type == "terminal")
-end
-
-function DE:_drawIcons()
-	local t = self:_theme()
-	for _, ic in ipairs(self.icons) do
-		local selected = self.cursor.x >= ic.x and self.cursor.x < ic.x + 20 and self.cursor.y >= ic.y and self.cursor.y < ic.y + 20
-		self.gpu:fillRect(ic.x, ic.y, 20, 20, selected and t.accent or t.panel)
-		self:_text(ic.x + 4, ic.y + 6, ic.label:sub(1,1), t.panelText, selected and t.accent or t.panel)
-		self:_text(ic.x + 24, ic.y + 6, ic.label, t.windowText, 0)
+	local t = self.theme
+	local y = self.H - 18
+	self.gpu:fillRect(6, y, math.min(self.W - 12, #self.apps * 22 + 8), 14, t.dock)
+	for i, app in ipairs(self.apps) do
+		local x = 8 + (i - 1) * 22
+		local active = self.focused and self.focused.id == app.id
+		self.gpu:fillRect(x, y + 1, 18, 12, active and t.dockActive or pack(220, 234, 236, 244))
+		self:_text(x + 7, y + 3, app.glyph, active and pack(255,255,255,255) or pack(255,32,35,46), active and t.dockActive or pack(220, 234, 236, 244))
 	end
 end
 
-function DE:_drawWindow(win, focused)
-	local t = self:_theme()
-	local x, y, w, h = win.x, win.y, win.w, win.h
-	local body = t.window
-	self.gpu:fillRect(x + 2, y + 2, w, h, 80 * 16777216)
-	self.gpu:fillRect(x, y, w, h, body)
-	self.gpu:fillRect(x, y, w, 12, focused and t.accent or t.panel)
-	self:_text(x + 3, y + 2, win.title, focused and 0xFFFFFFFF or t.panelText, focused and t.accent or t.panel)
-	self:_text(x + w - 8, y + 2, "X", 0xFFFFFFFF, focused and t.accent or t.panel)
-
-	if win.type == "filemanager" then
-		self:_text(x + 3, y + 14, "Path: " .. tostring(win.path), t.windowText, body)
-		local vis = math.max(1, math.floor((h - 30) / 9))
-		if win.selected < win.scroll then win.scroll = win.selected end
-		if win.selected >= win.scroll + vis then win.scroll = win.selected - vis + 1 end
-		for i = 0, vis - 1 do
-			local idx = win.scroll + i
-			local e = win.entries[idx]
-			if not e then break end
-			local yy = y + 24 + i * 9
-			local isSel = idx == win.selected
-			if isSel then self.gpu:fillRect(x + 2, yy - 1, w - 4, 9, t.accent) end
-			local prefix = e.isDir and "[D] " or "[F] "
-			local fg = isSel and 0xFFFFFFFF or t.windowText
-			self:_text(x + 4, yy, prefix .. e.name, fg, isSel and t.accent or body)
-		end
-		self:_text(x + 4, y + h - 10, "Enter open, Backspace up, n/N new", t.muted, body)
-	elseif win.type == "settings" then
-		self:_text(x + 4, y + 15, "GNOME-like controls", t.windowText, body)
-		for i, name in ipairs(win.items or {}) do
-			local yy = y + 28 + (i - 1) * 10
-			local sel = i == win.selected
-			if sel then self.gpu:fillRect(x + 2, yy - 1, w - 4, 9, t.accent) end
-			local value = ""
-			if name == "Theme" then value = self.settings.theme end
-			if name == "Clock 24h" then value = self.settings.clock24 and "on" or "off" end
-			if name == "Wallpaper intensity" then value = tostring(self.settings.wallpaperStrength) end
-			self:_text(x + 4, yy, name .. ": " .. value, sel and 0xFFFFFFFF or t.windowText, sel and t.accent or body)
-		end
-		self:_text(x + 4, y + h - 10, "Use arrows + Enter", t.muted, body)
-	else
-		local lines = win.lines or {}
-		for i, ln in ipairs(lines) do
-			local yy = y + 16 + (i - 1) * 9
-			if yy + 8 >= y + h - 2 then break end
-			self:_text(x + 4, yy, ln, t.windowText, body)
+function DE:_drawWindow(w, focused)
+	local t = self.theme
+	self.gpu:fillRect(w.x + 2, w.y + 2, w.w, w.h, pack(70, 0, 0, 0))
+	self.gpu:fillRect(w.x, w.y, w.w, w.h, t.window)
+	self.gpu:fillRect(w.x, w.y, w.w, 12, focused and t.accent or pack(255, 210, 214, 226))
+	self:_text(w.x + 4, w.y + 2, w.title, focused and pack(255,255,255,255) or t.windowText, focused and t.accent or pack(255, 210, 214, 226))
+	self:_text(w.x + w.w - 8, w.y + 2, "X", focused and pack(255,255,255,255) or t.windowText, focused and t.accent or pack(255, 210, 214, 226))
+	for i, line in ipairs(w.lines) do
+		local yy = w.y + 18 + (i - 1) * 10
+		if yy + 8 < w.y + w.h - 4 then
+			self:_text(w.x + 6, yy, line, t.windowText, t.window)
 		end
 	end
 end
 
-function DE:_drawContextMenu()
-	local m = self.contextMenu
-	if not m then return end
-	local t = self:_theme()
-	self.gpu:fillRect(m.x, m.y, m.w, m.h, t.panel)
-	self.gpu:fillRect(m.x, m.y, m.w, 1, t.accent)
-	for i, item in ipairs(m.items) do
-		local yy = m.y + 3 + (i - 1) * 10
-		local sel = i == m.selected
-		if sel then self.gpu:fillRect(m.x + 1, yy - 1, m.w - 2, 9, t.accent) end
-		self:_text(m.x + 3, yy, item, sel and 0xFFFFFFFF or t.panelText, sel and t.accent or t.panel)
-	end
-end
-
-function DE:_hitTestIcon(x, y)
-	for _, ic in ipairs(self.icons) do
-		if x >= ic.x and x < ic.x + 20 and y >= ic.y and y < ic.y + 20 then return ic end
-	end
-	return nil
-end
-
-function DE:_hitTestWindow(x, y)
-	for i = #self.windows, 1, -1 do
-		local w = self.windows[i]
-		if x >= w.x and x < w.x + w.w and y >= w.y and y < w.y + w.h then return w, i end
-	end
-	return nil
-end
-
-function DE:_focusWindow(win, idx)
-	if not win then return end
-	if idx and idx ~= #self.windows then
-		table.remove(self.windows, idx)
-		table.insert(self.windows, win)
-	end
-	self.focused = win
-end
-
-function DE:_desktopClick()
-	if self.contextMenu then
-		self:_activateContextMenu()
-		return
-	end
-
-	local wx, idx = self:_hitTestWindow(self.cursor.x, self.cursor.y)
-	if wx then
-		self:_focusWindow(wx, idx)
-		if self.cursor.y < wx.y + 12 and self.cursor.x > wx.x + wx.w - 12 then
-			self:closeWindow(wx)
-		end
-		return
-	end
-
-	if self.cursor.y >= self.H - 14 then
-		if self.cursor.x < 40 then
-			self:_openContextMenu(); return
-		elseif self.cursor.x < 82 then
-			self:_launchFileManager(); return
-		elseif self.cursor.x < 136 then
-			self:_launchSettings(); return
-		elseif self.cursor.x < 182 then
-			self:_launchTerminalHelp(); return
-		end
-	end
-
-	local ic = self:_hitTestIcon(self.cursor.x, self.cursor.y)
-	if ic then
-		ic.launch(self)
-		return
-	end
-
-	self.focused = nil
+function DE:_drawCursor()
+	local x, y = math.floor(self.cursor.x), math.floor(self.cursor.y)
+	self.gpu:fillRect(x, y, 1, 9, pack(255,255,255,255))
+	self.gpu:fillRect(x, y, 7, 1, pack(255,255,255,255))
+	self.gpu:fillRect(x + 1, y + 1, 1, 7, pack(255,16,18,22))
+	self.gpu:fillRect(x + 1, y + 1, 5, 1, pack(255,16,18,22))
 end
 
 function DE:_draw()
-	self:_drawWallpaper()
+	self:_drawBackground()
 	self:_drawTopBar()
 	self:_drawDock()
-	self:_drawIcons()
 	for i, w in ipairs(self.windows) do
 		self:_drawWindow(w, i == #self.windows)
 	end
-	self:_drawContextMenu()
 	self:_drawCursor()
 	self.gpu:flush()
 end
 
 function DE:_input(ch)
-	if ch == "\3" then return end
-	if ch == "[LEFT]" then self.cursor.x = clamp(self.cursor.x - 4, 0, self.W - 2) end
-	if ch == "[RIGHT]" then self.cursor.x = clamp(self.cursor.x + 4, 0, self.W - 2) end
-	if ch == "[UP]" then self.cursor.y = clamp(self.cursor.y - 4, 12, self.H - 6) end
-	if ch == "[DOWN]" then self.cursor.y = clamp(self.cursor.y + 4, 12, self.H - 6) end
-	if ch == "a" then self.cursor.x = clamp(self.cursor.x - 4, 0, self.W - 2) end
-	if ch == "d" then self.cursor.x = clamp(self.cursor.x + 4, 0, self.W - 2) end
-	if ch == "w" then self.cursor.y = clamp(self.cursor.y - 4, 12, self.H - 6) end
-	if ch == "s" then self.cursor.y = clamp(self.cursor.y + 4, 12, self.H - 6) end
-
-	if self.contextMenu then
-		if ch == "[UP]" then self.contextMenu.selected = math.max(1, self.contextMenu.selected - 1) end
-		if ch == "[DOWN]" then self.contextMenu.selected = math.min(#self.contextMenu.items, self.contextMenu.selected + 1) end
-		if ch == "\n" or ch == "\r" then self:_activateContextMenu() end
-		if ch == "\27" then self.contextMenu = nil end
-		return
-	end
-
-	if ch == "m" or ch == "M" then self:_openContextMenu(); return end
-	if ch == "\n" or ch == "\r" then self:_desktopClick(); return end
-	if ch == "\t" then
-		if #self.windows > 1 then
-			local top = table.remove(self.windows, #self.windows)
-			table.insert(self.windows, 1, top)
-			self.focused = self.windows[#self.windows]
-		end
-		return
-	end
-	if ch == "\27" then
-		self.contextMenu = nil
-		return
-	end
-	if self:_handleWindowInput(ch) then return end
+	if ch == "[LEFT]" or ch == "a" then self.cursor.x = clamp(self.cursor.x - 4, 0, self.W - 2) end
+	if ch == "[RIGHT]" or ch == "d" then self.cursor.x = clamp(self.cursor.x + 4, 0, self.W - 2) end
+	if ch == "[UP]" or ch == "w" then self.cursor.y = clamp(self.cursor.y - 4, 12, self.H - 8) end
+	if ch == "[DOWN]" or ch == "s" then self.cursor.y = clamp(self.cursor.y + 4, 12, self.H - 8) end
+	if ch == "\n" or ch == "\r" then self:_click() end
+	if ch == "\27" then self:_closeFocused() end
+	if ch == "1" then self:_open("files") end
+	if ch == "2" then self:_open("browser") end
+	if ch == "3" then self:_open("settings") end
+	if ch == "4" then self:_open("about") end
 end
+
 function DE:start()
-	if not self.gpu then return false, "GPU unavailable" end
-	self.gpu:setMode("PIXEL")
-	self:_draw()
-
-	local kbd = self.kernel.keyboard
-	if not kbd then return true end
-
-	local function poll()
-		if self.kernel._desktop ~= self then return end
-		while true do
-			local ch = kbd:readChar()
-			if not ch then break end
-			self:_input(ch)
-		end
-		self:_draw()
-		task.delay(0.03, poll)
+	if not self.gpu then
+		return false, "GPU unavailable"
 	end
-	task.delay(0.03, poll)
+	self.gpu:setMode("PIXEL")
+	self:_open("about")
+	self:_draw()
 	return true
 end
-
-local function loadPart(kernel, path)
-	local src = kernel.vfs:readFileStr(path)
-	if not src then error("missing NovaDE part: " .. path) end
-	local vm = kernel.machine and kernel.machine.luauvm
-	if not vm then error("LuauVM unavailable") end
-	local fn = vm(src, false, {
-		string = string,
-		math = math,
-		table = table,
-		ipairs = ipairs,
-		pairs = pairs,
-		tostring = tostring,
-		type = type,
-		os = os,
-	})
-	return fn()
-end
-
-loadPart(kernel, "/usr/lib/novade/ui.lua")(DE)
-loadPart(kernel, "/usr/lib/novade/apps.lua")(DE)
 
 return DE
 ]],
