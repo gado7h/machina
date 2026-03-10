@@ -653,12 +653,17 @@ function Shell:_makeSandbox(args, parsed)
 			-- Host hooks
 			if cmd == "__host_activate_desktop__" then
 				if shell.kernel.machine and shell.kernel.machine.activateDesktop then
-					local ok, err = pcall(function()
-						shell.kernel.machine:activateDesktop()
+					local ok, started, startErr = pcall(function()
+						return shell.kernel.machine:activateDesktop()
 					end)
 
 					if not ok then
-						shell.gpu:println("desktop activation error: " .. tostring(err), 0x0C)
+						shell.gpu:println("desktop activation error: " .. tostring(started), 0x0C)
+						return false
+					end
+
+					if not started then
+						shell.gpu:println("desktop activation error: " .. tostring(startErr), 0x0C)
 						return false
 					end
 
