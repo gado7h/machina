@@ -160,6 +160,10 @@ function GPU.new(config, editableImage)
 	self._cursorRow = 0
 	self._cursorCol = 0
 	self._cursorVisible = true
+	self._lastCursor = { col = 0, row = 0 }
+
+	self._dirtyCells = {}
+	self._dirtyCellList = {}
 
 	-- Pixel framebuffer: flat array [0 .. W*H-1] of packed ARGB integers
 	self._framebuf = {}
@@ -178,6 +182,29 @@ function GPU.new(config, editableImage)
 	self.stats = { flushes = 0, textWrites = 0, pixelWrites = 0 }
 
 	return self
+end
+
+
+local function markCellDirty(self, col, row)
+	if col < 0 or col >= self.config.TEXT_COLS then
+		return
+	end
+	if row < 0 or row >= self.config.TEXT_ROWS then
+		return
+	end
+	local idx = row * self.config.TEXT_COLS + col
+	if not self._dirtyCells[idx] then
+		self._dirtyCells[idx] = true
+		table.insert(self._dirtyCellList, idx)
+	end
+end
+
+local function markAllCellsDirty(self)
+	for row = 0, self.config.TEXT_ROWS - 1 do
+		for col = 0, self.config.TEXT_COLS - 1 do
+			markCellDirty(self, col, row)
+		end
+	end
 end
 
 --  Bus / VRAM interface
@@ -233,6 +260,9 @@ function GPU:clearScreen(attr)
 	end
 	self._cursorRow = 0
 	self._cursorCol = 0
+	self._lastCursor.col = 0
+	self._lastCursor.row = 0
+	markAllCellsDirty(self)
 	self._dirty = true
 end
 
@@ -244,10 +274,17 @@ function GPU:putChar(col, row, ch, attr)
 		return
 	end
 	local idx = row * self.config.TEXT_COLS + col
+	local newChar = (type(ch) == "string") and string.byte(ch, 1) or ch
+	local newAttr = attr or 0x07
+	local cur = self._textBuf[idx]
+	if cur and cur.char == newChar and cur.attr == newAttr then
+		return
+	end
 	self._textBuf[idx] = {
-		char = (type(ch) == "string") and string.byte(ch, 1) or ch,
-		attr = attr or 0x07,
+		char = newChar,
+		attr = newAttr,
 	}
+	markCellDirty(self, col, row)
 	self._dirty = true
 	self.stats.textWrites = self.stats.textWrites + 1
 end
@@ -303,11 +340,15 @@ function GPU:_scrollUp()
 	for col = 0, cols - 1 do
 		self._textBuf[(rows - 1) * cols + col] = { char = 32, attr = 0x07 }
 	end
+	markAllCellsDirty(self)
 end
 
 function GPU:moveCursor(col, row)
+	markCellDirty(self, self._cursorCol, self._cursorRow)
 	self._cursorCol = math.max(0, math.min(col, self.config.TEXT_COLS - 1))
 	self._cursorRow = math.max(0, math.min(row, self.config.TEXT_ROWS - 1))
+	markCellDirty(self, self._cursorCol, self._cursorRow)
+	self._dirty = true
 end
 
 function GPU:getCursor()
@@ -315,6 +356,8 @@ function GPU:getCursor()
 end
 
 function GPU:toggleCursor()
+	markCellDirty(self, self._lastCursor.col, self._lastCursor.row)
+	markCellDirty(self, self._cursorCol, self._cursorRow)
 	self._cursorVisible = not self._cursorVisible
 	self._dirty = true
 end
@@ -425,17 +468,19 @@ end
 
 function GPU:_renderText()
 	local cols = self.config.TEXT_COLS
-	local rows = self.config.TEXT_ROWS
 
-	for row = 0, rows - 1 do
-		for col = 0, cols - 1 do
-			local cell = self._textBuf[row * cols + col] or { char = 32, attr = 0x07 }
-			local fg = PALETTE[cell.attr % 16] or 0xFFAAAAAA
-			local bg = PALETTE[math.floor(cell.attr / 16) % 16] or 0xFF000000
-			self:drawChar(col * self.CW, row * self.CH, cell.char, fg, bg)
-		end
+	for _, idx in ipairs(self._dirtyCellList) do
+		local row = math.floor(idx / cols)
+		local col = idx % cols
+		local cell = self._textBuf[idx] or { char = 32, attr = 0x07 }
+		local fg = PALETTE[cell.attr % 16] or 0xFFAAAAAA
+		local bg = PALETTE[math.floor(cell.attr / 16) % 16] or 0xFF000000
+		self:drawChar(col * self.CW, row * self.CH, cell.char, fg, bg)
+		self._dirtyCells[idx] = nil
 	end
+	self._dirtyCellList = {}
 
+	markCellDirty(self, self._lastCursor.col, self._lastCursor.row)
 	if self._cursorVisible then
 		local cx = self._cursorCol * self.CW
 		local cy = self._cursorRow * self.CH + (self.CH - 1)
@@ -443,6 +488,8 @@ function GPU:_renderText()
 			self:setPixel(cx + i, cy, 0xFFAAAAAA)
 		end
 	end
+	self._lastCursor.col = self._cursorCol
+	self._lastCursor.row = self._cursorRow
 end
 
 function GPU:getStats()

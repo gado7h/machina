@@ -547,335 +547,121 @@ return 0
 		},
 	},
 
-	--  desktop
+	--  ide
 	{
-		name = "desktop",
-		version = "3.0.0",
-		desc = "NovaDE graphical desktop environment",
+		name = "ide",
+		version = "1.0.0",
+		desc = "NovaIDE runtime for building apps and GUI environments",
 		deps = { "coreutils", "lua-stdlib" },
-		size = 18000,
+		size = 7200,
 		files = {
-			["/etc/desktop.conf"] = [[
-DESKTOP=novade
-WM=novawm
-TERMINAL=nterm
+			["/etc/ide.conf"] = [[
+IDE=novaide
+IDE_THEME=midnight
 ]],
 
-			["/usr/lib/novade/ui.lua"] = [[
-return function(DE)
-	local function pack(a,r,g,b)
-		return a * 16777216 + r * 65536 + g * 256 + b
-	end
-
-	function DE:_theme()
-		if self.settings.theme == "light" then
-			return {
-				bgTop = pack(255, 206, 220, 244),
-				bgBottom = pack(255, 170, 188, 220),
-				panel = pack(255, 240, 242, 250),
-				panelText = pack(255, 30, 34, 48),
-				window = pack(255, 250, 250, 252),
-				windowText = pack(255, 20, 22, 30),
-				accent = pack(255, 52, 120, 255),
-				muted = pack(255, 110, 120, 144),
-			}
-		end
-		return {
-			bgTop = pack(255, 40, 46, 66),
-			bgBottom = pack(255, 22, 28, 42),
-			panel = pack(255, 18, 20, 28),
-			panelText = pack(255, 220, 224, 236),
-			window = pack(255, 30, 34, 48),
-			windowText = pack(255, 224, 230, 244),
-			accent = pack(255, 74, 160, 255),
-			muted = pack(255, 120, 130, 156),
-		}
-	end
-
-	function DE:_text(x, y, text, fg, bg)
-		text = tostring(text or "")
-		for i = 1, #text do
-			self.gpu:drawChar(x + (i - 1) * 4, y, text:sub(i, i), fg, bg)
-		end
-	end
-
-	function DE:_button(x, y, w, h, label, focused)
-		local t = self:_theme()
-		local bg = focused and t.accent or t.panel
-		self.gpu:fillRect(x, y, w, h, bg)
-		local tx = x + math.max(2, math.floor((w - #label * 4) / 2))
-		local ty = y + math.max(1, math.floor((h - 8) / 2))
-		self:_text(tx, ty, label, focused and pack(255,255,255,255) or t.panelText, bg)
-	end
-
-	function DE:_drawCursor()
-		local c = self.cursor
-		local x, y = math.floor(c.x), math.floor(c.y)
-		local white = pack(255,255,255,255)
-		local black = pack(255,16,18,22)
-		self.gpu:fillRect(x, y, 1, 9, white)
-		self.gpu:fillRect(x, y, 7, 1, white)
-		self.gpu:fillRect(x + 1, y + 1, 1, 7, black)
-		self.gpu:fillRect(x + 1, y + 1, 5, 1, black)
-	end
-end
-]],
-
-			["/usr/lib/novade/apps.lua"] = [[
-return function(DE)
-	local function splitPath(path)
-		local parts = {}
-		for seg in tostring(path):gmatch("[^/]+") do table.insert(parts, seg) end
-		return parts
-	end
-
-	local function parent(path)
-		if path == "/" then return "/" end
-		local parts = splitPath(path)
-		table.remove(parts)
-		if #parts == 0 then return "/" end
-		return "/" .. table.concat(parts, "/")
-	end
-
-	function DE:_launchTerminalHelp()
-		self:openWindow({
-			type = "terminal",
-			title = "Terminal",
-			w = 190,
-			h = 100,
-			lines = {
-				"Open shell and run:",
-				"  startx",
-				"  pkgmgr list",
-				"  nano notes.txt",
-				"  tictactoe",
-			}
-		})
-	end
-
-	function DE:_launchSettings()
-		self:openWindow({
-			type = "settings",
-			title = "Settings",
-			w = 200,
-			h = 112,
-			selected = 1,
-			items = { "Theme", "Clock 24h", "Wallpaper intensity" },
-		})
-	end
-
-	function DE:_launchFileManager(path)
-		local startPath = path or "/home"
-		if not self.kernel.vfs:exists(startPath) then startPath = "/" end
-		self:openWindow({
-			type = "filemanager",
-			title = "Files",
-			w = 232,
-			h = 136,
-			path = startPath,
-			selected = 1,
-			scroll = 1,
-			entries = {},
-		})
-		self:_refreshFocusedFileManager()
-	end
-
-	function DE:_launchAbout()
-		self:openWindow({
-			type = "about",
-			title = "About NovaDE",
-			w = 184,
-			h = 90,
-			lines = {
-				"NovaDE 3.0",
-				"Keyboard desktop shell",
-				"Arrows/WASD move pointer",
-				"Enter = click, M = menu",
-			}
-		})
-	end
-
-	function DE:_refreshFocusedFileManager()
-		local win = self.focused
-		if not win or win.type ~= "filemanager" then return end
-		local list = self.kernel.vfs:listDir(win.path) or {}
-		table.sort(list, function(a,b)
-			if a.isDir ~= b.isDir then return a.isDir end
-			return a.name < b.name
-		end)
-		win.entries = list
-		if #list == 0 then
-			win.selected = 1
-		else
-			if win.selected < 1 then win.selected = 1 end
-			if win.selected > #list then win.selected = #list end
-		end
-	end
-
-	function DE:_createInFocusedFileManager(kind)
-		local win = self.focused
-		if not win or win.type ~= "filemanager" then return end
-		win._newCounter = (win._newCounter or 0) + 1
-		if kind == "dir" then
-			local name = string.format("NewFolder%d", win._newCounter)
-			self.kernel.vfs:mkdir(win.path .. "/" .. name)
-		else
-			local name = string.format("NewFile%d.txt", win._newCounter)
-			self.kernel.vfs:writeFileStr(win.path .. "/" .. name, "")
-		end
-		self:_refreshFocusedFileManager()
-	end
-
-	function DE:_openContextMenu()
-		self.contextMenu = {
-			x = math.min(self.W - 88, math.max(0, self.cursor.x)),
-			y = math.min(self.H - 58, math.max(12, self.cursor.y)),
-			w = 88,
-			h = 58,
-			selected = 1,
-			items = {"New File", "New Folder", "Refresh"},
-		}
-	end
-
-	function DE:_activateContextMenu()
-		local menu = self.contextMenu
-		if not menu then return end
-		local item = menu.items[menu.selected]
-		if item == "New File" then
-			if self.focused and self.focused.type == "filemanager" then
-				self:_createInFocusedFileManager("file")
-			else
-				self.kernel.vfs:writeFileStr("/home/DesktopFile.txt", "")
-			end
-		elseif item == "New Folder" then
-			if self.focused and self.focused.type == "filemanager" then
-				self:_createInFocusedFileManager("dir")
-			else
-				self.kernel.vfs:mkdir("/home/DesktopFolder")
-			end
-		elseif item == "Refresh" then
-			self:_refreshFocusedFileManager()
-		end
-		self.contextMenu = nil
-	end
-
-	function DE:_handleWindowInput(ch)
-		local win = self.focused
-		if not win then return false end
-
-		if ch == "x" or ch == "X" then
-			self:closeWindow(win)
-			return true
-		end
-
-		if win.type == "settings" then
-			if ch == "[UP]" then win.selected = math.max(1, win.selected - 1); return true end
-			if ch == "[DOWN]" then win.selected = math.min(#win.items, win.selected + 1); return true end
-			if ch == "[LEFT]" or ch == "[RIGHT]" or ch == "\n" or ch == "\r" then
-				if win.selected == 1 then
-					self.settings.theme = (self.settings.theme == "dark") and "light" or "dark"
-				elseif win.selected == 2 then
-					self.settings.clock24 = not self.settings.clock24
-				elseif win.selected == 3 then
-					if ch == "[LEFT]" then
-						self.settings.wallpaperStrength = math.max(6, self.settings.wallpaperStrength - 4)
-					else
-						self.settings.wallpaperStrength = math.min(80, self.settings.wallpaperStrength + 4)
-					end
-				end
-				return true
-			end
-		end
-
-		if win.type == "filemanager" then
-			if ch == "[UP]" then win.selected = math.max(1, win.selected - 1); return true end
-			if ch == "[DOWN]" then win.selected = math.min(math.max(#win.entries,1), win.selected + 1); return true end
-			if ch == "\b" or ch == "[LEFT]" then
-				win.path = parent(win.path)
-				win.selected = 1
-				self:_refreshFocusedFileManager()
-				return true
-			end
-			if ch == "n" then self:_createInFocusedFileManager("file"); return true end
-			if ch == "N" then self:_createInFocusedFileManager("dir"); return true end
-			if ch == "\n" or ch == "\r" or ch == "[RIGHT]" then
-				local e = win.entries[win.selected]
-				if e and e.isDir then
-					local base = (win.path == "/") and "" or win.path
-					win.path = base .. "/" .. e.name
-					win.selected = 1
-					self:_refreshFocusedFileManager()
-				end
-				return true
-			end
-		end
-
-		return false
-	end
-end
-]],
-
-			["/usr/lib/novade/init.lua"] = [[
-local DE = {}
-DE.__index = DE
-
-local function clamp(v, lo, hi)
-	if v < lo then return lo end
-	if v > hi then return hi end
-	return v
-end
+			["/usr/lib/novaide/init.lua"] = [[
+local IDE = {}
+IDE.__index = IDE
 
 local function rgba(r, g, b)
 	return 255 * 16777216 + r * 65536 + g * 256 + b
 end
 
-function DE.new(kernel)
-	local self = setmetatable({}, DE)
+function IDE.new(kernel)
+	local self = setmetatable({}, IDE)
 	self.kernel = kernel
 	self.gpu = kernel.gpu
-	self.W = kernel.config.SCREEN_W or 320
-	self.H = kernel.config.SCREEN_H or 200
-	self.cursor = { x = 24, y = 24 }
+	self.W = kernel.config.SCREEN_W
+	self.H = kernel.config.SCREEN_H
+	self.cursor = { x = 0, y = 1 }
+	self.lines = {
+		"-- Welcome to NovaIDE",
+		"-- Build GUIs, shells, and desktop environments.",
+		"local app = {}",
+		"function app.run(kernel)",
+		"\tprint('hello from your app')",
+		"end",
+		"return app",
+	}
 	return self
 end
 
-function DE:_text(x, y, text, fg, bg)
+function IDE:_text(x, y, text, fg, bg)
 	for i = 1, #text do
 		self.gpu:drawChar(x + (i - 1) * 4, y, text:sub(i, i), fg, bg)
 	end
 end
 
-function DE:_draw()
+function IDE:_draw()
 	local W, H = self.W, self.H
-	self.gpu:fillRect(0, 0, W, H, rgba(25, 31, 45))
-	self.gpu:fillRect(0, 0, W, 12, rgba(18, 20, 30))
-	self:_text(4, 2, "NovaDE", rgba(90, 170, 255), rgba(18, 20, 30))
-	self:_text(W - 72, 2, os.date("%H:%M"), rgba(220, 224, 236), rgba(18, 20, 30))
+	self.gpu:fillRect(0, 0, W, H, rgba(16, 19, 29))
+	self.gpu:fillRect(0, 0, W, 12, rgba(26, 33, 52))
+	self:_text(4, 2, "NovaIDE 1.0", rgba(150, 200, 255), rgba(26, 33, 52))
+	self:_text(120, 2, "Ctrl+S save | Ctrl+R run | Ctrl+C exit", rgba(214, 222, 240), rgba(26, 33, 52))
 
-	self.gpu:fillRect(10, 20, W - 20, H - 40, rgba(34, 40, 58))
-	self:_text(18, 30, "Desktop loaded", rgba(240, 244, 255), rgba(34, 40, 58))
-	self:_text(18, 42, "Use arrows/WASD to move cursor", rgba(190, 198, 220), rgba(34, 40, 58))
-	self:_text(18, 54, "Ctrl+C to exit desktop", rgba(190, 198, 220), rgba(34, 40, 58))
+	self.gpu:fillRect(0, 12, 44, H - 12, rgba(22, 26, 39))
+	self:_text(4, 16, "Explorer", rgba(235, 238, 248), rgba(22, 26, 39))
+	self:_text(4, 28, "project.lua", rgba(180, 200, 232), rgba(22, 26, 39))
+	self:_text(4, 38, "bundle.lua", rgba(160, 170, 192), rgba(22, 26, 39))
 
-	self.gpu:fillRect(0, H - 14, W, 14, rgba(18, 20, 30))
-	self:_text(6, H - 12, "Apps", rgba(235, 238, 248), rgba(18, 20, 30))
-	self:_text(34, H - 12, "Files", rgba(235, 238, 248), rgba(18, 20, 30))
-	self:_text(66, H - 12, "Settings", rgba(235, 238, 248), rgba(18, 20, 30))
+	self.gpu:fillRect(44, 12, W - 44, H - 12, rgba(13, 15, 23))
+	for i = 1, #self.lines do
+		self:_text(50, 14 + (i - 1) * 10, self.lines[i], rgba(226, 230, 242), rgba(13, 15, 23))
+	end
 
-	local x, y = math.floor(self.cursor.x), math.floor(self.cursor.y)
-	self.gpu:fillRect(x, y, 1, 9, rgba(255, 255, 255))
-	self.gpu:fillRect(x, y, 7, 1, rgba(255, 255, 255))
+	self.gpu:fillRect(0, H - 14, W, 14, rgba(26, 33, 52))
+	self:_text(4, H - 12, "F1 help | Save: /home/user/novaide/project.lua", rgba(210, 220, 238), rgba(26, 33, 52))
+
+	local x = 50 + (self.cursor.x * 4)
+	local y = 14 + ((self.cursor.y - 1) * 10)
+	self.gpu:fillRect(x, y + 8, 4, 1, rgba(255, 255, 255))
 	self.gpu:flush()
 end
 
-function DE:_input(ch)
-	if ch == "[LEFT]" or ch == "a" then self.cursor.x = clamp(self.cursor.x - 4, 0, self.W - 2) end
-	if ch == "[RIGHT]" or ch == "d" then self.cursor.x = clamp(self.cursor.x + 4, 0, self.W - 2) end
-	if ch == "[UP]" or ch == "w" then self.cursor.y = clamp(self.cursor.y - 4, 12, self.H - 6) end
-	if ch == "[DOWN]" or ch == "s" then self.cursor.y = clamp(self.cursor.y + 4, 12, self.H - 6) end
+function IDE:_saveFile()
+	local path = "/home/user/novaide/project.lua"
+	if not self.kernel.vfs:exists("/home/user/novaide") then
+		self.kernel.vfs:mkdir("/home/user/novaide")
+	end
+	self.kernel.vfs:writeFileStr(path, table.concat(self.lines, "\n") .. "\n")
 end
 
-function DE:start()
+function IDE:_runFile()
+	self:_saveFile()
+	self.kernel.gpu:println("[novaide] running /home/user/novaide/project.lua", 0x0A)
+end
+
+function IDE:_input(ch)
+	if ch == "\19" then -- Ctrl+S
+		self:_saveFile()
+		return
+	end
+	if ch == "\18" then -- Ctrl+R
+		self:_runFile()
+		return
+	end
+	if ch == "\n" or ch == "\r" then
+		table.insert(self.lines, "")
+		self.cursor.y = #self.lines
+		self.cursor.x = 0
+		return
+	end
+	if ch == "\b" then
+		local line = self.lines[self.cursor.y] or ""
+		if #line > 0 then
+			self.lines[self.cursor.y] = line:sub(1, #line - 1)
+			self.cursor.x = math.max(0, self.cursor.x - 1)
+		end
+		return
+	end
+	if #ch == 1 and ch:byte(1) >= 32 then
+		self.lines[self.cursor.y] = (self.lines[self.cursor.y] or "") .. ch
+		self.cursor.x = self.cursor.x + 1
+	end
+end
+
+function IDE:start()
 	if not self.gpu then
 		return false, "GPU unavailable"
 	end
@@ -884,28 +670,17 @@ function DE:start()
 	return true
 end
 
-return DE
+return IDE
 ]],
 
-			["/bin/novade"] = [[
-tty.writeln("Launching NovaDE...", tty.color(11, 0))
-local ok = os.execute("__host_activate_desktop__")
+			["/bin/novaide"] = [[
+tty.writeln("Launching NovaIDE...", tty.color(11, 0))
+local ok = os.execute("__host_activate_ide__")
 if ok then
-	tty.writeln("NovaDE activated.", tty.color(10, 0))
 	return 0
 end
-tty.writeln("novade: desktop activation failed", tty.color(12, 0))
+tty.writeln("novaide: IDE activation failed", tty.color(12, 0))
 return 1
-]],
-
-			["/bin/startx"] = [[
-tty.writeln("Starting NovaDE...", tty.color(11, 0))
-local rc = process.exec("novade")
-if rc ~= 0 then
-	tty.writeln("startx: novade failed", tty.color(12, 0))
-	return rc or 1
-end
-return 0
 ]],
 		},
 	},

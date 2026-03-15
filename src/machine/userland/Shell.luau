@@ -515,10 +515,10 @@ function Shell:_runScript(path, args, parsed)
 		return 1
 	end
 
-	local sandbox = self:_makeSandbox(args, parsed)
+	local runtimeEnv = self:_makeRuntimeEnv(args, parsed)
 
 	local ok, func = pcall(function()
-		return vm(content, false, sandbox)
+		return vm(content, false, runtimeEnv)
 	end)
 
 	if not ok or not func then
@@ -543,8 +543,8 @@ function Shell:_runScript(path, args, parsed)
 	return type(result) == "number" and result or 0
 end
 
---  Process sandbox (given to every script)
-function Shell:_makeSandbox(args, parsed)
+--  Process runtime environment (given to every script)
+function Shell:_makeRuntimeEnv(args, parsed)
 	local vfs = self.vfs
 	local gpu = self.gpu
 	local kernel = self.kernel
@@ -554,6 +554,7 @@ function Shell:_makeSandbox(args, parsed)
 	local stdinData = self._pipeInput
 
 	local sandbox = {}
+	sandbox.__nova_cpu = (self.kernel.machine and self.kernel.machine.cpu) or nil
 
 	-- Standard I/O
 	sandbox.print = function(...)
@@ -651,33 +652,33 @@ function Shell:_makeSandbox(args, parsed)
 			cmd = tostring(cmd)
 
 			-- Host hooks
-			if cmd == "__host_activate_desktop__" then
-				if shell.kernel.machine and shell.kernel.machine.activateDesktop then
+			if cmd == "__host_activate_ide__" then
+				if shell.kernel.machine and shell.kernel.machine.activateIDE then
 					local ok, started, startErr = pcall(function()
-						return shell.kernel.machine:activateDesktop()
+						return shell.kernel.machine:activateIDE()
 					end)
 
 					if not ok then
-						shell.gpu:println("desktop activation error: " .. tostring(started), 0x0C)
+						shell.gpu:println("IDE activation error: " .. tostring(started), 0x0C)
 						return false
 					end
 
 					if not started then
-						shell.gpu:println("desktop activation error: " .. tostring(startErr), 0x0C)
+						shell.gpu:println("IDE activation error: " .. tostring(startErr), 0x0C)
 						return false
 					end
 
-					local de = shell.kernel._desktop
-					if de and type(de._input) == "function" then
-						shell:beginForeground("novade", function(ch)
+					local ide = shell.kernel._ide
+					if ide and type(ide._input) == "function" then
+						shell:beginForeground("novaide", function(ch)
 							if ch == "\3" then
 								shell:endForeground()
 								return
 							end
-							de:_input(ch)
-							de:_draw()
+							ide:_input(ch)
+							ide:_draw()
 						end, function()
-							shell.kernel._desktop = nil
+							shell.kernel._ide = nil
 							if shell.gpu then
 								shell.gpu:setMode("TEXT")
 							end
@@ -687,7 +688,7 @@ function Shell:_makeSandbox(args, parsed)
 					return true
 				end
 
-				shell.gpu:println("desktop subsystem unavailable", 0x0C)
+				shell.gpu:println("IDE subsystem unavailable", 0x0C)
 				return false
 			end
 
@@ -846,6 +847,8 @@ function Shell:_makeSandbox(args, parsed)
 			end,
 		}
 	end
+
+	setmetatable(sandbox, { __index = getfenv(1) })
 
 	return sandbox
 end
@@ -2157,7 +2160,7 @@ function Shell:_buildBuiltins()
 					if line ~= "" then
 						local vm = self.luauvm
 						if vm then
-							local sandbox = self:_makeSandbox({}, {})
+							local sandbox = self:_makeRuntimeEnv({}, {})
 
 							local ok, f = pcall(function()
 								return vm("return " .. line, false, sandbox)

@@ -39,10 +39,11 @@
 - `Init` performs first-process startup tasks.
 - `Shell` implements command loop/UI interactions.
 - `PackageManager` and `PackageDB` track and resolve installed packages.
+- IDE runtime replaces the former desktop launcher to encourage user-created GUI systems.
 
 ### LuauVM
 
-`LuauVM/*` bundles compiler/runtime support for executing compiled Luau payloads.
+`LuauVM/*` bundles compiler+Base64 runtime support for executing Luau payloads with FiU-backed bytecode execution.
 
 ## Data Flow Summary
 
@@ -50,3 +51,10 @@
 - Compute: scheduler selects runnable process -> syscall/kernel services.
 - Storage: VFS operations -> HDD sector/block updates.
 - Output: kernel/userland text/video writes -> GPU framebuffer -> GUI image.
+
+
+## Server Services
+
+- `Main.server.luau` initializes server-only runtime services.
+- Network service provisions remotes for machine state and HDD save/load.
+- Datastore service persists HDD snapshots per player key.

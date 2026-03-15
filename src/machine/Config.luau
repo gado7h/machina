@@ -4,6 +4,10 @@ local Config = {}
 
 --  CPU
 Config.CPU_CLOCK_HZ = 20 -- simulated ticks/second (Roblox-safe)
+Config.CPU_ARCH = "nova32"
+Config.CPU_CORES = 4
+Config.CPU_THREADS = 4
+Config.CPU_MODEL = "NovaCPU-X1"
 Config.CPU_REGISTERS = { -- general-purpose register names
 	"R0",
 	"R1",
@@ -62,6 +66,8 @@ Config.PAD_Y = 1
 --  Storage
 Config.DISK_BLOCK_SIZE = 512 -- bytes per sector
 Config.DISK_BLOCKS = 204800 -- ~100 MB
+Config.DISK_MODEL = "Nova Virtual ATA"
+Config.DISK_BUS = "sata"
 Config.FS_MAGIC = "NOVAFS1"
 
 --  Scheduler
@@ -117,5 +123,22 @@ Config.OS_NAME = "NovaOS"
 Config.KERNEL_VERSION = "1.0.0-nova"
 Config.ARCH = "nova32"
 Config.HOSTNAME = "novamachine"
+
+--  Networking
+Config.NET = {
+	HOST_IFACE = "eth0",
+	LOOPBACK = "lo",
+	DEFAULT_IP = "192.168.1.100",
+	DEFAULT_GW = "192.168.1.1",
+	DEFAULT_MASK = "255.255.255.0",
+	DNS = { "1.1.1.1", "8.8.8.8" },
+}
+
+--  Platform personality
+Config.PLATFORM = {
+	KERNEL_ABI = "posix-like",
+	FAMILY = "unix",
+	COMPAT = { "linux", "macos", "windows-nt-userland" },
+}
 
 return Config

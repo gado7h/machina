@@ -7,7 +7,7 @@
   - Instantiates motherboard + machine services.
   - Starts or reboots machine lifecycle.
 - `src/server/Main.server.luau`
-  - Reserved server bootstrap file.
+  - Server bootstrap and remote/data orchestration.
 
 ## Core Machine
 
@@ -54,7 +54,15 @@
 
 ## LuauVM Runtime
 
-- `src/machine/LuauVM/init.luau` - public VM API.
+- `src/machine/LuauVM/init.luau` - public VM API (compiler+Base64 backed loader).
 - `src/machine/LuauVM/Compiler.luau` - compiler implementation.
 - `src/machine/LuauVM/Fiu.luau` - VM execution engine.
 - `src/machine/LuauVM/Base64.luau` - bytecode encode/decode helper.
+
+
+## Server Services
+
+- `src/server/ServerScriptService/network/NetworkService.luau`
+  - Creates NovaNet remotes for save/load/sync operations.
+- `src/server/ServerScriptService/datastore/HDDStore.luau`
+  - Persists virtual HDD snapshots in Roblox DataStore.

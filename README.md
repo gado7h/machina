@@ -8,7 +8,7 @@ Nova is a Roblox-based virtual machine project written in Luau. It emulates a sm
 - Firmware POST and staged boot flow.
 - Kernel subsystems for memory, process management, syscalls, and VFS.
 - Basic userland init/shell and package-management modules.
-- LuauVM integration for running compiled Luau bytecode.
+- LuauVM integration for compiled-bytecode + Base64 packaging and VM-backed execution.
 
 ## Project Layout
 
@@ -20,7 +20,8 @@ Nova is a Roblox-based virtual machine project written in Luau. It emulates a sm
 - `src/machine/kernel/` – core OS modules.
 - `src/machine/userland/` – init and shell logic.
 - `src/machine/pkgmgr/` – package manager and package DB logic.
-- `src/machine/LuauVM/` – bundled Luau VM/compiler runtime.
+- `src/machine/LuauVM/` – bundled Luau compiler/runtime glue.
+- `src/server/ServerScriptService/` – server networking + datastore services.
 
 ## Development
 

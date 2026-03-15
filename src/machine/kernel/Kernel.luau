@@ -172,13 +172,15 @@ function Kernel:_updateProcFS()
 	self.vfs:writeFileStr(
 		"/proc/cpuinfo",
 		table.concat({
-			"processor\t: 0",
-			"vendor_id\t: NovaCPU",
-			"model name\t: NovaCPU-X1 @ 3200.000 MHz",
-			"cache size\t: 8192 KB",
-			"cpu cores\t: 4",
-			"flags\t\t: fpu pse pse36 mtrr pge mca cmov pat pse36 clflush mmx sse sse2",
-			"bogomips\t: 6400.00",
+			"processor	: 0",
+			"vendor_id	: NovaCPU",
+			"model name	: " .. tostring(self.config.CPU_MODEL or "NovaCPU-X1") .. " @ 3200.000 MHz",
+			"architecture	: " .. tostring(self.config.CPU_ARCH or "nova32"),
+			"cache size	: 8192 KB",
+			"cpu cores	: " .. tostring(self.config.CPU_CORES or 1),
+			"siblings	: " .. tostring(self.config.CPU_THREADS or self.config.CPU_CORES or 1),
+			"flags		: fpu pse pse36 mtrr pge mca cmov pat clflush mmx sse sse2 syscall",
+			"bogomips	: 6400.00",
 			"",
 		}, "\n")
 	)

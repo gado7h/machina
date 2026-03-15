@@ -7,8 +7,11 @@
     "ReplicatedStorage": {
       "Machine": {
         "$path": "src/machine"
-      },
-      "Net": {
+      }
+    },
+
+    "ServerScriptService": {
+      "NovaServer": {
         "$path": "src/server"
       }
     }

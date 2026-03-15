@@ -189,15 +189,16 @@ function Motherboard:reboot()
 	end)
 end
 
---  Desktop activation (called by pkgmgr postinst)
-function Motherboard:activateDesktop()
+--  IDE activation (host-level runtime)
+function Motherboard:activateIDE(path)
 	if not self.kernel then
 		return false, "kernel not running"
 	end
 
-	local source = self.kernel.vfs:readFileStr("/usr/lib/novade/init.lua")
+	local idePath = path or "/usr/lib/novaide/init.lua"
+	local source = self.kernel.vfs:readFileStr(idePath)
 	if not source then
-		return false, "desktop not installed"
+		return false, "IDE runtime not installed"
 	end
 
 	local vm = self.luauvm
@@ -205,54 +206,50 @@ function Motherboard:activateDesktop()
 		return false, "LuauVM not available"
 	end
 
-	local sandbox = {
+	local runtimeEnv = {
 		kernel = self.kernel,
-
+		machine = self,
+		require = require,
 		string = string,
 		math = math,
 		table = table,
 		pairs = pairs,
 		ipairs = ipairs,
 		next = next,
-
 		tostring = tostring,
 		tonumber = tonumber,
 		type = type,
-
 		os = os,
-
 		setmetatable = setmetatable,
 		getmetatable = getmetatable,
-
 		error = error,
 		pcall = pcall,
 		xpcall = xpcall,
 	}
 
-	local ok, DE = pcall(function()
-		local chunk = vm(source, false, sandbox)
+	local ok, mod = pcall(function()
+		local chunk = vm(source, false, runtimeEnv)
 		return chunk()
 	end)
-
 	if not ok then
-		return false, tostring(DE)
+		return false, tostring(mod)
 	end
 
-	if type(DE) ~= "table" or type(DE.new) ~= "function" then
-		return false, "desktop module invalid"
+	if type(mod) ~= "table" or type(mod.new) ~= "function" then
+		return false, "IDE module invalid"
 	end
 
-	local de = DE.new(self.kernel)
-	if not de or type(de.start) ~= "function" then
-		return false, "desktop instance invalid"
+	local ide = mod.new(self.kernel)
+	if not ide or type(ide.start) ~= "function" then
+		return false, "IDE instance invalid"
 	end
 
-	local started, err = de:start()
+	local started, err = ide:start()
 	if started == false then
 		return false, tostring(err)
 	end
 
-	self.kernel._desktop = de
+	self.kernel._ide = ide
 	return true
 end
 
