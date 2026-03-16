@@ -817,6 +817,31 @@ function Shell:_makeRuntimeEnv(args, parsed)
 		end,
 	}
 
+	-- Pixel GPU API (for graphical apps)
+	sandbox.gpu = {
+		size = function()
+			return gpu.W, gpu.H
+		end,
+		mode = function(mode)
+			gpu:setMode(mode)
+		end,
+		clear = function(argb)
+			gpu:fillRect(0, 0, gpu.W, gpu.H, argb or 0xFF000000)
+		end,
+		pixel = function(x, y, argb)
+			gpu:setPixel(math.floor(x), math.floor(y), argb)
+		end,
+		line = function(x0, y0, x1, y1, argb)
+			gpu:drawLine(math.floor(x0), math.floor(y0), math.floor(x1), math.floor(y1), argb)
+		end,
+		rect = function(x, y, w, h, argb, filled)
+			gpu:drawRect(math.floor(x), math.floor(y), math.floor(w), math.floor(h), argb, filled and true or false)
+		end,
+		text = function(x, y, text, fg, bg)
+			gpu:drawText(math.floor(x), math.floor(y), tostring(text), fg or 0xFFFFFFFF, bg or 0x00000000)
+		end,
+	}
+
 	-- Package manager bridge
 	sandbox.pkgmgr = kernel.pkgmgr
 			and {

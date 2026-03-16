@@ -783,7 +783,7 @@ return 0
 	{
 		name = "games",
 		version = "1.2.0",
-		desc = "Terminal games: mandelbrot, tictactoe, life",
+		desc = "Games and demos: mandelbrot, tictactoe, life, cube",
 		deps = {},
 		size = 5200,
 		files = {
@@ -1071,6 +1071,116 @@ if not ok then
 end
 task.delay(0.12, tick)
 
+return 0
+]],
+
+			["/bin/cube"] = [[
+local function rgba(r, g, b, a)
+	return ((a or 255) % 256) * 16777216 + (r % 256) * 65536 + (g % 256) * 256 + (b % 256)
+end
+
+if not gpu then
+	tty.writeln("cube: gpu API unavailable", tty and tty.color and tty.color(12,0) or nil)
+	return 1
+end
+
+gpu.mode("PIXEL")
+local W, H = gpu.size()
+local cx, cy = math.floor(W / 2), math.floor(H / 2)
+local scale = math.max(18, math.floor(math.min(W, H) * 0.18))
+
+local verts = {
+	{-1, -1, -1}, { 1, -1, -1}, { 1,  1, -1}, {-1,  1, -1},
+	{-1, -1,  1}, { 1, -1,  1}, { 1,  1,  1}, {-1,  1,  1},
+}
+local edges = {
+	{1,2},{2,3},{3,4},{4,1},
+	{5,6},{6,7},{7,8},{8,5},
+	{1,5},{2,6},{3,7},{4,8},
+}
+
+local running = true
+local frame = 0
+local maxFrames = 720
+local ax, ay = 0, 0
+
+local function rot(vx, vy, vz, ax, ay)
+	local sx, cx = math.sin(ax), math.cos(ax)
+	local sy, cy = math.sin(ay), math.cos(ay)
+
+	local y1 = vy * cx - vz * sx
+	local z1 = vy * sx + vz * cx
+	local x2 = vx * cy + z1 * sy
+	local z2 = -vx * sy + z1 * cy
+	return x2, y1, z2
+end
+
+local function project(x, y, z)
+	local d = 4.2
+	local f = scale / (z + d)
+	return math.floor(cx + x * f), math.floor(cy + y * f)
+end
+
+local function drawFrame()
+	gpu.clear(rgba(5, 7, 14, 255))
+
+	local pts = {}
+	for i = 1, #verts do
+		local v = verts[i]
+		local x, y, z = rot(v[1], v[2], v[3], ax, ay)
+		pts[i] = {project(x, y, z), z = z}
+	end
+
+	for i = 1, #edges do
+		local e = edges[i]
+		local a = pts[e[1]]
+		local b = pts[e[2]]
+		local shade = math.floor((a.z + b.z + 2.0) / 4.0 * 130 + 90)
+		shade = math.max(70, math.min(240, shade))
+		gpu.line(a[1], a[2], b[1], b[2], rgba(shade, shade, 255, 255))
+	end
+
+	local title = "GPU CUBE DEMO  -  Ctrl+C or q to exit"
+	gpu.text(8, 8, title, rgba(235, 240, 255, 255), rgba(0, 0, 0, 0))
+	local hud = string.format("Frame: %d", frame)
+	gpu.text(8, 20, hud, rgba(120, 255, 140, 255), rgba(0, 0, 0, 0))
+	if frame == maxFrames then
+		gpu.text(8, 32, "Auto-finished benchmark window.", rgba(255, 200, 120, 255), rgba(0, 0, 0, 0))
+	end
+	frame = frame + 1
+	ax = ax + 0.035
+	ay = ay + 0.027
+end
+
+local function cleanup()
+	gpu.mode("TEXT")
+	tty.clear()
+	tty.writeln("cube: done", tty and tty.color and tty.color(10,0) or nil)
+end
+
+local ok, err = process.beginForeground("cube", function(ch)
+	if ch == "\3" or ch == "q" or ch == "Q" then
+		running = false
+		process.endForeground()
+	end
+end, cleanup)
+
+if not ok then
+	tty.writeln("cube: " .. tostring(err), tty and tty.color and tty.color(12,0) or nil)
+	cleanup()
+	return 1
+end
+
+local function tick()
+	if not running or frame > maxFrames then
+		process.endForeground()
+		return
+	end
+	drawFrame()
+	task.delay(0.03, tick)
+end
+
+tick()
 return 0
 ]],
 		},
