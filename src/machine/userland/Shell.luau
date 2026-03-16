@@ -837,19 +837,6 @@ function Shell:_makeRuntimeEnv(args, parsed)
 		rect = function(x, y, w, h, argb, filled)
 			gpu:drawRect(math.floor(x), math.floor(y), math.floor(w), math.floor(h), argb, filled and true or false)
 		end,
-		blit = function(srcX, srcY, w, h, dstX, dstY)
-			gpu:blitRect(
-				math.floor(srcX),
-				math.floor(srcY),
-				math.floor(w),
-				math.floor(h),
-				math.floor(dstX),
-				math.floor(dstY)
-			)
-		end,
-		window = function(x, y, w, h, title)
-			gpu:drawWindow(math.floor(x), math.floor(y), math.floor(w), math.floor(h), tostring(title or "Nova Window"))
-		end,
 		text = function(x, y, text, fg, bg)
 			gpu:drawText(math.floor(x), math.floor(y), tostring(text), fg or 0xFFFFFFFF, bg or 0x00000000)
 		end,

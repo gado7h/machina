@@ -3,7 +3,7 @@
 local Config = {}
 
 --  CPU
-Config.CPU_CLOCK_HZ = 30 -- simulated ticks/second (snappier UI + GPU refresh)
+Config.CPU_CLOCK_HZ = 20 -- simulated ticks/second (Roblox-safe)
 Config.CPU_ARCH = "nova32"
 Config.CPU_CORES = 4
 Config.CPU_THREADS = 4
