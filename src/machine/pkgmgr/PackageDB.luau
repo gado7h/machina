@@ -1149,7 +1149,7 @@ local function drawFrame()
 		gpu.line(a[1], a[2], b[1], b[2], rgba(shade, shade, 255, 255))
 	end
 
-	local title = "GPU CUBE DEMO  -  Ctrl+C or q to exit"
+	local title = "GPU CUBE DEMO  -  Ctrl+C to exit"
 	gpu.text(8, 8, title, rgba(235, 240, 255, 255), rgba(0, 0, 0, 0))
 	local hud = string.format("Frame: %d", frame)
 	gpu.text(8, 20, hud, rgba(120, 255, 140, 255), rgba(0, 0, 0, 0))
@@ -1168,7 +1168,7 @@ local function cleanup()
 end
 
 local ok, err = process.beginForeground("cube", function(ch)
-	if ch == "\3" or ch == "q" or ch == "Q" then
+	if ch == "\3" then
 		running = false
 		finish()
 	end
@@ -1181,7 +1181,7 @@ if not ok then
 end
 
 local function tick()
-	if not running or frame > maxFrames then
+	if not running or frame >= maxFrames then
 		finish()
 		return
 	end
@@ -1189,7 +1189,8 @@ local function tick()
 	task.delay(0.03, tick)
 end
 
-tick()
+drawFrame()
+task.delay(0.03, tick)
 return 0
 ]],
 		},
