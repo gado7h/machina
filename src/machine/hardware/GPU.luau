@@ -135,6 +135,73 @@ local function getGlyph(ch)
 	return FONT[ch] or GLYPH_DEFAULT
 end
 
+
+local function clamp(v, lo, hi)
+	if v < lo then
+		return lo
+	elseif v > hi then
+		return hi
+	end
+	return v
+end
+
+local function lerp(a, b, t)
+	return a + (b - a) * t
+end
+
+local function unpackARGB(c)
+	local a = math.floor(c / 16777216) % 256
+	local r = math.floor(c / 65536) % 256
+	local g = math.floor(c / 256) % 256
+	local b = c % 256
+	return a, r, g, b
+end
+
+local function packARGB(a, r, g, b)
+	return ((a % 256) * 16777216) + ((r % 256) * 65536) + ((g % 256) * 256) + (b % 256)
+end
+
+local function blendARGB(bg, fg, alpha)
+	if alpha <= 0 then
+		return bg
+	elseif alpha >= 255 then
+		return fg
+	end
+	local _, br, bgc, bb = unpackARGB(bg)
+	local _, fr, fgc, fb = unpackARGB(fg)
+	local t = alpha / 255
+	return packARGB(255, math.floor(lerp(br, fr, t) + 0.5), math.floor(lerp(bgc, fgc, t) + 0.5), math.floor(lerp(bb, fb, t) + 0.5))
+end
+
+local function glyphBit(glyph, gx, gy)
+	if gx < 0 or gx > 3 or gy < 0 or gy > 7 then
+		return 0
+	end
+	local bits = glyph[gy + 1] or 0
+	local mask = 2 ^ (3 - gx)
+	return (bits % (mask * 2)) >= mask and 1 or 0
+end
+
+local function sampleGlyphSmooth(glyph, u, v)
+	local x = clamp(u, 0, 3)
+	local y = clamp(v, 0, 7)
+	local x0 = math.floor(x)
+	local y0 = math.floor(y)
+	local x1 = math.min(3, x0 + 1)
+	local y1 = math.min(7, y0 + 1)
+	local tx = x - x0
+	local ty = y - y0
+
+	local a = glyphBit(glyph, x0, y0)
+	local b = glyphBit(glyph, x1, y0)
+	local c = glyphBit(glyph, x0, y1)
+	local d = glyphBit(glyph, x1, y1)
+
+	local top = lerp(a, b, tx)
+	local bot = lerp(c, d, tx)
+	return lerp(top, bot, ty)
+end
+
 function GPU.new(config, editableImage)
 	local self = setmetatable({}, GPU)
 	self.config = config
@@ -151,6 +218,8 @@ function GPU.new(config, editableImage)
 	self.PY = config.PAD_Y or 0
 
 	self.mode = "TEXT"
+	self.fontSmoothing = true
+	self.guiOps = {}
 
 	-- Text buffer: flat array [0 .. COLS*ROWS-1], each entry {char, attr}
 	self._textBuf = {}
@@ -179,7 +248,7 @@ function GPU.new(config, editableImage)
 	self._vram = {}
 	self._dirty = true
 
-	self.stats = { flushes = 0, textWrites = 0, pixelWrites = 0 }
+	self.stats = { flushes = 0, textWrites = 0, pixelWrites = 0, guiDrawCalls = 0 }
 
 	return self
 end
@@ -362,6 +431,14 @@ function GPU:toggleCursor()
 	self._dirty = true
 end
 
+
+function GPU:_setPixelRaw(x, y, argb)
+	if x < 0 or x >= self.W or y < 0 or y >= self.H then
+		return
+	end
+	self._framebuf[y * self.W + x] = argb
+end
+
 --  Pixel API
 
 function GPU:setPixel(x, y, argb)
@@ -374,38 +451,117 @@ function GPU:setPixel(x, y, argb)
 end
 
 function GPU:fillRect(x, y, w, h, argb)
-	for row = y, y + h - 1 do
-		for col = x, x + w - 1 do
-			self:setPixel(col, row, argb)
+	if w <= 0 or h <= 0 then
+		return
+	end
+	local x0 = math.max(0, x)
+	local y0 = math.max(0, y)
+	local x1 = math.min(self.W - 1, x + w - 1)
+	local y1 = math.min(self.H - 1, y + h - 1)
+	if x1 < x0 or y1 < y0 then
+		return
+	end
+
+	local written = 0
+	for row = y0, y1 do
+		local base = row * self.W
+		for col = x0, x1 do
+			self._framebuf[base + col] = argb
+			written = written + 1
 		end
 	end
+	self.stats.pixelWrites = self.stats.pixelWrites + written
+	self._dirty = true
+end
+
+function GPU:drawLine(x0, y0, x1, y1, argb)
+	x0, y0, x1, y1 = math.floor(x0), math.floor(y0), math.floor(x1), math.floor(y1)
+	local dx = math.abs(x1 - x0)
+	local dy = -math.abs(y1 - y0)
+	local sx = (x0 < x1) and 1 or -1
+	local sy = (y0 < y1) and 1 or -1
+	local err = dx + dy
+	while true do
+		self:setPixel(x0, y0, argb)
+		if x0 == x1 and y0 == y1 then
+			break
+		end
+		local e2 = err * 2
+		if e2 >= dy then
+			err = err + dy
+			x0 = x0 + sx
+		end
+		if e2 <= dx then
+			err = err + dx
+			y0 = y0 + sy
+		end
+	end
+end
+
+function GPU:drawRect(x, y, w, h, argb, filled)
+	if filled then
+		self:fillRect(x, y, w, h, argb)
+		return
+	end
+	self:drawLine(x, y, x + w - 1, y, argb)
+	self:drawLine(x, y, x, y + h - 1, argb)
+	self:drawLine(x + w - 1, y, x + w - 1, y + h - 1, argb)
+	self:drawLine(x, y + h - 1, x + w - 1, y + h - 1, argb)
+end
+
+function GPU:drawText(x, y, text, fgARGB, bgARGB)
+	bgARGB = bgARGB or 0x00000000
+	for i = 1, #text do
+		self:drawChar(x + (i - 1) * self.CW, y, text:sub(i, i), fgARGB, bgARGB)
+	end
+	self.stats.guiDrawCalls = self.stats.guiDrawCalls + 1
 end
 
 function GPU:drawChar(x, y, ch, fgARGB, bgARGB)
 	local code = (type(ch) == "string") and string.byte(ch, 1) or ch
 	local glyph = getGlyph(code)
+	local written = 0
 
-	-- Clear full cell first so deletes / narrow glyphs / underscore do not leave artifacts
+	-- Clear full cell first so deletes / narrow glyphs do not leave artifacts
 	for row = 0, self.CH - 1 do
-		for col = 0, self.CW - 1 do
-			self:setPixel(x + col, y + row, bgARGB)
-		end
-	end
-
-	-- Draw glyph inside padded cell
-	for row = 0, self.GH - 1 do
-		local bits = glyph[row + 1] or 0
-		for col = 0, self.GW - 1 do
-			local mask = 2 ^ ((self.GW - 1) - col)
-			if (bits % (mask * 2)) >= mask then
-				local px = x + self.PX + col
-				local py = y + self.PY + row
-				if px >= x and px < x + self.CW and py >= y and py < y + self.CH then
-					self:setPixel(px, py, fgARGB)
+		local py = y + row
+		if py >= 0 and py < self.H then
+			local base = py * self.W
+			for col = 0, self.CW - 1 do
+				local px = x + col
+				if px >= 0 and px < self.W then
+					self._framebuf[base + px] = bgARGB
+					written = written + 1
 				end
 			end
 		end
 	end
+
+	local drawW = math.max(1, self.GW)
+	local drawH = math.max(1, self.GH)
+	for row = 0, drawH - 1 do
+		for col = 0, drawW - 1 do
+			local px = x + self.PX + col
+			local py = y + self.PY + row
+			if px >= x and px < x + self.CW and py >= y and py < y + self.CH and px >= 0 and px < self.W and py >= 0 and py < self.H then
+				local coverage
+				if self.fontSmoothing then
+					local u = (col / math.max(1, drawW - 1)) * 3
+					local v = (row / math.max(1, drawH - 1)) * 7
+					coverage = sampleGlyphSmooth(glyph, u, v)
+				else
+					coverage = glyphBit(glyph, math.floor((col / drawW) * 4), math.floor((row / drawH) * 8))
+				end
+				if coverage > 0 then
+					local idx = py * self.W + px
+					self._framebuf[idx] = blendARGB(self._framebuf[idx] or bgARGB, fgARGB, math.floor(coverage * 255))
+					written = written + 1
+				end
+			end
+		end
+	end
+	self.stats.pixelWrites = self.stats.pixelWrites + written
+	self._dirty = true
 end
 
 --  Flush to EditableImage via WritePixelsBuffer
@@ -485,8 +641,9 @@ function GPU:_renderText()
 		local cx = self._cursorCol * self.CW
 		local cy = self._cursorRow * self.CH + (self.CH - 1)
 		for i = 0, self.CW - 1 do
-			self:setPixel(cx + i, cy, 0xFFAAAAAA)
+			self:_setPixelRaw(cx + i, cy, 0xFFAAAAAA)
 		end
+		self.stats.pixelWrites = self.stats.pixelWrites + self.CW
 	end
 	self._lastCursor.col = self._cursorCol
 	self._lastCursor.row = self._cursorRow
