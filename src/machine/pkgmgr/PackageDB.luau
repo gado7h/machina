@@ -1100,9 +1100,18 @@ local edges = {
 }
 
 local running = true
+local ended = false
 local frame = 0
 local maxFrames = 720
 local ax, ay = 0, 0
+
+local function finish()
+	if ended then
+		return
+	end
+	ended = true
+	process.endForeground()
+end
 
 local function rot(vx, vy, vz, ax, ay)
 	local sx, cx = math.sin(ax), math.cos(ax)
@@ -1161,7 +1170,7 @@ end
 local ok, err = process.beginForeground("cube", function(ch)
 	if ch == "\3" or ch == "q" or ch == "Q" then
 		running = false
-		process.endForeground()
+		finish()
 	end
 end, cleanup)
 
@@ -1173,7 +1182,7 @@ end
 
 local function tick()
 	if not running or frame > maxFrames then
-		process.endForeground()
+		finish()
 		return
 	end
 	drawFrame()
