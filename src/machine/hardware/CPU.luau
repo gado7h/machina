@@ -62,6 +62,9 @@ local FLAG_OF = 8
 local FLAG_IF = 16
 local FLAG_HLT = 32
 
+-- Control register bits (CR0)
+local CR0_PG = 0x80000000 -- paging enabled
+
 local REG_IDX = {}
 local REG_NAMES =
 	{ "R0", "R1", "R2", "R3", "R4", "R5", "R6", "R7", "PC", "SP", "LR", "FLAGS", "CR0", "CR3", "IDTR", "TR" }
@@ -99,13 +102,37 @@ function CPU.new(bus, config)
 		instructions = 0,
 		interrupts = 0,
 		branches = 0,
+		branchMispredicts = 0,
 		memReads = 0,
 		memWrites = 0,
 		cacheHits = { L1I = 0, L1D = 0, L2 = 0, L3 = 0 },
+		cacheMisses = { L1I = 0, L1D = 0 },
+		tlbHits = 0,
+		tlbMisses = 0,
+		exceptions = 0,
 	}
 
 	-- Simple L1 instruction cache simulation (direct-mapped, 256 lines)
 	self._icache = {} -- addr → instruction word
+	-- Simple L1 data cache simulation (write-through, 256 lines)
+	self._dcache = {} -- addr → {addr, data}
+
+	-- Tiny fully-associative TLB (virtual page -> physical page)
+	self._tlb = {}
+	self._tlbLimit = 64
+	self._tlbCount = 0
+
+	-- 2-bit branch predictor table (1024 entries)
+	self._branchPredictor = {}
+	for i = 0, 1023 do
+		self._branchPredictor[i] = 2 -- weakly taken
+	end
+
+	-- Execution staging (realistic pipeline latches used for debug/inspection)
+	self._latchIF = nil
+	self._latchID = nil
+	self._latchEX = nil
+	self._latchMA = nil
 
 	self:reset()
 	return self
@@ -120,9 +147,23 @@ function CPU:reset()
 	self.reg[REG_IDX.SP] = self.config.RAM_BASE + self.config.RAM_SIZE - 4
 	self.reg[REG_IDX.FLAGS] = FLAG_IF -- interrupts enabled by default
 	self._icache = {}
+	self._dcache = {}
+	self._tlb = {}
+	self._tlbCount = 0
 	self._interruptPending = nil
 	self.stats.cycles = 0
 	self.stats.instructions = 0
+	self.stats.branchMispredicts = 0
+	self.stats.tlbHits = 0
+	self.stats.tlbMisses = 0
+	self.stats.exceptions = 0
+	for i = 0, 1023 do
+		self._branchPredictor[i] = 2
+	end
+	self._latchIF = nil
+	self._latchID = nil
+	self._latchEX = nil
+	self._latchMA = nil
 end
 
 --  Register helpers
@@ -241,9 +282,102 @@ function CPU:fetch(addr)
 		return self._icache[cline].data
 	end
 	-- cache miss → bus fetch
+	self.stats.cacheMisses.L1I = self.stats.cacheMisses.L1I + 1
 	local w = self.bus:memRead32(addr)
 	self._icache[cline] = { addr = addr, data = w }
 	return w
+end
+
+
+local function bpIndex(pc)
+	return pc % 1024
+end
+
+function CPU:_predictBranch(pc)
+	local state = self._branchPredictor[bpIndex(pc)] or 1
+	return state >= 2
+end
+
+function CPU:_trainBranch(pc, taken)
+	local idx = bpIndex(pc)
+	local state = self._branchPredictor[idx] or 1
+	if taken then
+		state = math.min(3, state + 1)
+	else
+		state = math.max(0, state - 1)
+	end
+	self._branchPredictor[idx] = state
+end
+
+function CPU:_translateAddress(vaddr, isWrite)
+	-- When paging is disabled, virtual == physical
+	if bit32.band(self.reg[REG_IDX.CR0], CR0_PG) == 0 then
+		return vaddr % 0x100000000
+	end
+
+	local pageSize = self.config.PAGE_SIZE or 4096
+	local vpn = math.floor(vaddr / pageSize)
+	local off = vaddr % pageSize
+	local ppn = self._tlb[vpn]
+	if ppn then
+		self.stats.tlbHits = self.stats.tlbHits + 1
+		return (ppn * pageSize + off) % 0x100000000
+	end
+
+	self.stats.tlbMisses = self.stats.tlbMisses + 1
+	-- Lightweight identity walk fallback keeps runtime compatible while allowing realistic paging path.
+	ppn = vpn
+	if not self._tlb[vpn] then
+		self._tlbCount = self._tlbCount + 1
+	end
+	if self._tlbCount > self._tlbLimit then
+		self._tlb = {}
+		self._tlbCount = 1
+	end
+	self._tlb[vpn] = ppn
+	return (ppn * pageSize + off) % 0x100000000
+end
+
+function CPU:_memRead32(addr)
+	local paddr = self:_translateAddress(addr, false)
+	local cline = paddr % (256 * 4)
+	if self._dcache[cline] and self._dcache[cline].addr == paddr then
+		self.stats.cacheHits.L1D = self.stats.cacheHits.L1D + 1
+		return self._dcache[cline].data
+	end
+	self.stats.cacheMisses.L1D = self.stats.cacheMisses.L1D + 1
+	local data = self.bus:memRead32(paddr)
+	self._dcache[cline] = { addr = paddr, data = data }
+	return data
+end
+
+function CPU:_memWrite32(addr, value)
+	local paddr = self:_translateAddress(addr, true)
+	local cline = paddr % (256 * 4)
+	self._dcache[cline] = { addr = paddr, data = value % 0x100000000 }
+	self.bus:memWrite32(paddr, value)
+end
+
+function CPU:_memRead8(addr)
+	local paddr = self:_translateAddress(addr, false)
+	return self.bus:memRead(paddr)
+end
+
+function CPU:_memWrite8(addr, value)
+	local paddr = self:_translateAddress(addr, true)
+	self.bus:memWrite(paddr, value % 256)
+end
+
+function CPU:_raiseException(reason, addr)
+	self.stats.exceptions = self.stats.exceptions + 1
+	self.pipeline.EX = "EXC " .. tostring(reason)
+	-- Keep compatibility: trap to interrupt vector 0 unless IF disabled.
+	if self:flag(FLAG_IF) then
+		self:interrupt(0)
+	end
+	if addr then
+		self.reg[REG_IDX.TR] = addr % 0x100000000
+	end
 end
 
 --  Instruction Decode
@@ -273,12 +407,14 @@ function CPU:step()
 	end
 
 	local pc = self.reg[REG_IDX.PC]
+	self._latchIF = { pc = pc }
 
 	self.pipeline.IF = string.format("%08X", pc)
 	local word = self:fetch(pc)
 
 	local opcode, rd, rs1, rs2, imm11, imm16, imm8 = decode(word)
 	local opname = OP_NAME[opcode] or "???"
+	self._latchID = { opcode = opcode, rd = rd, rs1 = rs1, rs2 = rs2, imm16 = imm16 }
 	self.pipeline.ID = opname
 
 	local a = self:getRegIdx(rs1)
@@ -289,6 +425,8 @@ function CPU:step()
 	self.reg[REG_IDX.PC] = (pc + 4) % 0x100000000
 
 	local branched = false
+	local branchPredictedTaken = false
+	local isBranchInstruction = false
 
 	if opcode == OP.NOP then
 		-- nothing
@@ -341,71 +479,91 @@ function CPU:step()
 		self:setFlag(FLAG_SF, sf)
 		self:setFlag(FLAG_OF, of)
 	elseif opcode == OP.JMP then
+		isBranchInstruction = true
+		branchPredictedTaken = self:_predictBranch(pc)
 		self.reg[REG_IDX.PC] = a
 		branched = true
 	elseif opcode == OP.JMPI then
+		isBranchInstruction = true
+		branchPredictedTaken = self:_predictBranch(pc)
 		self.reg[REG_IDX.PC] = (pc + 4 + signExt16(imm16)) % 0x100000000
 		branched = true
 	elseif opcode == OP.JEQ then
+		isBranchInstruction = true
+		branchPredictedTaken = self:_predictBranch(pc)
 		if self:flag(FLAG_ZF) then
 			self.reg[REG_IDX.PC] = (pc + 4 + signExt16(imm16)) % 0x100000000
 			branched = true
 		end
 	elseif opcode == OP.JNE then
+		isBranchInstruction = true
+		branchPredictedTaken = self:_predictBranch(pc)
 		if not self:flag(FLAG_ZF) then
 			self.reg[REG_IDX.PC] = (pc + 4 + signExt16(imm16)) % 0x100000000
 			branched = true
 		end
 	elseif opcode == OP.JLT then
+		isBranchInstruction = true
+		branchPredictedTaken = self:_predictBranch(pc)
 		if self:flag(FLAG_SF) ~= self:flag(FLAG_OF) then
 			self.reg[REG_IDX.PC] = (pc + 4 + signExt16(imm16)) % 0x100000000
 			branched = true
 		end
 	elseif opcode == OP.JGT then
+		isBranchInstruction = true
+		branchPredictedTaken = self:_predictBranch(pc)
 		if not self:flag(FLAG_ZF) and (self:flag(FLAG_SF) == self:flag(FLAG_OF)) then
 			self.reg[REG_IDX.PC] = (pc + 4 + signExt16(imm16)) % 0x100000000
 			branched = true
 		end
 	elseif opcode == OP.JLE then
+		isBranchInstruction = true
+		branchPredictedTaken = self:_predictBranch(pc)
 		if self:flag(FLAG_ZF) or (self:flag(FLAG_SF) ~= self:flag(FLAG_OF)) then
 			self.reg[REG_IDX.PC] = (pc + 4 + signExt16(imm16)) % 0x100000000
 			branched = true
 		end
 	elseif opcode == OP.JGE then
+		isBranchInstruction = true
+		branchPredictedTaken = self:_predictBranch(pc)
 		if self:flag(FLAG_SF) == self:flag(FLAG_OF) then
 			self.reg[REG_IDX.PC] = (pc + 4 + signExt16(imm16)) % 0x100000000
 			branched = true
 		end
 	elseif opcode == OP.CALL then
+		isBranchInstruction = true
+		branchPredictedTaken = self:_predictBranch(pc)
 		self.reg[REG_IDX.LR] = self.reg[REG_IDX.PC]
 		self.reg[REG_IDX.PC] = a
 		branched = true
 	elseif opcode == OP.RET then
+		isBranchInstruction = true
+		branchPredictedTaken = self:_predictBranch(pc)
 		self.reg[REG_IDX.PC] = self.reg[REG_IDX.LR]
 		branched = true
 	elseif opcode == OP.LW then
 		local addr = (a + signExt16(imm16)) % 0x100000000
 		self.stats.memReads = self.stats.memReads + 1
-		self:setRegIdx(rd, self.bus:memRead32(addr))
+		self:setRegIdx(rd, self:_memRead32(addr))
 		self.pipeline.MA = string.format("LOAD [%08X]", addr)
 	elseif opcode == OP.SW then
 		local addr = (a + signExt16(imm16)) % 0x100000000
 		self.stats.memWrites = self.stats.memWrites + 1
-		self.bus:memWrite32(addr, b)
+		self:_memWrite32(addr, b)
 		self.pipeline.MA = string.format("STORE [%08X]=%08X", addr, b)
 	elseif opcode == OP.LB then
 		local addr = (a + signExt16(imm16)) % 0x100000000
 		self.stats.memReads = self.stats.memReads + 1
-		self:setRegIdx(rd, self.bus:memRead(addr))
+		self:setRegIdx(rd, self:_memRead8(addr))
 	elseif opcode == OP.SB then
 		local addr = (a + signExt16(imm16)) % 0x100000000
 		self.stats.memWrites = self.stats.memWrites + 1
-		self.bus:memWrite(addr, b % 256)
+		self:_memWrite8(addr, b % 256)
 	elseif opcode == OP.PUSH then
 		self.reg[REG_IDX.SP] = (self.reg[REG_IDX.SP] - 4) % 0x100000000
-		self.bus:memWrite32(self.reg[REG_IDX.SP], a)
+		self:_memWrite32(self.reg[REG_IDX.SP], a)
 	elseif opcode == OP.POP then
-		self:setRegIdx(rd, self.bus:memRead32(self.reg[REG_IDX.SP]))
+		self:setRegIdx(rd, self:_memRead32(self.reg[REG_IDX.SP]))
 		self.reg[REG_IDX.SP] = (self.reg[REG_IDX.SP] + 4) % 0x100000000
 	elseif opcode == OP.INT then
 		self:interrupt(imm8)
@@ -419,6 +577,15 @@ function CPU:step()
 		self.bus:portWrite(imm16, a)
 	elseif opcode == OP.HLT then
 		self:setFlag(FLAG_HLT, true)
+	else
+		self:_raiseException("illegal-opcode", pc)
+	end
+
+	if isBranchInstruction then
+		self:_trainBranch(pc, branched)
+		if branchPredictedTaken ~= branched then
+			self.stats.branchMispredicts = self.stats.branchMispredicts + 1
+		end
 	end
 
 	if branched then
@@ -430,6 +597,8 @@ function CPU:step()
 		self:_handleInterrupt()
 	end
 
+	self._latchEX = { opname = opname, branched = branched }
+	self._latchMA = { rd = rd }
 	self.pipeline.WB = string.format("rd%d←", rd)
 	self.stats.cycles = self.stats.cycles + 1
 	self.stats.instructions = self.stats.instructions + 1
@@ -462,7 +631,7 @@ function CPU:_handleInterrupt()
 
 	-- jump to IDT handler (read handler address from IDT table in memory)
 	local idtEntry = self._idtBase + vec * 8
-	local handlerAddr = self.bus:memRead32(idtEntry)
+	local handlerAddr = self:_memRead32(idtEntry)
 	if handlerAddr ~= 0 then
 		self.reg[REG_IDX.PC] = handlerAddr
 	else
