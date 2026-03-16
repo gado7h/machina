@@ -1142,8 +1142,8 @@ local function drawFrame()
 
 	for i = 1, #edges do
 		local e = edges[i]
-		local a = pts[e[1]]
-		local b = pts[e[2]]
+		local a = pts[ e[1] ]
+		local b = pts[ e[2] ]
 		local shade = math.floor((a.z + b.z + 2.0) / 4.0 * 130 + 90)
 		shade = math.max(70, math.min(240, shade))
 		gpu.line(a[1], a[2], b[1], b[2], rgba(shade, shade, 255, 255))
