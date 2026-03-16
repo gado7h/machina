@@ -509,6 +509,47 @@ function GPU:drawRect(x, y, w, h, argb, filled)
 	self:drawLine(x, y + h - 1, x + w - 1, y + h - 1, argb)
 end
 
+function GPU:blitRect(srcX, srcY, w, h, dstX, dstY)
+	if w <= 0 or h <= 0 then
+		return
+	end
+	local tmp = {}
+	for row = 0, h - 1 do
+		for col = 0, w - 1 do
+			local sx = srcX + col
+			local sy = srcY + row
+			if sx >= 0 and sx < self.W and sy >= 0 and sy < self.H then
+				tmp[row * w + col] = self._framebuf[sy * self.W + sx]
+			end
+		end
+	end
+	for row = 0, h - 1 do
+		for col = 0, w - 1 do
+			local dx = dstX + col
+			local dy = dstY + row
+			if dx >= 0 and dx < self.W and dy >= 0 and dy < self.H then
+				local color = tmp[row * w + col]
+				if color then
+					self._framebuf[dy * self.W + dx] = color
+				end
+			end
+		end
+	end
+	self._dirty = true
+end
+
+function GPU:drawWindow(x, y, w, h, title)
+	if w < 32 or h < 24 then
+		return
+	end
+	self:drawRect(x, y, w, h, 0xFF1C2430, true)
+	self:drawRect(x, y, w, h, 0xFF6D7B8D, false)
+	self:drawRect(x + 1, y + 1, w - 2, 14, 0xFF2D3B52, true)
+	self:drawText(x + 6, y + 3, title or "Nova Window", 0xFFEAF2FF)
+	self:drawRect(x + w - 13, y + 3, 8, 8, 0xFFA54A4A, true)
+	self:drawRect(x + 3, y + 17, w - 6, h - 20, 0xFF0F1622, true)
+end
+
 function GPU:drawText(x, y, text, fgARGB, bgARGB)
 	bgARGB = bgARGB or 0x00000000
 	for i = 1, #text do
