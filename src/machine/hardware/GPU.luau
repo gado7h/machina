@@ -221,6 +221,9 @@ function GPU.new(config, editableImage)
 	self.fontSmoothing = true
 	self.guiOps = {}
 
+	self._nextFrameTime = 0
+	self._frameInterval = 1 / math.max(1, config.DISPLAY_REFRESH_HZ or 60)
+
 	-- Text buffer: flat array [0 .. COLS*ROWS-1], each entry {char, attr}
 	self._textBuf = {}
 	for i = 0, config.TEXT_COLS * config.TEXT_ROWS - 1 do
@@ -481,8 +484,15 @@ function GPU:drawLine(x0, y0, x1, y1, argb)
 	local sx = (x0 < x1) and 1 or -1
 	local sy = (y0 < y1) and 1 or -1
 	local err = dx + dy
+	local W = self.W
+	local H = self.H
+	local fb = self._framebuf
+	local written = 0
 	while true do
-		self:setPixel(x0, y0, argb)
+		if x0 >= 0 and x0 < W and y0 >= 0 and y0 < H then
+			fb[y0 * W + x0] = argb
+			written = written + 1
+		end
 		if x0 == x1 and y0 == y1 then
 			break
 		end
@@ -496,17 +506,28 @@ function GPU:drawLine(x0, y0, x1, y1, argb)
 			y0 = y0 + sy
 		end
 	end
+	if written > 0 then
+		self.stats.pixelWrites = self.stats.pixelWrites + written
+		self._dirty = true
+	end
 end
 
 function GPU:drawRect(x, y, w, h, argb, filled)
+	if w <= 0 or h <= 0 then
+		return
+	end
 	if filled then
 		self:fillRect(x, y, w, h, argb)
 		return
 	end
+	if w == 1 or h == 1 then
+		self:fillRect(x, y, w, h, argb)
+		return
+	end
 	self:drawLine(x, y, x + w - 1, y, argb)
-	self:drawLine(x, y, x, y + h - 1, argb)
-	self:drawLine(x + w - 1, y, x + w - 1, y + h - 1, argb)
 	self:drawLine(x, y + h - 1, x + w - 1, y + h - 1, argb)
+	self:drawLine(x, y + 1, x, y + h - 2, argb)
+	self:drawLine(x + w - 1, y + 1, x + w - 1, y + h - 2, argb)
 end
 
 function GPU:drawText(x, y, text, fgARGB, bgARGB)
@@ -546,9 +567,13 @@ function GPU:drawChar(x, y, ch, fgARGB, bgARGB)
 			if px >= x and px < x + self.CW and py >= y and py < y + self.CH and px >= 0 and px < self.W and py >= 0 and py < self.H then
 				local coverage
 				if self.fontSmoothing then
-					local u = (col / math.max(1, drawW - 1)) * 3
-					local v = (row / math.max(1, drawH - 1)) * 7
-					coverage = sampleGlyphSmooth(glyph, u, v)
+					local denomW = math.max(1, drawW)
+					local denomH = math.max(1, drawH)
+					local u0 = ((col + 0.25) / denomW) * 4 - 0.5
+					local v0 = ((row + 0.25) / denomH) * 8 - 0.5
+					local u1 = ((col + 0.75) / denomW) * 4 - 0.5
+					local v1 = ((row + 0.75) / denomH) * 8 - 0.5
+					coverage = (sampleGlyphSmooth(glyph, u0, v0) + sampleGlyphSmooth(glyph, u1, v0) + sampleGlyphSmooth(glyph, u0, v1) + sampleGlyphSmooth(glyph, u1, v1)) * 0.25
 				else
 					coverage = glyphBit(glyph, math.floor((col / drawW) * 4), math.floor((row / drawH) * 8))
 				end
@@ -564,6 +589,66 @@ function GPU:drawChar(x, y, ch, fgARGB, bgARGB)
 	self._dirty = true
 end
 
+function GPU:blitRect(srcX, srcY, w, h, dstX, dstY)
+	if w <= 0 or h <= 0 then
+		return
+	end
+
+	local srcX0 = math.max(0, srcX)
+	local srcY0 = math.max(0, srcY)
+	local srcX1 = math.min(self.W - 1, srcX + w - 1)
+	local srcY1 = math.min(self.H - 1, srcY + h - 1)
+	if srcX1 < srcX0 or srcY1 < srcY0 then
+		return
+	end
+
+	local copyW = srcX1 - srcX0 + 1
+	local copyH = srcY1 - srcY0 + 1
+	local fb = self._framebuf
+	local W = self.W
+	local scratch = table.create(copyW * copyH)
+	local n = 1
+	for row = 0, copyH - 1 do
+		local base = (srcY0 + row) * W + srcX0
+		for col = 0, copyW - 1 do
+			scratch[n] = fb[base + col]
+			n = n + 1
+		end
+	end
+
+	n = 1
+	local written = 0
+	for row = 0, copyH - 1 do
+		local py = dstY + row
+		if py >= 0 and py < self.H then
+			local base = py * W
+			for col = 0, copyW - 1 do
+				local px = dstX + col
+				local c = scratch[n]
+				if px >= 0 and px < self.W and c ~= nil then
+					fb[base + px] = c
+					written = written + 1
+				end
+				n = n + 1
+			end
+		else
+			n = n + copyW
+		end
+	end
+
+	if written > 0 then
+		self.stats.pixelWrites = self.stats.pixelWrites + written
+		self._dirty = true
+	end
+end
+
+function GPU:moveWindow(srcX, srcY, w, h, dstX, dstY, clearARGB)
+	self:blitRect(srcX, srcY, w, h, dstX, dstY)
+	if clearARGB ~= nil then
+		self:fillRect(srcX, srcY, w, h, clearARGB)
+	end
+end
+
 --  Flush to EditableImage via WritePixelsBuffer
 --
 --  WritePixelsBuffer takes a native Luau buffer (RGBA u8, row-major).
@@ -574,8 +659,15 @@ function GPU:flush()
 	if not self._dirty then
 		return
 	end
+
+	local now = os.clock()
+	if self._nextFrameTime ~= 0 and now < self._nextFrameTime then
+		return
+	end
+
 	if not self.editableImage then
 		self._dirty = false
+		self._nextFrameTime = now + self._frameInterval
 		return
 	end
 
@@ -620,6 +712,7 @@ function GPU:flush()
 	end
 
 	self._dirty = false
+	self._nextFrameTime = now + self._frameInterval
 end
 
 function GPU:_renderText()

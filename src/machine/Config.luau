@@ -50,6 +50,7 @@ Config.PAGE_SIZE = 4096 -- 4 KB pages
 Config.MAX_PAGES = math.floor(0x00800000 / 4096)
 
 --  Display
+Config.DISPLAY_REFRESH_HZ = 60 -- target display presentation rate
 Config.SCREEN_W = 320 -- VGA mode 13h width
 Config.SCREEN_H = 200 -- VGA mode 13h height
 Config.TEXT_COLS = 80

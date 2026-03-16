@@ -88,7 +88,8 @@ function Motherboard:_startHeartbeat()
 		if not self._powered then
 			return
 		end
-		local dt = 1 / self.config.CPU_CLOCK_HZ
+		local tickHz = math.max(self.config.CPU_CLOCK_HZ or 1, self.config.DISPLAY_REFRESH_HZ or 60)
+		local dt = 1 / tickHz
 
 		-- Process bus DMA
 		self.bus:processDMA()
@@ -125,7 +126,8 @@ function Motherboard:_startHeartbeat()
 		task.delay(dt, tick)
 	end
 
-	task.delay(1 / self.config.CPU_CLOCK_HZ, tick)
+	local startHz = math.max(self.config.CPU_CLOCK_HZ or 1, self.config.DISPLAY_REFRESH_HZ or 60)
+	task.delay(1 / startHz, tick)
 end
 
 --  Input binding
