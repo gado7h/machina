@@ -63,6 +63,8 @@ Config.GLYPH_W = 4
 Config.GLYPH_H = 8
 Config.PAD_X = 1
 Config.PAD_Y = 1
+-- Disable smoothing by default to keep terminal text crisp/pixel-perfect.
+Config.FONT_SMOOTHING = false
 
 --  Storage
 Config.DISK_BLOCK_SIZE = 512 -- bytes per sector

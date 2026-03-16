@@ -218,7 +218,7 @@ function GPU.new(config, editableImage)
 	self.PY = config.PAD_Y or 0
 
 	self.mode = "TEXT"
-	self.fontSmoothing = true
+	self.fontSmoothing = config.FONT_SMOOTHING == true
 	self.guiOps = {}
 
 	self._nextFrameTime = 0
