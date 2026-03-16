@@ -1911,14 +1911,20 @@ function Shell:_buildBuiltins()
 
 		local cursorRow, cursorCol = 1, 0
 		local scrollRow = 1
+		local scrollCol = 0
 		local modified = false
-		local status = "Ctrl+O Save | Ctrl+X Exit"
+		local status = "^G Help  ^O WriteOut  ^W Where Is  ^K Cut Text  ^X Exit"
 		local statusAttr = 0x08
 		local cols = self.config.TEXT_COLS
 		local rows = self.config.TEXT_ROWS
 		local topRow = 1
-		local bodyRows = rows - 3
+		local bodyRows = rows - 4
 		local gutter = 6
+		local textStart = gutter
+		local textWidth = math.max(8, cols - textStart)
+		local clipboardLine = nil
+		local promptMode = nil
+		local promptBuffer = ""
 
 		local luauKeywords = {
 			["and"] = true,
@@ -1976,7 +1982,7 @@ function Shell:_buildBuiltins()
 				local c = line:sub(i, i)
 				local n = line:sub(i + 1, i + 1)
 				if c == "-" and n == "-" then
-					table.insert(tokens, { text = line:sub(i), attr = 0x08 })
+					table.insert(tokens, { text = line:sub(i), attr = 0x02 })
 					break
 				elseif c == '"' or c == "'" then
 					local q = c
@@ -1991,6 +1997,11 @@ function Shell:_buildBuiltins()
 							j = j + 1
 						end
 					end
+					table.insert(tokens, { text = line:sub(i, j - 1), attr = 0x0E }) -- strings
+					i = j
+				elseif c == "[" and n == "[" then
+					local closePos = line:find("]%]", i + 2, false)
+					local j = closePos and (closePos + 2) or (#line + 1)
 					table.insert(tokens, { text = line:sub(i, j - 1), attr = 0x0E })
 					i = j
 				elseif c:match("[%a_]") then
@@ -1999,17 +2010,23 @@ function Shell:_buildBuiltins()
 						j = j + 1
 					end
 					local word = line:sub(i, j - 1)
-					table.insert(tokens, { text = word, attr = luauKeywords[word] and 0x0A or 0x07 })
+					if luauKeywords[word] then
+						table.insert(tokens, { text = word, attr = 0x0B })
+					elseif word == "self" then
+						table.insert(tokens, { text = word, attr = 0x0A })
+					else
+						table.insert(tokens, { text = word, attr = 0x07 })
+					end
 					i = j
 				elseif c:match("%d") then
 					local j = i + 1
-					while j <= #line and line:sub(j, j):match("[%d%.]") do
+					while j <= #line and line:sub(j, j):match("[%d%.xXa-fA-F]") do
 						j = j + 1
 					end
-					table.insert(tokens, { text = line:sub(i, j - 1), attr = 0x0B })
+					table.insert(tokens, { text = line:sub(i, j - 1), attr = 0x0D })
 					i = j
-				elseif c:match("[%+%-%*%/%=<>~]" ) then
-					table.insert(tokens, { text = c, attr = 0x0D })
+				elseif c:match("[%+%-%*%/%=<>~%%%^#:,%.%(%)%[%]{}]") then
+					table.insert(tokens, { text = c, attr = 0x0C })
 					i = i + 1
 				else
 					table.insert(tokens, { text = c, attr = 0x07 })
@@ -2038,13 +2055,21 @@ function Shell:_buildBuiltins()
 			elseif cursorRow >= scrollRow + bodyRows then
 				scrollRow = cursorRow - bodyRows + 1
 			end
+			if cursorCol < scrollCol then
+				scrollCol = cursorCol
+			elseif cursorCol >= scrollCol + textWidth then
+				scrollCol = cursorCol - textWidth + 1
+			end
 			if scrollRow < 1 then
 				scrollRow = 1
 			end
+			if scrollCol < 0 then
+				scrollCol = 0
+			end
 
-			clearRow(0, 0x03)
+			clearRow(0, 0x71)
 			local title = string.format(" GNU nano - Nova IDE | %s%s", fileName, modified and " [Modified]" or "")
-			writeAt(0, 0, title:sub(1, cols), 0x03)
+			writeAt(0, 0, title:sub(1, cols), 0x71)
 
 			for r = 0, bodyRows - 1 do
 				local row = topRow + r
@@ -2054,9 +2079,10 @@ function Shell:_buildBuiltins()
 					local ln = string.format("%4d ", lineIndex)
 					writeAt(0, row, ln, 0x08)
 					local contentLine = lines[lineIndex] or ""
+					local visibleLine = contentLine:sub(scrollCol + 1)
 					if isLuau then
-						local col = gutter
-						for _, token in ipairs(tokenizeLuau(contentLine)) do
+						local col = textStart
+						for _, token in ipairs(tokenizeLuau(visibleLine)) do
 							if col >= cols then
 								break
 							end
@@ -2070,21 +2096,31 @@ function Shell:_buildBuiltins()
 							end
 						end
 					else
-						writeAt(gutter, row, contentLine:sub(1, cols - gutter), 0x07)
+						writeAt(textStart, row, visibleLine:sub(1, textWidth), 0x07)
 					end
 				end
 			end
 
-			clearRow(rows - 2, 0x01)
+			clearRow(rows - 3, 0x01)
 			local location = string.format(" Ln %d, Col %d ", cursorRow, cursorCol + 1)
-			writeAt(0, rows - 2, location:sub(1, cols), 0x01)
+			writeAt(0, rows - 3, location:sub(1, cols), 0x01)
 			if status and status ~= "" then
-				clearRow(rows - 1, 0x00)
-				writeAt(0, rows - 1, status:sub(1, cols), statusAttr)
+				clearRow(rows - 2, 0x30)
+				writeAt(0, rows - 2, status:sub(1, cols), statusAttr)
+			end
+
+			clearRow(rows - 1, 0x30)
+			local shortcuts = "^X Exit  ^O WriteOut  ^W Search  ^K Cut  ^U Paste  ^G Goto"
+			writeAt(0, rows - 1, shortcuts:sub(1, cols), 0x30)
+
+			if promptMode then
+				local promptText = (promptMode == "search" and "Search: " or "Goto line: ") .. promptBuffer
+				clearRow(rows - 2, 0x00)
+				writeAt(0, rows - 2, promptText:sub(1, cols), 0x0B)
 			end
 
 			local cursorScreenRow = topRow + (cursorRow - scrollRow)
-			local cursorScreenCol = gutter + cursorCol
+			local cursorScreenCol = textStart + (cursorCol - scrollCol)
 			if cursorScreenRow < topRow then
 				cursorScreenRow = topRow
 			end
@@ -2106,14 +2142,133 @@ function Shell:_buildBuiltins()
 
 		local CTRL_X = string.char(24)
 		local CTRL_O = string.char(15)
+		local CTRL_S = string.char(19)
+		local CTRL_K = string.char(11)
+		local CTRL_U = string.char(21)
+		local CTRL_W = string.char(23)
+		local CTRL_G = string.char(7)
+		local CTRL_Q = string.char(17)
+
+		local function findNext(term)
+			if term == "" then
+				return false
+			end
+			for r = cursorRow, #lines do
+				local line = lines[r] or ""
+				local startCol = (r == cursorRow and (cursorCol + 2) or 1)
+				local at = line:find(term, startCol, true)
+				if at then
+					cursorRow = r
+					cursorCol = at - 1
+					return true
+				end
+			end
+			for r = 1, cursorRow do
+				local line = lines[r] or ""
+				local at = line:find(term, 1, true)
+				if at then
+					cursorRow = r
+					cursorCol = at - 1
+					return true
+				end
+			end
+			return false
+		end
 
 		local function handleInput(ch)
+			if promptMode then
+				if ch == "\n" or ch == "\r" then
+					if promptMode == "search" then
+						if findNext(promptBuffer) then
+							setStatus("Found: " .. promptBuffer, 0x0A)
+						else
+							setStatus("Not found: " .. promptBuffer, 0x0C)
+						end
+					else
+						local ln = tonumber(promptBuffer)
+						if ln then
+							cursorRow = math.clamp(math.floor(ln), 1, #lines)
+							cursorCol = math.min(cursorCol, #(lines[cursorRow] or ""))
+							setStatus(string.format("Moved to line %d", cursorRow), 0x0A)
+						else
+							setStatus("Invalid line number", 0x0C)
+						end
+					end
+					promptMode = nil
+					promptBuffer = ""
+					render()
+					return
+				elseif ch == "\27" or ch == CTRL_X then
+					promptMode = nil
+					promptBuffer = ""
+					setStatus("Canceled", 0x08)
+					render()
+					return
+				elseif ch == "\b" then
+					promptBuffer = promptBuffer:sub(1, -2)
+					render()
+					return
+				elseif #ch == 1 and string.byte(ch) >= 32 and string.byte(ch) <= 126 then
+					promptBuffer = promptBuffer .. ch
+					render()
+					return
+				end
+			end
+
 			if ch == CTRL_X then
+				if modified then
+					setStatus("Unsaved changes. Use Ctrl+O to save or Ctrl+Q to force quit.", 0x0C)
+					render()
+					return
+				end
 				self.gpu:clearScreen()
 				self:endForeground()
 				return
-			elseif ch == CTRL_O then
+			elseif ch == CTRL_Q then
+				self.gpu:clearScreen()
+				self:endForeground()
+				return
+			elseif ch == CTRL_O or ch == CTRL_S then
 				saveFile()
+				render()
+				return
+			elseif ch == CTRL_K then
+				clipboardLine = lines[cursorRow] or ""
+				table.remove(lines, cursorRow)
+				if #lines == 0 then
+					lines = { "" }
+					cursorRow = 1
+					cursorCol = 0
+				else
+					if cursorRow > #lines then
+						cursorRow = #lines
+					end
+					cursorCol = math.min(cursorCol, #(lines[cursorRow] or ""))
+				end
+				modified = true
+				setStatus("Cut current line", 0x08)
+				render()
+				return
+			elseif ch == CTRL_U then
+				if clipboardLine then
+					table.insert(lines, cursorRow + 1, clipboardLine)
+					cursorRow = cursorRow + 1
+					cursorCol = 0
+					modified = true
+					setStatus("Pasted line", 0x0A)
+				else
+					setStatus("Clipboard empty", 0x08)
+				end
+				render()
+				return
+			elseif ch == CTRL_W then
+				promptMode = "search"
+				promptBuffer = ""
+				render()
+				return
+			elseif ch == CTRL_G then
+				promptMode = "goto"
+				promptBuffer = tostring(cursorRow)
 				render()
 				return
 			end
