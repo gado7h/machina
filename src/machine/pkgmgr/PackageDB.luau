@@ -1187,16 +1187,21 @@ else
 	tty.writeln("cube: foreground API unavailable; auto-running demo", tty and tty.color and tty.color(14,0) or nil)
 end
 
-while running and frame < maxFrames do
+local function tick()
+	if not running or frame >= maxFrames then
+		if foregroundSupported then
+			finish()
+		else
+			cleanup()
+		end
+		return
+	end
 	drawFrame()
-	task.wait(0.03)
+	task.delay(0.03, tick)
 end
 
-if foregroundSupported then
-	finish()
-else
-	cleanup()
-end
+drawFrame()
+task.delay(0.03, tick)
 return 0
 ]],
 		},
