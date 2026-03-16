@@ -294,12 +294,24 @@ function Init:_getty()
 	end)
 end
 
-function Init:_loginUser(username)
-	self.gpu:println(string.format("Last login: %s on tty0", os.date()), 0x07)
-	self.gpu:println("", 0x07)
+function Init:_startGPUTest(username)
+	local DemoMod = require(script.Parent.GPUTest)
+	self.gpuTest = DemoMod.new(self.kernel, username, function()
+		self:_startShell(username)
+	end)
+	self.gpuTest:start()
+end
+
+function Init:_startShell(username)
 	local ShellMod = require(script.Parent.Shell)
 	self.shell = ShellMod.new(self.kernel, username)
 	self.shell:start()
+end
+
+function Init:_loginUser(username)
+	self.gpu:println(string.format("Last login: %s on tty0", os.date()), 0x07)
+	self.gpu:println("", 0x07)
+	self:_startGPUTest(username)
 end
 
 return Init
