@@ -149,6 +149,44 @@ function Init:_populateBin()
 		["/usr/bin/lua"] = [[
 		tty.writeln("LuauVM Lua REPL. Use lua <file> to run scripts.",tty.color(11,0));if args[2] then local c=fs.read(args[2]);if c and luauvm then local ok,f,cl=pcall(function()return luauvm.load(c,false)end);if ok and f then local rk,e=pcall(f);if not rk then tty.writeln(tostring(e),tty.color(12,0))end end end end;return 0
 		]],
+		["/bin/cube"] = [[
+		local W,H=gpu.size();gpu.mode("PIXEL");
+		local wx,wy,ww,wh=math.floor(W*0.12),math.floor(H*0.1),math.floor(W*0.76),math.floor(H*0.78)
+		local cx,cy,cz=0,0,5;local A,B,C=0,0,0;local running=true;local speed=0.045
+		local verts={{-1,-1,-1},{1,-1,-1},{1,1,-1},{-1,1,-1},{-1,-1,1},{1,-1,1},{1,1,1},{-1,1,1}}
+		local edges={{1,2},{2,3},{3,4},{4,1},{5,6},{6,7},{7,8},{8,5},{1,5},{2,6},{3,7},{4,8}}
+		local function rot(v)
+			local x,y,z=v[1],v[2],v[3]
+			local sa,ca=math.sin(A),math.cos(A);local sb,cb=math.sin(B),math.cos(B);local sc,cc=math.sin(C),math.cos(C)
+			y,z=y*ca-z*sa,y*sa+z*ca;x,z=x*cb+z*sb,-x*sb+z*cb;x,y=x*cc-y*sc,x*sc+y*cc
+			return x+cx,y+cy,z+cz
+		end
+		local function proj(x,y,z)
+			local f=70/(z>0.2 and z or 0.2)
+			local ox,oy=wx+math.floor(ww*0.5),wy+math.floor(wh*0.54)
+			return math.floor(ox+x*f),math.floor(oy+y*f)
+		end
+		local function draw()
+			gpu.clear(0xFF070B12)
+			gpu.window(wx,wy,ww,wh,"Nova Cube Studio")
+			gpu.text(wx+8,wy+19,"Move window: WASD | Move cube: IJKL/UO | Q: quit",0xFF9CB3CC)
+			local pts={};for i=1,#verts do local x,y,z=rot(verts[i]);pts[i]={proj(x,y,z)} end
+			for i=1,#edges do local a,b=edges[i][1],edges[i][2];gpu.line(pts[a][1],pts[a][2],pts[b][1],pts[b][2],0xFF66D9FF) end
+			gpu.rect(wx+6,wy+34,ww-12,wh-40,0xFF1C2635,false)
+		end
+		local function onInput(ch)
+			if ch=="q" or ch=="Q" or ch=="\27" or ch=="\n" or ch=="\r" then running=false;process.endForeground();gpu.mode("TEXT");return end
+			if ch=="w" then wy=wy-4 elseif ch=="s" then wy=wy+4 elseif ch=="a" then wx=wx-4 elseif ch=="d" then wx=wx+4 end
+			if ch=="i" then cy=cy-0.12 elseif ch=="k" then cy=cy+0.12 elseif ch=="j" then cx=cx-0.12 elseif ch=="l" then cx=cx+0.12 elseif ch=="u" then cz=cz-0.12 elseif ch=="o" then cz=cz+0.12 end
+		end
+		local ok=process.beginForeground("cube",onInput,function() gpu.mode("TEXT") end);if not ok then tty.writeln("cube: foreground busy",tty.color(12,0));gpu.mode("TEXT");return 1 end
+		while running and process.isForeground() do
+			A=A+speed;B=B+speed*0.8;C=C+speed*0.6
+			draw();task.wait(0.033)
+		end
+		if process.isForeground() then process.endForeground() end
+		return 0
+		]],
 	}
 	for path, src in pairs(scripts) do
 		if not self.vfs:exists(path) then
