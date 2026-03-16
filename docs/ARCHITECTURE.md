@@ -2,9 +2,9 @@
 
 ## Boot Pipeline
 
-1. `Main.client.luau` creates the display surface and machine instance.
-2. `firmware/BIOS.luau` runs POST and hardware checks.
-3. `bootloader/Bootloader.luau` loads kernel image/boot data.
+1. `Main.client.luau` creates the display surface and motherboard instance.
+2. `hardware/Motherboard.luau` powers and wires physical devices.
+3. `software/RuntimeController.luau` drives BIOS -> bootloader -> kernel transitions.
 4. `kernel/Kernel.luau` initializes core subsystems.
 5. `userland/Init.luau` starts shell and user workflows.
 
@@ -20,6 +20,14 @@
 - `HDD` stores disk sectors and filesystem data.
 - `GPU` manages pixel output to the Roblox screen surface.
 - `Keyboard` converts Roblox input to scancodes.
+
+
+### Software Runtime Layer
+
+`software/*` owns OS bring-up flow and software-only runtime concerns:
+
+- `RuntimeController` advances boot stages (BIOS -> BOOT -> KERNEL -> RUNNING).
+- Instantiates firmware/bootloader/kernel modules once hardware is ready.
 
 ### Firmware + Boot
 
@@ -39,7 +47,6 @@
 - `Init` performs first-process startup tasks.
 - `Shell` implements command loop/UI interactions.
 - `PackageManager` and `PackageDB` track and resolve installed packages.
-- IDE runtime replaces the former desktop launcher to encourage user-created GUI systems.
 
 ### LuauVM
 

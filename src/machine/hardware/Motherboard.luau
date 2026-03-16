@@ -8,6 +8,7 @@ function Motherboard.new(config, editableImage, luauvm)
 	self.config = config
 	self.editableImage = editableImage
 	self.luauvm = luauvm -- LuauVM module reference
+	self.runtime = nil
 	self._powered = false
 	self._bootStage = "OFF" -- OFF → BIOS → BOOT → KERNEL → RUNNING
 	self._heartbeat = nil
@@ -23,7 +24,7 @@ function Motherboard:powerOn()
 	end
 	self._powered = true
 	self._uptimeStart = os.clock()
-	self._bootStage = "BIOS"
+	self._bootStage = "OFF"
 
 	local Bus_M = require(script.Parent.Bus)
 	local CPU_M = require(script.Parent.CPU)
@@ -76,11 +77,9 @@ function Motherboard:powerOn()
 
 	self:_startHeartbeat()
 
-	local BIOS_M = require(script.Parent.Parent.firmware.BIOS)
-	self.bios = BIOS_M.new(self)
-	self.bios:run(function(memMap)
-		self:_onBIOSComplete(memMap)
-	end)
+	local Runtime_M = require(script.Parent.Parent.software.RuntimeController)
+	self.runtime = Runtime_M.new(self, self.luauvm)
+	self.runtime:startBoot()
 end
 
 --  Heartbeat
@@ -129,36 +128,6 @@ function Motherboard:_startHeartbeat()
 	task.delay(1 / self.config.CPU_CLOCK_HZ, tick)
 end
 
---  Boot chain callbacks
-function Motherboard:_onBIOSComplete(memMap)
-	self._bootStage = "BOOT"
-	local BL_M = require(script.Parent.Parent.bootloader.Bootloader)
-	self.bootloader = BL_M.new(self)
-	self.bootloader:run(memMap, function(fs, loadAddr, kdata)
-		self:_onKernelLoaded(fs, loadAddr, kdata)
-	end)
-end
-
-function Motherboard:_onKernelLoaded(fs, loadAddr, kdata)
-	self._bootStage = "KERNEL"
-
-	-- Set CPU program counter to kernel load address
-	self.cpu:setReg("PC", loadAddr)
-
-	-- Instantiate kernel
-	local K_M = require(script.Parent.Parent.kernel.Kernel)
-	self.kernel = K_M.new(self)
-
-	-- Run kernel main first so kernel.vfs is set
-	self.kernel:kmain(fs, loadAddr, kdata)
-
-	-- Attach package manager after VFS is ready
-	local PKG_M = require(script.Parent.Parent.pkgmgr.PackageManager)
-	self.kernel.pkgmgr = PKG_M.new(self.kernel)
-
-	self._bootStage = "RUNNING"
-end
-
 --  Input binding
 function Motherboard:bindInput(UIS)
 	self._inputService = UIS
@@ -175,6 +144,8 @@ function Motherboard:reboot()
 
 	self._powered = false
 	self._bootStage = "OFF"
+	self.runtime = nil
+	self.kernel = nil
 
 	if self.ram then
 		self.ram._mem = {}
@@ -189,81 +160,42 @@ function Motherboard:reboot()
 	end)
 end
 
---  IDE activation (host-level runtime)
-function Motherboard:activateIDE(path)
-	if not self.kernel then
-		return false, "kernel not running"
-	end
 
-	local idePath = path or "/usr/lib/novaide/init.lua"
-	local source = self.kernel.vfs:readFileStr(idePath)
-	if not source then
-		return false, "IDE runtime not installed"
-	end
-
-	local vm = self.luauvm
-	if not vm then
-		return false, "LuauVM not available"
-	end
-
-	local runtimeEnv = {
-		kernel = self.kernel,
-		machine = self,
-		require = require,
-		string = string,
-		math = math,
-		table = table,
-		pairs = pairs,
-		ipairs = ipairs,
-		next = next,
-		tostring = tostring,
-		tonumber = tonumber,
-		type = type,
-		os = os,
-		setmetatable = setmetatable,
-		getmetatable = getmetatable,
-		error = error,
-		pcall = pcall,
-		xpcall = xpcall,
-	}
-
-	local ok, mod = pcall(function()
-		local chunk = vm(source, false, runtimeEnv)
-		return chunk()
-	end)
-	if not ok then
-		return false, tostring(mod)
-	end
-
-	if type(mod) ~= "table" or type(mod.new) ~= "function" then
-		return false, "IDE module invalid"
-	end
-
-	local ide = mod.new(self.kernel)
-	if not ide or type(ide.start) ~= "function" then
-		return false, "IDE instance invalid"
-	end
-
-	local started, err = ide:start()
-	if started == false then
-		return false, tostring(err)
-	end
-
-	self.kernel._ide = ide
-	return true
+function Motherboard:_setBootStage(stage)
+	self._bootStage = stage
 end
 
 --  Stats
 function Motherboard:getStats()
+	local cpuStats = self.cpu and self.cpu:getStats() or {}
+	local ramStats = self.ram and self.ram:getStats() or {}
+	local hddStats = self.hdd and self.hdd:getStats() or {}
+	local gpuStats = self.gpu and self.gpu:getStats() or {}
+	local busStats = self.bus and self.bus:getStats() or {}
+
 	return {
 		powered = self._powered,
 		bootStage = self._bootStage,
 		uptime = os.clock() - self._uptimeStart,
-		cpuStats = self.cpu and self.cpu:getStats() or {},
-		ramStats = self.ram and self.ram:getStats() or {},
-		hddStats = self.hdd and self.hdd:getStats() or {},
-		gpuStats = self.gpu and self.gpu:getStats() or {},
-		busStats = self.bus and self.bus:getStats() or {},
+		-- Backward-compatible flat stats
+		cpuStats = cpuStats,
+		ramStats = ramStats,
+		hddStats = hddStats,
+		gpuStats = gpuStats,
+		busStats = busStats,
+		-- Explicit hardware vs software breakdown
+		hardware = {
+			cpu = cpuStats,
+			ram = ramStats,
+			hdd = hddStats,
+			gpu = gpuStats,
+			bus = busStats,
+		},
+		software = {
+			bootStage = self._bootStage,
+			kernelRunning = self.kernel ~= nil,
+			runtimeInitialized = self.runtime ~= nil,
+		},
 	}
 end
 

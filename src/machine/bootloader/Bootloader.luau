@@ -232,7 +232,6 @@ function Bootloader:_installBaseSystem(fs)
 				.. "  NovaKernel nova-1.0.0  NovaMachine Educational Platform\n"
 				.. "\n"
 				.. "  Type 'help' for available commands.\n"
-				.. "  Type 'pkgmgr install ide' to install the Nova IDE runtime.\n"
 				.. "\n"
 		)
 	)

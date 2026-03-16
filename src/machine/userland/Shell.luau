@@ -651,47 +651,6 @@ function Shell:_makeRuntimeEnv(args, parsed)
 		execute = function(cmd)
 			cmd = tostring(cmd)
 
-			-- Host hooks
-			if cmd == "__host_activate_ide__" then
-				if shell.kernel.machine and shell.kernel.machine.activateIDE then
-					local ok, started, startErr = pcall(function()
-						return shell.kernel.machine:activateIDE()
-					end)
-
-					if not ok then
-						shell.gpu:println("IDE activation error: " .. tostring(started), 0x0C)
-						return false
-					end
-
-					if not started then
-						shell.gpu:println("IDE activation error: " .. tostring(startErr), 0x0C)
-						return false
-					end
-
-					local ide = shell.kernel._ide
-					if ide and type(ide._input) == "function" then
-						shell:beginForeground("novaide", function(ch)
-							if ch == "\3" then
-								shell:endForeground()
-								return
-							end
-							ide:_input(ch)
-							ide:_draw()
-						end, function()
-							shell.kernel._ide = nil
-							if shell.gpu then
-								shell.gpu:setMode("TEXT")
-							end
-						end)
-					end
-
-					return true
-				end
-
-				shell.gpu:println("IDE subsystem unavailable", 0x0C)
-				return false
-			end
-
 			-- normal shell command
 			shell:_executeLine(cmd)
 			return shell.exitCode == 0
