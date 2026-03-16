@@ -14,7 +14,8 @@ Nova is a Roblox-based virtual machine project written in Luau. It emulates a sm
 
 - `src/machine/Config.luau` – global machine constants.
 - `src/machine/Main.client.luau` – client entry point and GUI boot surface.
-- `src/machine/hardware/` – hardware emulation modules.
+- `src/machine/hardware/` – hardware emulation modules (device wiring, bus, clocks, memory maps).
+- `src/machine/software/` – software runtime orchestration (firmware → bootloader → kernel lifecycle).
 - `src/machine/firmware/` – BIOS-style firmware startup.
 - `src/machine/bootloader/` – stage loader and kernel handoff.
 - `src/machine/kernel/` – core OS modules.

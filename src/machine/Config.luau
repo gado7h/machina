@@ -50,8 +50,8 @@ Config.PAGE_SIZE = 4096 -- 4 KB pages
 Config.MAX_PAGES = math.floor(0x00800000 / 4096)
 
 --  Display
-Config.SCREEN_W = 480
-Config.SCREEN_H = 250
+Config.SCREEN_W = 320 -- VGA mode 13h width
+Config.SCREEN_H = 200 -- VGA mode 13h height
 Config.TEXT_COLS = 80
 Config.TEXT_ROWS = 25
 
