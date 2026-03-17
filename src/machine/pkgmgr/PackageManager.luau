@@ -3,12 +3,32 @@
 local PKG = {}
 PKG.__index = PKG
 
+local function getVmConfig(config)
+	local vm = config and config.VM or {}
+	return {
+		enabled = vm.ENABLED == true,
+		pragma = vm.PRAGMA or "--!vm",
+		extension = vm.EXTENSION or ".luau",
+	}
+end
+
+local function firstMeaningfulLine(text)
+	for line in (text .. "\n"):gmatch("([^\n]*)\n") do
+		local trimmed = line:match("^%s*(.-)%s*$")
+		if trimmed ~= "" then
+			return trimmed
+		end
+	end
+	return nil
+end
+
 function PKG.new(kernel)
 	local self = setmetatable({}, PKG)
 	self.kernel = kernel
 	self.vfs = kernel.vfs
 	self.gpu = kernel.gpu
 	self.luauvm = kernel.machine and kernel.machine.luauvm
+	self.vmConfig = getVmConfig(kernel.config)
 	self._dbModule = nil -- lazy-loaded PackageDB
 	self._installed = {} -- name → {name,version,installTime}
 	self._logFile = "/var/log/pkgmgr.log"
@@ -123,7 +143,12 @@ function PKG:install(name)
 		-- Attempt to compile through LuauVM to validate syntax, then store source
 		-- We store Lua source (not bytecode) so scripts remain human-readable
 		-- and can be re-compiled on execution.
-		if self.luauvm and (path:match("%.lua$") or not path:match("%.[a-z]+$")) then
+		if
+			self.luauvm
+			and self.vmConfig.enabled
+			and path:match("%.luau$")
+			and firstMeaningfulLine(source) == self.vmConfig.pragma
+		then
 			-- Validate by compiling (detect syntax errors early)
 			if type(source) == "string" then
 				local ok, result = pcall(function()
@@ -186,12 +211,14 @@ function PKG:remove(name)
 	local pkg = self:_db().get(name)
 	if pkg then
 		-- Remove files
+		local removedCount = 0
 		for path, _ in pairs(pkg.files or {}) do
 			if self.vfs:exists(path) then
 				self.vfs:remove(path)
+				removedCount = removedCount + 1
 			end
 		end
-		self.gpu:println(string.format("Removed %d files for %s", #(pkg.files or {}), name), 0x07)
+		self.gpu:println(string.format("Removed %d files for %s", removedCount, name), 0x07)
 	end
 
 	self._installed[name] = nil
@@ -277,8 +304,15 @@ function PKG:_runHook(source, pkgName, hookName)
 	end
 
 	local vm = self.luauvm
-	if not vm then
+	if not vm or not self.vmConfig.enabled then
 		self.gpu:println(string.format("  [%s/%s] LuauVM unavailable, skipping hook", pkgName, hookName), 0x0E)
+		return
+	end
+	if firstMeaningfulLine(source) ~= self.vmConfig.pragma then
+		self.gpu:println(
+			string.format("  [%s/%s] hook skipped: missing %s", pkgName, hookName, self.vmConfig.pragma),
+			0x0E
+		)
 		return
 	end
 

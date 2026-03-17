@@ -104,6 +104,8 @@ function CPU.new(bus, config)
 		tlbHits = 0,
 		tlbMisses = 0,
 		exceptions = 0,
+		guestSessions = 0,
+		guestSessionFaults = 0,
 	}
 
 	self._icache = {}
@@ -115,6 +117,15 @@ function CPU.new(bus, config)
 	for i = 0, 1023 do
 		self._branchPredictor[i] = 2
 	end
+	self._managedRuntimes = {}
+	self._defaultManagedRuntime = nil
+	self._guestBackends = {}
+	self._defaultGuestBackend = nil
+	self._guestSessionQueue = {}
+	self._guestSessions = {}
+	self._guestSessionSerial = 1
+	self._guestLastSessionId = nil
+
 	self._latchIF = nil
 	self._latchID = nil
 	self._latchEX = nil
@@ -145,6 +156,8 @@ function CPU:reset()
 	self.stats.tlbHits = 0
 	self.stats.tlbMisses = 0
 	self.stats.exceptions = 0
+	self.stats.guestSessions = 0
+	self.stats.guestSessionFaults = 0
 	for i = 0, 1023 do
 		self._branchPredictor[i] = 2
 	end
@@ -152,6 +165,14 @@ function CPU:reset()
 	self._latchID = nil
 	self._latchEX = nil
 	self._latchMA = nil
+	self._managedRuntimes = {}
+	self._defaultManagedRuntime = nil
+	self._guestBackends = {}
+	self._defaultGuestBackend = nil
+	self._guestSessionQueue = {}
+	self._guestSessions = {}
+	self._guestSessionSerial = 1
+	self._guestLastSessionId = nil
 end
 
 function CPU:getReg(name)
@@ -707,6 +728,372 @@ end
 
 function CPU:getStats()
 	return self.stats
+end
+
+function CPU:_nextGuestSessionId()
+	local id = self._guestSessionSerial
+	self._guestSessionSerial = id + 1
+	return id
+end
+
+function CPU:_traceGuestSession(session, phase, detail)
+	local vmConfig = self.config.VM or {}
+	if vmConfig.TRACE_GUEST_EXECUTION ~= true then
+		return
+	end
+	warn(
+		string.format(
+			"[CPU guest] id=%d phase=%s backend=%s detail=%s",
+			session.id or -1,
+			tostring(phase),
+			tostring(session.backendName),
+			tostring(detail or "")
+		)
+	)
+end
+
+function CPU:registerGuestExecutionBackend(name, backend)
+	if type(name) ~= "string" or name == "" or type(backend) ~= "table" then
+		return false
+	end
+
+	local executeFn = backend.execute
+	if type(executeFn) ~= "function" then
+		return false
+	end
+
+	self._guestBackends[name] = {
+		kind = backend.kind or "custom",
+		runtime = backend.runtime,
+		execute = executeFn,
+	}
+	if not self._defaultGuestBackend then
+		self._defaultGuestBackend = name
+	end
+	return true
+end
+
+function CPU:getGuestBackend(name)
+	return self._guestBackends[name or self._defaultGuestBackend]
+end
+
+function CPU:ensureManagedGuestBackend(runtimeName, backendName)
+	local vmConfig = self.config.VM or {}
+	local selectedRuntime = runtimeName or vmConfig.MANAGED_RUNTIME or self._defaultManagedRuntime or "luauvm"
+	local selectedBackend = backendName or vmConfig.CPU_BACKEND or (selectedRuntime .. "-cpu")
+
+	if self._guestBackends[selectedBackend] then
+		return selectedBackend
+	end
+
+	self:registerGuestExecutionBackend(selectedBackend, {
+		kind = "managed-runtime-adapter",
+		runtime = selectedRuntime,
+		execute = function(cpu, session)
+			local runtimeId = session.runtimeName or selectedRuntime
+			local runtime = cpu:getManagedRuntime(runtimeId)
+			if not runtime or type(runtime.loadBytecode) ~= "function" then
+				return nil, "managed-runtime-unavailable:" .. tostring(runtimeId)
+			end
+			return runtime.loadBytecode(session.bytecode, session.env, session.context)
+		end,
+	})
+
+	return selectedBackend
+end
+
+function CPU:attachManagedRuntime(name, runtime)
+	if type(name) ~= "string" or name == "" or type(runtime) ~= "table" then
+		return false
+	end
+	self._managedRuntimes[name] = runtime
+	if not self._defaultManagedRuntime then
+		self._defaultManagedRuntime = name
+	end
+	local vmConfig = self.config.VM or {}
+	local preferredRuntime = vmConfig.MANAGED_RUNTIME or self._defaultManagedRuntime or name
+	local preferredBackend = nil
+	if name == preferredRuntime then
+		preferredBackend = vmConfig.CPU_BACKEND
+	end
+	self:ensureManagedGuestBackend(name, preferredBackend)
+	return true
+end
+
+function CPU:getManagedRuntime(name)
+	return self._managedRuntimes[name or self._defaultManagedRuntime]
+end
+
+function CPU:createExecutionContext(opts)
+	opts = opts or {}
+	local execContext = {
+		kind = "nova.exec-context",
+		abi = "nova.exec.v1",
+		pid = opts.pid or 0,
+		argv = opts.argv or {},
+		env = opts.env or {},
+		executable = opts.executable or {},
+		backend = opts.backend or "auto",
+		cpuBackend = opts.cpuBackend,
+	}
+	local cpu = self
+
+	function execContext:resolveBackend()
+		return cpu:getGuestExecutionBackend(self)
+	end
+
+	function execContext:executeBytecode(bytecode, envOverride, overrides)
+		local dispatchContext = {
+			kind = self.kind,
+			abi = self.abi,
+			pid = self.pid,
+			argv = self.argv,
+			env = self.env,
+			executable = self.executable,
+			backend = self.backend,
+			cpuBackend = self.cpuBackend,
+		}
+		if type(overrides) == "table" then
+			for key, value in pairs(overrides) do
+				dispatchContext[key] = value
+			end
+		end
+		return cpu:executeGuestBytecode(bytecode, envOverride or self.env, dispatchContext)
+	end
+
+	return execContext
+end
+
+function CPU:createGuestSession(bytecode, env, context, backend)
+	local session = {
+		id = self:_nextGuestSessionId(),
+		bytecode = bytecode,
+		env = env,
+		context = context or {},
+		backendKind = backend and backend.kind or "unknown",
+		backendName = backend and backend.name or "unknown",
+		backend = backend and backend.backend or nil,
+		runtimeName = backend and backend.runtimeName or nil,
+		state = "created",
+		createdCycle = self.stats.cycles,
+		startedCycle = nil,
+		finishedCycle = nil,
+		result = nil,
+		error = nil,
+	}
+	self._guestSessions[session.id] = session
+	return session
+end
+
+function CPU:enqueueGuestSession(session)
+	if type(session) ~= "table" or type(session.id) ~= "number" then
+		return false
+	end
+	session.state = "queued"
+	table.insert(self._guestSessionQueue, session)
+	self:_traceGuestSession(session, "queued")
+	return true
+end
+
+function CPU:runNextGuestSession()
+	if #self._guestSessionQueue == 0 then
+		return nil
+	end
+
+	local session = table.remove(self._guestSessionQueue, 1)
+	session.state = "running"
+	session.startedCycle = self.stats.cycles
+	self:_traceGuestSession(session, "running")
+
+	local backend = session.backend
+	if not backend and session.runtimeName then
+		self:ensureManagedGuestBackend(session.runtimeName, session.backendName)
+		backend = self:getGuestBackend(session.backendName)
+		session.backend = backend
+	end
+
+	if not backend or type(backend.execute) ~= "function" then
+		session.state = "faulted"
+		session.error = "guest-backend-unavailable:" .. tostring(session.backendName)
+		self.stats.guestSessionFaults = self.stats.guestSessionFaults + 1
+		self:_traceGuestSession(session, "faulted", session.error)
+	else
+		local ok, fn, runtimeErr = pcall(backend.execute, self, session)
+		if not ok then
+			session.state = "faulted"
+			session.error = "guest-backend-crash:" .. tostring(fn)
+			self.stats.guestSessionFaults = self.stats.guestSessionFaults + 1
+			self:_traceGuestSession(session, "faulted", session.error)
+		elseif type(fn) ~= "function" then
+			session.state = "faulted"
+			session.error = runtimeErr or "guest-entrypoint-missing"
+			self.stats.guestSessionFaults = self.stats.guestSessionFaults + 1
+			self:_traceGuestSession(session, "faulted", session.error)
+		else
+			session.state = "ready"
+			session.result = fn
+			self:_traceGuestSession(session, "ready")
+		end
+	end
+
+	session.finishedCycle = self.stats.cycles
+	self.stats.guestSessions = self.stats.guestSessions + 1
+	self._guestLastSessionId = session.id
+	return session
+end
+
+function CPU:drainGuestSessions(maxSessions)
+	local processed = 0
+	local last = nil
+	while #self._guestSessionQueue > 0 and (maxSessions == nil or processed < maxSessions) do
+		last = self:runNextGuestSession()
+		processed = processed + 1
+	end
+	return processed, last
+end
+
+function CPU:getGuestSession(sessionId)
+	return self._guestSessions[sessionId]
+end
+
+function CPU:getGuestExecutionState()
+	return {
+		queueDepth = #self._guestSessionQueue,
+		sessionCount = self.stats.guestSessions,
+		faultCount = self.stats.guestSessionFaults,
+		lastSessionId = self._guestLastSessionId,
+		defaultBackend = self._defaultGuestBackend,
+	}
+end
+
+function CPU:getGuestExecutionBackend(context)
+	context = context or {}
+	local vmConfig = self.config.VM or {}
+	local exec = context.executable or {}
+	local requested = context.backend or "auto"
+	local defaultBackend = vmConfig.DEFAULT_BACKEND or "cpu-managed"
+	local runtimeName = exec.runtime
+		or context.runtime
+		or vmConfig.MANAGED_RUNTIME
+		or self._defaultManagedRuntime
+		or "luauvm"
+
+	if requested == "native" or exec.kind == "native" or exec.format == "native" then
+		return { kind = "native", name = "nova32" }
+	end
+
+	if requested == "managed-vm" then
+		return {
+			kind = "managed-vm",
+			name = runtimeName,
+			runtimeName = runtimeName,
+			runtime = self:getManagedRuntime(runtimeName),
+		}
+	end
+
+	local cpuBackedRequested = requested == "cpu-managed" or requested == "cpu-guest"
+	local cpuBackedByDefault = requested == "auto" and defaultBackend ~= "managed-vm"
+	local cpuBackedByExecutable = exec.kind == "vm" or exec.format == "luau"
+	if cpuBackedRequested or cpuBackedByDefault or cpuBackedByExecutable then
+		local backendName = exec.cpuBackend or context.cpuBackend or vmConfig.CPU_BACKEND or (runtimeName .. "-cpu")
+		return {
+			kind = "cpu-guest",
+			name = backendName,
+			runtimeName = runtimeName,
+			backend = self:getGuestBackend(backendName),
+		}
+	end
+
+	if requested == "auto" and defaultBackend == "managed-vm" then
+		return {
+			kind = "managed-vm",
+			name = runtimeName,
+			runtimeName = runtimeName,
+			runtime = self:getManagedRuntime(runtimeName),
+		}
+	end
+
+	return { kind = "unknown", name = tostring(requested) }
+end
+
+function CPU:_executeManagedRuntimeDirect(runtimeName, bytecode, env, context)
+	local runtime = self:getManagedRuntime(runtimeName)
+	if not runtime or type(runtime.loadBytecode) ~= "function" then
+		return nil, "managed-runtime-unavailable:" .. tostring(runtimeName)
+	end
+	return runtime.loadBytecode(bytecode, env, context)
+end
+
+function CPU:executeGuestExecutable(executable, env, context)
+	if type(executable) ~= "table" then
+		return nil, "invalid-executable-spec"
+	end
+
+	local exec = table.clone(executable)
+	context = context or {}
+	context.executable = context.executable or exec
+
+	if exec.kind == "native" or exec.format == "native" then
+		return nil, "native-guest-loader-not-implemented"
+	end
+
+	local runtimeName = exec.runtime or context.runtime or (self.config.VM or {}).MANAGED_RUNTIME or "luauvm"
+	local bytecode = exec.bytecode
+
+	if not bytecode then
+		local runtime = self:getManagedRuntime(runtimeName)
+		if not runtime or type(runtime.compileSource) ~= "function" then
+			return nil, "managed-runtime-compiler-unavailable:" .. tostring(runtimeName)
+		end
+		if type(exec.content) ~= "string" then
+			return nil, "guest-executable-content-missing"
+		end
+		bytecode = runtime.compileSource(exec.content)
+		exec.bytecode = bytecode
+		context.executable = exec
+	end
+
+	return self:executeGuestBytecode(bytecode, env, context)
+end
+
+function CPU:executeGuestBytecode(bytecode, env, context)
+	local backend = self:getGuestExecutionBackend(context)
+	if backend.kind == "native" then
+		return nil, "backend-requires-native-loader"
+	end
+
+	if backend.kind == "cpu-guest" then
+		local session = self:createGuestSession(bytecode, env, context, backend)
+		self:enqueueGuestSession(session)
+		self:drainGuestSessions(1)
+		if session.state == "ready" and type(session.result) == "function" then
+			return session.result, nil, session
+		end
+
+		local vmConfig = self.config.VM or {}
+		local strictCPU = vmConfig.STRICT_CPU_BACKEND == true
+		local allowFallback = vmConfig.ALLOW_HOST_FALLBACK ~= false
+		if strictCPU or not allowFallback then
+			return nil, session.error or "cpu-guest-execution-failed", session
+		end
+
+		local fn, err = self:_executeManagedRuntimeDirect(backend.runtimeName, bytecode, env, context)
+		if fn then
+			session.fallback = "managed-runtime"
+			return fn, nil, session
+		end
+		return nil, err or session.error or "guest-execution-failed", session
+	end
+
+	if backend.kind ~= "managed-vm" then
+		return nil, "backend-unavailable:" .. tostring(backend.kind)
+	end
+
+	local fn, err = self:_executeManagedRuntimeDirect(backend.runtimeName, bytecode, env, context)
+	if not fn then
+		return nil, err
+	end
+	return fn, nil
 end
 
 CPU.OP = OP

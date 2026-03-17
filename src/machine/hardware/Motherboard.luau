@@ -47,6 +47,9 @@ function Motherboard:powerOn()
 	self.hdd = HDD_M.new(self.config)
 	self.cpu = CPU_M.new(self.bus, self.config)
 	self.keyboard = KBD_M.new(self.config, self.bus)
+	if self.luauvm and type(self.luauvm.registerCPU) == "function" then
+		self.luauvm.registerCPU(self.cpu)
+	end
 
 	if self._inputService then
 		self.keyboard:bindRobloxInput(self._inputService)

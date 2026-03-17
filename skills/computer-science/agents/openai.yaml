@@ -1,0 +1,4 @@
+interface:
+  display_name: "Computer Science"
+  short_description: "Solve algorithms, systems, and CS reasoning tasks"
+  default_prompt: "Use $computer-science to solve, explain, or implement a computer science problem."

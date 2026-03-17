@@ -170,4 +170,17 @@ Config.PLATFORM = {
 	COMPAT = { "linux", "macos", "windows-nt-userland" },
 }
 
+Config.VM = {
+	ENABLED = false,
+	PRAGMA = "--!vm",
+	EXTENSION = ".luau",
+	NATIVE_PRAGMA = "--!native",
+	DEFAULT_BACKEND = "cpu-managed",
+	CPU_BACKEND = "luauvm-cpu",
+	MANAGED_RUNTIME = "luauvm",
+	ALLOW_HOST_FALLBACK = true,
+	STRICT_CPU_BACKEND = false,
+	TRACE_GUEST_EXECUTION = false,
+}
+
 return Config

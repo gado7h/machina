@@ -3,6 +3,27 @@
 local Init = {}
 Init.__index = Init
 
+local GuestPrograms = require(script.Parent.GuestPrograms)
+
+local function getVmConfig(config)
+	local vm = config and config.VM or {}
+	return {
+		enabled = vm.ENABLED == true,
+		pragma = vm.PRAGMA or "--!vm",
+		extension = vm.EXTENSION or ".luau",
+	}
+end
+
+local function firstMeaningfulLine(text)
+	for line in (text .. "\n"):gmatch("([^\n]*)\n") do
+		local trimmed = line:match("^%s*(.-)%s*$")
+		if trimmed ~= "" then
+			return trimmed
+		end
+	end
+	return nil
+end
+
 function Init.new(kernel)
 	local self = setmetatable({}, Init)
 	self.kernel = kernel
@@ -10,6 +31,7 @@ function Init.new(kernel)
 	self.vfs = kernel.vfs
 	self.config = kernel.config
 	self.luauvm = kernel.machine and kernel.machine.luauvm
+	self.vmConfig = getVmConfig(self.config)
 	return self
 end
 
@@ -41,7 +63,7 @@ function Init:_rcSysinit()
 			end,
 		},
 		{
-			msg = "Validating scripts (LuauVM)",
+			msg = "Validating VM scripts",
 			fn = function()
 				self:_precompileBin()
 			end,
@@ -127,38 +149,14 @@ function Init:_mountFS()
 end
 
 function Init:_populateBin()
-	local scripts = {
-		["/bin/echo"] = 'local p={};local nl=true;for i=2,#args do if args[i]=="-n" then nl=false else table.insert(p,args[i])end end;local s=table.concat(p," "):gsub("\\\\n","\\n"):gsub("\\\\t","\\t");if nl then tty.writeln(s)else tty.write(s)end;return 0',
-		["/bin/cat"] = 'if #args<2 then if process._pipeInput then tty.write(process._pipeInput)end;return 0 end;for i=2,#args do local c=fs.read(args[i]);if c then tty.write(c)else tty.writeln("cat: "..args[i]..": not found",tty.color(12,0));return 1 end end;return 0',
-		["/bin/pwd"] = "tty.writeln(process.cwd());return 0",
-		["/bin/date"] = 'tty.writeln(os.date((args[2] and args[2]:gsub("^%+","")) or "%c"));return 0',
-		["/bin/clear"] = "tty.clear();return 0",
-		["/bin/true"] = "return 0",
-		["/bin/false"] = "return 1",
-		["/bin/sleep"] = "local d=os.clock()+(tonumber(args[2])or 1);while os.clock()<d do end;return 0",
-		["/bin/uname"] = 'local f={};for i=2,#args do for j=2,#args[i] do f[args[i]:sub(j,j)]=true end end;if f["a"] then tty.writeln("NovaOS novamachine nova-1.0.0 #1 SMP nova32")elseif f["r"] then tty.writeln("nova-1.0.0")elseif f["m"] then tty.writeln("nova32")else tty.writeln("NovaOS")end;return 0',
-		["/bin/wc"] = 'local c=args[2] and(fs.read(args[2])or"")or(process._pipeInput or"");local l,w,b=0,0,#c;for ln in(c.."\\n"):gmatch("([^\\n]*)\\n") do l=l+1;for _ in ln:gmatch("%S+") do w=w+1 end end;tty.writeln(string.format("%7d %7d %7d",l,w,b));return 0',
-		["/bin/grep"] = 'local p=args[2];local c=args[3] and(fs.read(args[3])or"")or(process._pipeInput or"");if not p then tty.writeln("usage: grep <pat> [file]");return 1 end;for l in(c.."\\n"):gmatch("([^\\n]*)\\n") do if l:find(p) then tty.writeln(l,tty.color(10,0))end end;return 0',
-		["/bin/sort"] = 'local c=args[2] and(fs.read(args[2])or"")or(process._pipeInput or"");local t={};for l in(c.."\\n"):gmatch("([^\\n]*)\\n") do if l~="" then table.insert(t,l)end end;table.sort(t);for _,l in ipairs(t) do tty.writeln(l)end;return 0',
-		["/bin/which"] = 'if not args[2] then return 1 end;for _,d in ipairs({"/bin","/usr/bin","/pkg/bin"}) do if fs.exists(d.."/"..args[2]) then tty.writeln(d.."/"..args[2]);return 0 end end;tty.writeln(args[2]..": not found",tty.color(12,0));return 1',
-		["/bin/find"] = 'local function w(d)local e=fs.ls(d);if not e then return end;for _,f in ipairs(e) do local p=(d=="/"and"/"..f.name or d.."/"..f.name);if not args[2] or args[2]:find("-")==nil or d:find(args[2]:gsub("^./","")) then tty.writeln(p)end;if f.isDir then w(p)end end end;w(args[2]or".");return 0',
-		["/bin/head"] = 'local n=10;local p;for i=2,#args do if args[i]=="-n" then n=tonumber(args[i+1])or 10 elseif not p then p=args[i]end end;local c=p and(fs.read(p)or"")or(process._pipeInput or"");local i=0;for l in(c.."\\n"):gmatch("([^\\n]*)\\n") do if i>=n then break end;tty.writeln(l);i=i+1 end;return 0',
-		["/bin/tail"] = 'local n=10;local p;for i=2,#args do if args[i]=="-n" then n=tonumber(args[i+1])or 10 elseif not p then p=args[i]end end;local c=p and(fs.read(p)or"")or(process._pipeInput or"");local t={};for l in(c.."\\n"):gmatch("([^\\n]*)\\n") do table.insert(t,l)end;for i=math.max(1,#t-n+1),#t do tty.writeln(t[i])end;return 0',
-		["/sbin/init"] = "return 0",
-		["/sbin/shutdown"] = 'tty.writeln("Shutting down...",tty.color(14,0));os.exit(0)',
-		["/usr/bin/lua"] = [[
-		tty.writeln("LuauVM Lua REPL. Use lua <file> to run scripts.",tty.color(11,0));if args[2] then local c=fs.read(args[2]);if c and luauvm then local ok,f,cl=pcall(function()return luauvm.load(c,false)end);if ok and f then local rk,e=pcall(f);if not rk then tty.writeln(tostring(e),tty.color(12,0))end end end end;return 0
-		]],
-	}
+	local scripts = GuestPrograms.materialize(self.vmConfig.pragma)
 	for path, src in pairs(scripts) do
-		if not self.vfs:exists(path) then
-			self.vfs:writeFileStr(path, src)
-		end
+		self.vfs:writeFileStr(path, src)
 	end
 end
 
 function Init:_precompileBin()
-	if not self.luauvm then
+	if not self.luauvm or not self.vmConfig.enabled then
 		return
 	end
 	for _, dir in ipairs({ "/bin", "/usr/bin" }) do
@@ -166,7 +164,7 @@ function Init:_precompileBin()
 		for _, e in ipairs(entries) do
 			if not e.isDir then
 				local src = self.vfs:readFileStr(dir .. "/" .. e.name)
-				if src then
+				if src and firstMeaningfulLine(src) == self.vmConfig.pragma then
 					pcall(function()
 						self.luauvm.compile(src)
 					end)
@@ -224,7 +222,10 @@ function Init:_rcLocal()
 		return
 	end
 	local src = self.vfs:readFileStr(path)
-	if not src or not self.luauvm then
+	if not src or not self.luauvm or not self.vmConfig.enabled then
+		return
+	end
+	if firstMeaningfulLine(src) ~= self.vmConfig.pragma then
 		return
 	end
 	local sandbox = {

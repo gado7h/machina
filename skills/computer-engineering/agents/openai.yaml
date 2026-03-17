@@ -1,0 +1,4 @@
+interface:
+  display_name: "Computer Engineering"
+  short_description: "Analyze architecture, logic, and low-level systems"
+  default_prompt: "Use $computer-engineering to design, debug, or explain a low-level hardware or computer architecture problem."
