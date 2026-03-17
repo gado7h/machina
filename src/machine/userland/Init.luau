@@ -151,9 +151,7 @@ end
 function Init:_populateBin()
 	local scripts = GuestPrograms.materialize(self.vmConfig.pragma)
 	for path, src in pairs(scripts) do
-		if not self.vfs:exists(path) then
-			self.vfs:writeFileStr(path, src)
-		end
+		self.vfs:writeFileStr(path, src)
 	end
 end
 

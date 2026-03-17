@@ -729,7 +729,7 @@ function Shell:_makeRuntimeEnv(args, parsed, execContext)
 			return nil
 		end,
 		lines = function(_, src)
-			local data = src and vfs:readFileStr(src) or stdinData or ""
+			local data = src and vfs:readFileStr(resolvePath(src)) or stdinData or ""
 			local lines = {}
 			for l in (data .. "\n"):gmatch("([^\n]*)\n") do
 				table.insert(lines, l)
@@ -742,7 +742,7 @@ function Shell:_makeRuntimeEnv(args, parsed, execContext)
 		end,
 		open = function(_, path, mode)
 			mode = mode or "r"
-			local abspath = path:sub(1, 1) == "/" and path or (shell.cwd .. "/" .. path)
+			local abspath = resolvePath(path)
 			if mode:find("w") then
 				return {
 					write = function(self2, s)
@@ -2948,13 +2948,20 @@ function Shell:_buildBuiltins()
 		"uptime",
 		"free",
 		"df",
+		"env",
 		"wc",
 		"grep",
 		"sort",
+		"uniq",
+		"cut",
+		"printf",
+		"test",
 		"which",
 		"find",
 		"head",
 		"tail",
+		"xargs",
+		"tee",
 		"ps",
 		"sysinfo",
 		"dmesg",

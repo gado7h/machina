@@ -30,7 +30,6 @@ if #args < 2 then
 	end
 	return 0
 end
-
 for i = 2, #args do
 	local content = fs.read(args[i])
 	if content then
@@ -40,83 +39,10 @@ for i = 2, #args do
 		return 1
 	end
 end
-
 return 0
 ]],
 	["/bin/pwd.luau"] = [[
 tty.writeln(process.cwd())
-return 0
-]],
-	["/bin/mkdir.luau"] = [[
-if #args < 2 then
-	tty.writeln("usage: mkdir <dir> [...]", tty.color(12, 0))
-	return 1
-end
-for i = 2, #args do
-	local ok, err = fs.mkdir(args[i])
-	if not ok then
-		tty.writeln("mkdir: cannot create directory '" .. args[i] .. "': " .. tostring(err), tty.color(12, 0))
-		return 1
-	end
-end
-return 0
-]],
-	["/bin/rm.luau"] = [[
-local recursive = false
-local paths = {}
-for i = 2, #args do
-	if args[i]:sub(1, 1) == "-" then
-		recursive = args[i]:find("r", 2, true) ~= nil or recursive
-	else
-		table.insert(paths, args[i])
-	end
-end
-for _, path in ipairs(paths) do
-	local st = fs.stat(path)
-	if not st then
-		tty.writeln("rm: cannot remove '" .. path .. "': No such file or directory", tty.color(12, 0))
-		return 1
-	end
-	if st.isDir and not recursive then
-		tty.writeln("rm: cannot remove '" .. path .. "': Is a directory", tty.color(12, 0))
-		return 1
-	end
-	fs.rm(path)
-end
-return 0
-]],
-	["/bin/cp.luau"] = [[
-if #args < 3 then
-	tty.writeln("usage: cp <src> <dst>", tty.color(12, 0))
-	return 1
-end
-local ok, result = fs.copy(args[2], args[3])
-if not ok then
-	tty.writeln("cp: " .. tostring(result), tty.color(12, 0))
-	return 1
-end
-return 0
-]],
-	["/bin/mv.luau"] = [[
-if #args < 3 then
-	tty.writeln("usage: mv <src> <dst>", tty.color(12, 0))
-	return 1
-end
-local ok, result = fs.move(args[2], args[3])
-if not ok then
-	tty.writeln("mv: " .. tostring(result), tty.color(12, 0))
-	return 1
-end
-return 0
-]],
-	["/bin/touch.luau"] = [[
-if #args < 2 then
-	tty.writeln("usage: touch <file> [...]", tty.color(12, 0))
-	return 1
-end
-for i = 2, #args do
-	fs.touch(args[i])
-end
 return 0
 ]],
 	["/bin/ls.luau"] = [[
@@ -126,11 +52,9 @@ local function listDirectory(path)
 		tty.writeln("ls: cannot access '" .. tostring(path) .. "'", tty.color(12, 0))
 		return 1
 	end
-
 	table.sort(entries, function(a, b)
 		return a.name < b.name
 	end)
-
 	local row = {}
 	for _, item in ipairs(entries) do
 		local name = item.name .. (item.isDir and "/" or "")
@@ -145,7 +69,6 @@ local function listDirectory(path)
 	end
 	return 0
 end
-
 return listDirectory(args[2] or process.cwd())
 ]],
 	["/bin/ps.luau"] = [[
@@ -238,14 +161,15 @@ tty.writeln(string.format("%-16s%8d%8d%8d", "Mem:", kb(mi.total), kb(mi.used), k
 tty.writeln(string.format("%-16s%8d%8d%8d", "Swap:", 0, 0, 0))
 return 0
 ]],
-	["/bin/df.luau"] = [[
-local ds = system.diskstats()
-tty.writeln(string.format("%-20s%10s%10s%10s%6s %s", "Filesystem", "1K-blocks", "Used", "Available", "Use%", "Mounted on"), tty.color(11, 0))
-local total = (ds.totalBlocks or 0) * 512 / 1024
-local used = (ds.usedBlocks or 0) * 512 / 1024
-local free = (ds.freeBlocks or 0) * 512 / 1024
-local pct = total > 0 and math.floor(used / total * 100) or 0
-tty.writeln(string.format("%-20s%10d%10d%10d%5d%% %s", "/dev/hda1", math.floor(total), math.floor(used), math.floor(free), pct, "/"))
+	["/bin/env.luau"] = [[
+local keys = {}
+for k in pairs(process.env or {}) do
+	table.insert(keys, k)
+end
+table.sort(keys)
+for _, k in ipairs(keys) do
+	tty.writeln(k .. "=" .. tostring(process.env[k]))
+end
 return 0
 ]],
 	["/bin/wc.luau"] = [[
@@ -288,6 +212,58 @@ for _, line in ipairs(lines) do
 end
 return 0
 ]],
+	["/bin/uniq.luau"] = [[
+local content = args[2] and (fs.read(args[2]) or "") or (process._pipeInput or "")
+local previous = nil
+for line in (content .. "\n"):gmatch("([^\n]*)\n") do
+	if line ~= previous then
+		tty.writeln(line)
+	end
+	previous = line
+end
+return 0
+]],
+	["/bin/cut.luau"] = [[
+local field = args[2] and args[2]:match("^-f(%d+)$")
+local delim = "\t"
+local content = args[3] and (fs.read(args[3]) or "") or (process._pipeInput or "")
+for line in (content .. "\n"):gmatch("([^\n]*)\n") do
+	local parts = {}
+	for part in (line .. delim):gmatch("(.-)" .. delim) do
+		table.insert(parts, part)
+	end
+	if field then
+		tty.writeln(parts[tonumber(field)] or "")
+	else
+		tty.writeln(line)
+	end
+end
+return 0
+]],
+	["/bin/printf.luau"] = [[
+local fmt = args[2] or ""
+local values = {}
+for i = 3, #args do
+	table.insert(values, tonumber(args[i]) or args[i])
+end
+tty.write(string.format(fmt, table.unpack(values)))
+return 0
+]],
+	["/bin/test.luau"] = [[
+local ok = false
+if args[2] == "-e" and args[3] then
+	ok = fs.exists(args[3])
+elseif args[2] == "-f" and args[3] then
+	local st = fs.stat(args[3])
+	ok = st ~= nil and not st.isDir
+elseif args[2] == "-d" and args[3] then
+	local st = fs.stat(args[3])
+	ok = st ~= nil and st.isDir
+elseif args[2] and args[3] == "=" and args[4] then
+	ok = args[2] == args[4]
+end
+return ok and 0 or 1
+]],
 	["/bin/which.luau"] = [[
 if not args[2] then
 	return 1
@@ -320,105 +296,7 @@ local function walk(dir)
 		end
 	end
 end
-
 walk(args[2] or ".")
-return 0
-]],
-	["/bin/mkdir.luau"] = [[
-for i = 2, #args do
-	local path = fs.exists(args[i]) and args[i] or args[i]
-	if not fs.mkdir(path) then
-		tty.writeln("mkdir: cannot create directory '" .. args[i] .. "'", tty.color(12, 0))
-		return 1
-	end
-end
-return 0
-]],
-	["/bin/rm.luau"] = [[
-local recursive = false
-local paths = {}
-for i = 2, #args do
-	if args[i] == "-r" or args[i] == "-rf" or args[i] == "-fr" then
-		recursive = true
-	elseif args[i]:sub(1, 1) == "-" then
-		-- Ignore unsupported flags for now.
-	else
-		table.insert(paths, args[i])
-	end
-end
-
-for _, path in ipairs(paths) do
-	local target = path
-	if not fs.exists(target) then
-		tty.writeln("rm: cannot remove '" .. path .. "': No such file or directory", tty.color(12, 0))
-		return 1
-	end
-	local stat = fs.stat(target)
-	if stat and stat.isDir and not recursive then
-		tty.writeln("rm: cannot remove '" .. path .. "': Is a directory", tty.color(12, 0))
-		return 1
-	end
-	fs.rm(target)
-end
-return 0
-]],
-	["/bin/cp.luau"] = [[
-if #args < 3 then
-	tty.writeln("usage: cp <src> <dst>", tty.color(12, 0))
-	return 1
-end
-
-local source = fs.read(args[2])
-if not source then
-	tty.writeln("cp: cannot read " .. args[2], tty.color(12, 0))
-	return 1
-end
-
-local target = args[3]
-if fs.exists(target) and fs.stat(target) and fs.stat(target).isDir then
-	target = target .. "/" .. (args[2]:match("[^/]+$") or args[2])
-end
-fs.write(target, source)
-return 0
-]],
-	["/bin/mv.luau"] = [[
-if #args < 3 then
-	tty.writeln("usage: mv <src> <dst>", tty.color(12, 0))
-	return 1
-end
-
-local source = fs.read(args[2])
-if not source then
-	tty.writeln("mv: cannot read " .. args[2], tty.color(12, 0))
-	return 1
-end
-
-local target = args[3]
-if fs.exists(target) and fs.stat(target) and fs.stat(target).isDir then
-	target = target .. "/" .. (args[2]:match("[^/]+$") or args[2])
-end
-fs.write(target, source)
-fs.rm(args[2])
-return 0
-]],
-	["/bin/touch.luau"] = [[
-for i = 2, #args do
-	if not fs.exists(args[i]) then
-		fs.write(args[i], "")
-	end
-end
-return 0
-]],
-	["/bin/df.luau"] = [[
-local stats = fs.stat("/")
-local total = 0
-local free = 0
-if stats then
-	total = stats.total or 0
-	free = stats.free or 0
-end
-tty.writeln(string.format("Filesystem     1K-blocks    Used Available Use% Mounted on"))
-tty.writeln(string.format("novafs         %10d %7d %9d  %2d%% /", math.floor(total / 1024), math.floor((total - free) / 1024), math.floor(free / 1024), total > 0 and math.floor(((total - free) / total) * 100) or 0))
 return 0
 ]],
 	["/bin/head.luau"] = [[
@@ -431,7 +309,6 @@ for i = 2, #args do
 		path = args[i]
 	end
 end
-
 local content = path and (fs.read(path) or "") or (process._pipeInput or "")
 local index = 0
 for line in (content .. "\n"):gmatch("([^\n]*)\n") do
@@ -453,7 +330,6 @@ for i = 2, #args do
 		path = args[i]
 	end
 end
-
 local content = path and (fs.read(path) or "") or (process._pipeInput or "")
 local lines = {}
 for line in (content .. "\n"):gmatch("([^\n]*)\n") do
@@ -462,6 +338,33 @@ end
 for i = math.max(1, #lines - count + 1), #lines do
 	tty.writeln(lines[i])
 end
+return 0
+]],
+	["/bin/xargs.luau"] = [[
+local prefix = {}
+for i = 2, #args do
+	table.insert(prefix, args[i])
+end
+local content = process._pipeInput or ""
+for token in content:gmatch("%S+") do
+	local line = table.concat(prefix, " ")
+	if line ~= "" then
+		line = line .. " " .. token
+	else
+		line = token
+	end
+	process.exec(line)
+end
+return 0
+]],
+	["/bin/tee.luau"] = [[
+local target = args[2]
+if not target then
+	return 1
+end
+local content = process._pipeInput or ""
+tty.write(content)
+fs.write(target, content)
 return 0
 ]],
 	["/sbin/init.luau"] = [[
@@ -535,7 +438,6 @@ if not pkgmgr then
 	tty.writeln("pkgmgr: package manager unavailable", tty.color(12, 0))
 	return 1
 end
-
 local sub = args[2]
 if sub == "install" then
 	for i = 3, #args do
@@ -562,7 +464,6 @@ else
 	tty.writeln("usage: pkgmgr <install|remove|update|list|search> [package]")
 	return 1
 end
-
 return 0
 ]],
 }
