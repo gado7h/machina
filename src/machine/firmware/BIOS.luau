@@ -1,11 +1,13 @@
 -- BIOS module
 
+local BootProtocol = require(script.Parent.Parent.bootloader.BootProtocol)
+
 local BIOS = {}
 BIOS.__index = BIOS
 
 function BIOS.new(machine)
 	local self = setmetatable({}, BIOS)
-	self.machine = machine -- reference to Motherboard
+	self.machine = machine
 	self.gpu = machine.gpu
 	self.ram = machine.ram
 	self.rom = machine.rom
@@ -13,22 +15,41 @@ function BIOS.new(machine)
 	self.bus = machine.bus
 	self.config = machine.config
 	self._logs = {}
-	self._memMap = {} -- BIOS memory map entries (like INT 15h E820)
+	self._memMap = {}
+	self._bootDrive = 0x80
+	self._bootSector = nil
+	self._bootSectorAddr = 0
 	return self
 end
 
---  Main POST entry point
-
+-- Main POST entry point
 function BIOS:run(onComplete)
 	self._onComplete = onComplete
+	self:_resetCpuForFirmware()
+	BootProtocol.writeHandoff(self.machine, {
+		stage = BootProtocol.STAGE.RESET,
+		flags = 0,
+		memMapPtr = self.config.RAM_BASE + BootProtocol.MEMMAP_BASE,
+		memMapCount = 0,
+		bootDrive = self._bootDrive,
+	})
 	self:_post()
+end
+
+function BIOS:_resetCpuForFirmware()
+	local cpu = self.machine.cpu
+	if not cpu then
+		return
+	end
+	cpu:reset()
+	cpu:setReg("PC", self.config.ROM_BASE)
 end
 
 function BIOS:_post()
 	local g = self.gpu
 	g:clearScreen(0x07)
 	g:println("NovaFW v2.1  (C) NovaMachine Project", 0x0F)
-	g:println("BIOS POST — Power-On Self-Test", 0x07)
+	g:println("BIOS POST - Power-On Self-Test", 0x07)
 	g:println("", 0x07)
 
 	local steps = {
@@ -51,19 +72,19 @@ function BIOS:_post()
 			end,
 		},
 		{
-			name = "PIC — 8259 Init",
+			name = "PIC - 8259 Init",
 			fn = function()
 				return self:_initPIC()
 			end,
 		},
 		{
-			name = "PIT — Timer Init (18.2Hz)",
+			name = "PIT - Timer Init (18.2Hz)",
 			fn = function()
 				return self:_initPIT()
 			end,
 		},
 		{
-			name = "VGA — Video Init (80×25)",
+			name = "VGA - Video Init (80x25)",
 			fn = function()
 				return self:_initVGA()
 			end,
@@ -81,21 +102,27 @@ function BIOS:_post()
 			end,
 		},
 		{
-			name = "HDD — ATA Device Detect",
+			name = "HDD - ATA Device Detect",
 			fn = function()
 				return self:_detectHDD()
-			end,
-		},
-		{
-			name = "MBR — Boot Signature Check",
-			fn = function()
-				return self:_checkMBR()
 			end,
 		},
 		{
 			name = "Build E820 Memory Map",
 			fn = function()
 				return self:_buildMemMap()
+			end,
+		},
+		{
+			name = "Boot Device Select",
+			fn = function()
+				return self:_selectBootDevice()
+			end,
+		},
+		{
+			name = "Read Boot Sector",
+			fn = function()
+				return self:_loadBootSector()
 			end,
 		},
 	}
@@ -105,10 +132,9 @@ function BIOS:_post()
 			self:_postDone()
 			return
 		end
-		local step = steps[i]
-		local col, row = g:getCursor()
-		g:print(string.format("  %-36s", step.name), 0x07)
 
+		local step = steps[i]
+		g:print(string.format("  %-36s", step.name), 0x07)
 		local ok, msg = step.fn()
 
 		if ok then
@@ -123,7 +149,6 @@ function BIOS:_post()
 		end
 
 		self:_log(step.name .. ": " .. (ok and "OK" or ("FAIL " .. (msg or ""))))
-		-- Use task.delay for Roblox async pacing
 		if task and task.delay then
 			task.delay(0.04, function()
 				runSteps(i + 1)
@@ -136,15 +161,12 @@ function BIOS:_post()
 	runSteps(1)
 end
 
---  POST Steps
-
+-- POST steps
 function BIOS:_testCPU()
 	local cpu = self.machine.cpu
-	-- Verify register file initialized
 	if not cpu then
-		return false, "No CPU found — FATAL"
+		return false, "No CPU found - FATAL"
 	end
-	-- Test: write/read a register
 	cpu:setReg("R1", 0xDEADBEEF)
 	local v = cpu:getReg("R1")
 	cpu:setReg("R1", 0)
@@ -155,7 +177,6 @@ function BIOS:_testCPU()
 end
 
 function BIOS:_testROM()
-	-- Verify ROM magic
 	local b0 = self.rom:memRead(0)
 	local b1 = self.rom:memRead(1)
 	if b0 == 0xFF and b1 == 0xFF then
@@ -165,7 +186,6 @@ function BIOS:_testROM()
 end
 
 function BIOS:_testRAM()
-	-- Write/read test pattern to first 64KB
 	local errors = 0
 	local patterns = { 0xAA, 0x55, 0xFF, 0x00 }
 	for _, pat in ipairs(patterns) do
@@ -183,47 +203,40 @@ function BIOS:_testRAM()
 		return false, errors .. " parity errors"
 	end
 
-	-- Calculate total
 	local mbytes = math.floor(self.config.RAM_SIZE / 1048576)
 	self.gpu:println(string.format("        RAM: %d MB detected", mbytes), 0x07)
 	return true
 end
 
 function BIOS:_initPIC()
-	-- Simulate 8259 PIC initialization (ICW1-ICW4)
-	-- Master PIC: IRQ0-7  → vectors 0x20-0x27
-	-- Slave PIC:  IRQ8-15 → vectors 0x28-0x2F
-	self.bus:portWrite(self.config.PORT.PIC_MASTER_CMD, 0x11) -- ICW1: init+ICW4
-	self.bus:portWrite(self.config.PORT.PIC_MASTER_DATA, 0x20) -- ICW2: base vector 0x20
-	self.bus:portWrite(self.config.PORT.PIC_MASTER_DATA, 0x04) -- ICW3: slave on IRQ2
-	self.bus:portWrite(self.config.PORT.PIC_MASTER_DATA, 0x01) -- ICW4: 8086 mode
-	self.bus:portWrite(self.config.PORT.PIC_MASTER_DATA, 0xF8) -- OCW1: unmask IRQ0,1,2
+	self.bus:portWrite(self.config.PORT.PIC_MASTER_CMD, 0x11)
+	self.bus:portWrite(self.config.PORT.PIC_MASTER_DATA, 0x20)
+	self.bus:portWrite(self.config.PORT.PIC_MASTER_DATA, 0x04)
+	self.bus:portWrite(self.config.PORT.PIC_MASTER_DATA, 0x01)
+	self.bus:portWrite(self.config.PORT.PIC_MASTER_DATA, 0xF8)
 
 	self.bus:portWrite(self.config.PORT.PIC_SLAVE_CMD, 0x11)
 	self.bus:portWrite(self.config.PORT.PIC_SLAVE_DATA, 0x28)
 	self.bus:portWrite(self.config.PORT.PIC_SLAVE_DATA, 0x02)
 	self.bus:portWrite(self.config.PORT.PIC_SLAVE_DATA, 0x01)
-	self.bus:portWrite(self.config.PORT.PIC_SLAVE_DATA, 0xFF) -- all slave masked
+	self.bus:portWrite(self.config.PORT.PIC_SLAVE_DATA, 0xFF)
 	return true
 end
 
 function BIOS:_initPIT()
-	-- Channel 0: rate generator, ~18.2 Hz (divisor 65536 from 1.193182 MHz)
-	self.bus:portWrite(self.config.PORT.PIT_CMD, 0x36) -- ch0, lobyte/hibyte, mode3, binary
-	self.bus:portWrite(self.config.PORT.PIT_CHAN0, 0x00) -- divisor lo
-	self.bus:portWrite(self.config.PORT.PIT_CHAN0, 0x00) -- divisor hi  → 65536 = ~18.2Hz
+	self.bus:portWrite(self.config.PORT.PIT_CMD, 0x36)
+	self.bus:portWrite(self.config.PORT.PIT_CHAN0, 0x00)
+	self.bus:portWrite(self.config.PORT.PIT_CHAN0, 0x00)
 	return true
 end
 
 function BIOS:_initVGA()
-	-- Set 80×25 text mode (INT 10h AH=00 AL=03 equivalent)
 	self.bus:portWrite(self.config.PORT.VGA_MISC_WRITE, 0x67)
 	self.gpu:setMode("TEXT")
 	return true
 end
 
 function BIOS:_enumPCI()
-	-- Walk the config.PCI device table and report
 	local found = 0
 	for _, dev in ipairs(self.config.PCI) do
 		self:_log(
@@ -244,8 +257,7 @@ function BIOS:_enumPCI()
 end
 
 function BIOS:_readCMOS()
-	-- Simulate RTC read: current Roblox time as BIOS time
-	self.bus:portWrite(self.config.PORT.RTC_INDEX, 0x00) -- seconds register
+	self.bus:portWrite(self.config.PORT.RTC_INDEX, 0x00)
 	local ts = os.time and os.time() or 0
 	self._rtcTime = ts
 	return true
@@ -261,17 +273,7 @@ function BIOS:_detectHDD()
 	return true
 end
 
-function BIOS:_checkMBR()
-	local sec = self.hdd:readSector(0)
-	-- Check 0x55 0xAA at bytes 511-512 (index 511, 512 in 1-based)
-	if sec[511] ~= 0x55 or sec[512] ~= 0xAA then
-		return false, "No boot signature (0x55AA) — FATAL"
-	end
-	return true
-end
-
 function BIOS:_buildMemMap()
-	-- E820 memory map
 	self._memMap = {
 		{ base = 0x00000000, size = 0x0009FC00, type = "Usable", desc = "Conventional RAM" },
 		{ base = 0x0009FC00, size = 0x00000400, type = "Reserved", desc = "EBDA" },
@@ -285,14 +287,12 @@ function BIOS:_buildMemMap()
 end
 
 function BIOS:_writeMemMapToRAM()
-	-- Write E820 map to RAM at 0x500 (traditional location)
-	local addr = 0x500
-	self.ram:memWrite(addr, #self._memMap)
+	local addr = BootProtocol.MEMMAP_BASE
+	self.bus:memWrite32(self.config.RAM_BASE + addr, #self._memMap)
 	addr = addr + 4
 	for _, entry in ipairs(self._memMap) do
-		-- 20-byte E820 entry: base(8) + size(8) + type(4)
 		self.bus:memWrite32(self.config.RAM_BASE + addr, entry.base)
-		self.bus:memWrite32(self.config.RAM_BASE + addr + 4, 0) -- high 32 bits of base
+		self.bus:memWrite32(self.config.RAM_BASE + addr + 4, 0)
 		self.bus:memWrite32(self.config.RAM_BASE + addr + 8, entry.size)
 		self.bus:memWrite32(self.config.RAM_BASE + addr + 12, 0)
 		local typeN = (entry.type == "Usable") and 1 or 2
@@ -301,16 +301,72 @@ function BIOS:_writeMemMapToRAM()
 	end
 end
 
---  POST Complete → load bootloader
+function BIOS:_selectBootDevice()
+	if not self.hdd then
+		return false, "No bootable disk - FATAL"
+	end
+	self._bootDrive = 0x80
+	self:_writeBDA()
+	return true
+end
 
+function BIOS:_writeBDA()
+	local bda = 0x400
+	local convKb = math.floor(self.config.RAM_SIZE / 1024)
+	self.ram:memWrite(bda + 0x75, self._bootDrive % 256)
+	self.ram:memWrite(bda + 0x13, convKb % 256)
+	self.ram:memWrite(bda + 0x14, math.floor(convKb / 256) % 256)
+end
+
+function BIOS:_loadBootSector()
+	local sec = self.hdd:readSector(0)
+	if sec[511] ~= 0x55 or sec[512] ~= 0xAA then
+		return false, "No boot signature (0x55AA) - FATAL"
+	end
+
+	local loadOff = BootProtocol.BOOT_SECTOR_ADDR
+	for i = 1, 512 do
+		self.ram:memWrite(loadOff + i - 1, sec[i] or 0)
+	end
+
+	self._bootSector = sec
+	self._bootSectorAddr = self.config.RAM_BASE + loadOff
+	local cpu = self.machine.cpu
+	if cpu then
+		cpu:setReg("PC", self._bootSectorAddr)
+		cpu:setReg("R1", self.config.RAM_BASE + BootProtocol.HANDOFF_BASE)
+		cpu:setReg("R2", self._bootDrive)
+		cpu:setReg("R3", self._bootSectorAddr)
+	end
+	self.gpu:println(string.format("        Boot sector loaded at 0x%08X", self._bootSectorAddr), 0x07)
+	return true
+end
+
+-- POST complete -> bootloader handoff
 function BIOS:_postDone()
 	local g = self.gpu
 	g:println("", 0x07)
-	g:println("POST complete.  Searching for boot device...", 0x07)
+	g:println("POST complete.  Handing off boot context...", 0x07)
 	g:println("", 0x07)
+	local handoffFlags = BootProtocol.FLAG.BOOT_SECTOR_VALID
+	self._firmwareHandoffAddr = BootProtocol.writeHandoff(self.machine, {
+		stage = BootProtocol.STAGE.FIRMWARE_READY,
+		flags = handoffFlags,
+		memMapPtr = self.config.RAM_BASE + BootProtocol.MEMMAP_BASE,
+		memMapCount = #self._memMap,
+		bootDrive = self._bootDrive,
+		bootSectorAddr = self._bootSectorAddr,
+		bootPartLba = 0,
+		bootPartSize = self.hdd and self.hdd:getTotalSectors() or 0,
+		cmdlinePtr = self.config.RAM_BASE + BootProtocol.CMDLINE_BASE,
+	})
 	task.delay(0.3, function()
 		if self._onComplete then
-			self._onComplete(self._memMap)
+			self._onComplete({
+				handoffAddr = self._firmwareHandoffAddr,
+				bootDrive = self._bootDrive,
+				bootSectorAddr = self._bootSectorAddr,
+			})
 		end
 	end)
 end
@@ -322,9 +378,11 @@ end
 function BIOS:getLog()
 	return self._logs
 end
+
 function BIOS:getMemMap()
 	return self._memMap
 end
+
 function BIOS:getRTCTime()
 	return self._rtcTime
 end

@@ -109,12 +109,28 @@ function Syscall.new(kernel)
 	self.pm = kernel.pm
 	self.mm = kernel.mm
 	self.vfs = kernel.vfs
-	self.gpu = kernel.gpu
-	self.kbd = kernel.keyboard
+	self.drivers = kernel.drivers
 	self._openFiles = {} -- fd table (global, keyed by "pid:fd")
 	self._pipes = {} -- pipe id → {buf={}, readers=n, writers=n}
 	self._nextPipe = 1
 	return self
+end
+
+function Syscall:_keyboardReadChar()
+	local keyboard = self.drivers and self.drivers.keyboard
+	if keyboard and keyboard.readChar then
+		return keyboard:readChar()
+	end
+	return nil
+end
+
+function Syscall:_consoleWrite(text, attr)
+	local console = self.drivers and self.drivers.console
+	if console and console.print then
+		console:print(text, attr)
+		return true
+	end
+	return false
 end
 
 --  Main dispatch
@@ -346,11 +362,7 @@ function Syscall:_sysRead(pid, fd, count)
 	end
 
 	if fd == 0 then
-		-- stdin: read from keyboard
-		if not self.kbd then
-			return -E.EIO
-		end
-		local ch = self.kbd:readChar()
+		local ch = self:_keyboardReadChar()
 		if ch then
 			return ch, 1
 		end
@@ -394,10 +406,8 @@ function Syscall:_sysWrite(pid, fd, data)
 
 	if fd == 1 or fd == 2 then
 		-- stdout/stderr → GPU terminal
-		if self.gpu then
-			local attr = (fd == 2) and 0x0C or 0x07 -- red for stderr
-			self.gpu:print(str, attr)
-		end
+		local attr = (fd == 2) and 0x0C or 0x07
+		self:_consoleWrite(str, attr)
 		return #str
 	end
 
@@ -453,9 +463,17 @@ function Syscall:_sysFork(pid)
 
 	local child = self.pm:getProcess(childPid)
 	child.cwd = parent.cwd
-	-- Copy file descriptors (shallow)
+	-- Copy file descriptors (table field copy, not array unpack).
 	for k, v in pairs(parent.fds) do
-		child.fds[k] = { table.unpack and table.unpack(v) or v }
+		if type(v) == "table" then
+			local copy = {}
+			for fk, fv in pairs(v) do
+				copy[fk] = fv
+			end
+			child.fds[k] = copy
+		else
+			child.fds[k] = v
+		end
 	end
 	child.nextFd = parent.nextFd
 
@@ -539,7 +557,13 @@ end
 function Syscall:_sysIoctl(pid, fd, request, arg)
 	-- TIOCGWINSZ (get terminal size) = 0x5413
 	if request == 0x5413 then
-		return { rows = self.kernel.config.TEXT_ROWS, cols = self.kernel.config.TEXT_COLS }
+		local rows = self.kernel.config.TEXT_ROWS
+		local cols = self.kernel.config.TEXT_COLS
+		local console = self.drivers and self.drivers.console
+		if console and console.size then
+			cols, rows = console:size()
+		end
+		return { rows = rows, cols = cols }
 	end
 	return -E.EINVAL
 end

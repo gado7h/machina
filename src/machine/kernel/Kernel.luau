@@ -1,5 +1,7 @@
 -- Kernel module
 
+local Drivers = require(script.Parent.Drivers)
+
 local Kernel = {}
 Kernel.__index = Kernel
 
@@ -12,6 +14,11 @@ function Kernel.new(machine)
 	self.ram = machine.ram
 	self.hdd = machine.hdd
 	self.keyboard = machine.keyboard
+	self.drivers = Drivers.new(machine, machine.config)
+	self.console = self.drivers.console
+	self.timerDriver = self.drivers.timer
+	self.keyboardDriver = self.drivers.keyboard
+	self.diskDriver = self.drivers.disk
 	self._running = false
 	self._log = {}
 	self._uptime = 0 -- seconds
@@ -21,7 +28,7 @@ end
 --  kmain — kernel entry point
 
 function Kernel:kmain(fs, kernelLoadAddr, kernelData)
-	local g = self.gpu
+	local g = self.console
 	g:println("", 0x07)
 	g:println(string.format("[    0.000] NovaKernel %s — %s", self.config.KERNEL_VERSION, self.config.ARCH), 0x0A)
 	g:println(string.format("[    0.000] Command line: nova ro quiet"), 0x07)
@@ -124,15 +131,14 @@ end
 --  IRQ registration
 
 function Kernel:_registerIRQs()
-	-- IRQ 0: Timer
-	self.bus:registerIRQ(self.config.IRQ.TIMER, "kernel", function(irq, data)
-		self._uptime = self._uptime + (1 / 18.2)
+	self.timerDriver:registerTickIRQ(function(data)
+		local dt = (type(data) == "table" and data.period) or (1 / 18.2)
+		self._uptime = self._uptime + dt
 	end)
 
-	-- IRQ 1: Keyboard (handled by Keyboard hardware)
-	-- IRQ 14: ATA disk
-	self.bus:registerIRQ(self.config.IRQ.ATA, "kernel", function(irq, data)
-		-- Disk interrupt: wake any sleeping process waiting on disk I/O
+	self.diskDriver:registerIRQ(function(_data)
+		-- Disk interrupt: wake any sleeping process waiting on disk I/O.
+		-- Placeholder for wait queue integration in a later phase.
 	end)
 end
 
@@ -228,9 +234,6 @@ function Kernel:tick(dt)
 		return
 	end
 
-	-- Raise timer IRQ
-	self.bus:raiseIRQ(self.config.IRQ.TIMER, nil)
-
 	-- Scheduler tick
 	if self.pm then
 		self.pm:tick(dt)
@@ -242,28 +245,25 @@ function Kernel:tick(dt)
 		self:_updateProcFS()
 	end
 
-	-- Flush GPU
-	if self.gpu then
-		self.gpu:flush()
-	end
+	self.console:flush()
 end
 
 --  Kernel panic
 
 function Kernel:panic(msg)
 	self._running = false
-	if self.gpu then
-		self.gpu:clearScreen(0x4F) -- red background
-		self.gpu:println("", 0x4F)
-		self.gpu:println("  *** KERNEL PANIC — NOT SYNCING ***", 0x4F)
-		self.gpu:println("", 0x4F)
-		self.gpu:println("  " .. tostring(msg), 0x4F)
-		self.gpu:println("", 0x4F)
-		self.gpu:println("  CPU: 0  PID: " .. tostring(self.pm and self.pm._currentPid or "?"), 0x4F)
-		self.gpu:println("  Kernel: nova-" .. self.config.KERNEL_VERSION, 0x4F)
-		self.gpu:println("", 0x4F)
-		self.gpu:println("  System halted.", 0x4F)
-		self.gpu:flush()
+	if self.console then
+		self.console:clear(0x4F)
+		self.console:println("", 0x4F)
+		self.console:println("  *** KERNEL PANIC — NOT SYNCING ***", 0x4F)
+		self.console:println("", 0x4F)
+		self.console:println("  " .. tostring(msg), 0x4F)
+		self.console:println("", 0x4F)
+		self.console:println("  CPU: 0  PID: " .. tostring(self.pm and self.pm._currentPid or "?"), 0x4F)
+		self.console:println("  Kernel: nova-" .. self.config.KERNEL_VERSION, 0x4F)
+		self.console:println("", 0x4F)
+		self.console:println("  System halted.", 0x4F)
+		self.console:flush()
 	end
 	error("KERNEL PANIC: " .. tostring(msg))
 end
@@ -272,11 +272,11 @@ end
 
 function Kernel:reboot()
 	self._running = false
-	if self.gpu then
-		self.gpu:clearScreen(0x07)
-		self.gpu:println("System is rebooting...", 0x0E)
-		self.gpu:println("", 0x07)
-		self.gpu:flush()
+	if self.console then
+		self.console:clear(0x07)
+		self.console:println("System is rebooting...", 0x0E)
+		self.console:println("", 0x07)
+		self.console:flush()
 	end
 	task.delay(1.0, function()
 		self.machine:reboot()

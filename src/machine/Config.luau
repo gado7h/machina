@@ -43,11 +43,22 @@ Config.RAM_SIZE = 0x00800000 -- 8 MB   physical RAM
 Config.VRAM_BASE = 0x00810000
 Config.VRAM_SIZE = 0x00040000 -- 256 KB video RAM  (320×200 × 4 B)
 Config.MMIO_BASE = 0x00F00000 -- memory-mapped I/O window
+Config.MMIO_SIZE = 0x00001000
 Config.KERNEL_LOAD_ADDR = 0x00100000 -- kernel loaded here by bootloader
 Config.USER_SPACE_BASE = 0x00200000 -- user processes start here
 Config.USER_SPACE_TOP = 0x00800000
 Config.PAGE_SIZE = 4096 -- 4 KB pages
 Config.MAX_PAGES = math.floor(0x00800000 / 4096)
+Config.BUS_STRICT_MMIO = true
+
+Config.MMIO = {
+	HDD_BASE = Config.MMIO_BASE + 0x0000,
+	HDD_SIZE = 0x0400,
+	TIMER_BASE = Config.MMIO_BASE + 0x0400,
+	TIMER_SIZE = 0x40,
+	PIC_BASE = Config.MMIO_BASE + 0x0440,
+	PIC_SIZE = 0x40,
+}
 
 --  Display
 Config.DISPLAY_REFRESH_HZ = 60 -- target display presentation rate
@@ -88,6 +99,21 @@ Config.IRQ = {
 	MOUSE = 12,
 	FPU = 13,
 	ATA = 14,
+}
+
+Config.PIC_VECTOR_BASE_MASTER = 0x20
+Config.PIC_VECTOR_BASE_SLAVE = 0x28
+
+Config.EXCEPTION = {
+	DIVIDE_BY_ZERO = 0x00,
+	BUS_FAULT = 0x0D,
+	ILLEGAL_OPCODE = 0x06,
+}
+
+Config.TIMER = {
+	BASE_HZ = 1193182,
+	DEFAULT_DIVISOR = 65536, -- ~18.2Hz
+	MIN_INTERVAL_SEC = 1 / 1000,
 }
 
 --  I/O Ports (virtual)

@@ -3,15 +3,22 @@
 local Bus = {}
 Bus.__index = Bus
 
+local function defaultTickDt(config)
+	local hz = math.max(config.CPU_CLOCK_HZ or 1, config.DISPLAY_REFRESH_HZ or 60)
+	return 1 / math.max(1, hz)
+end
+
 function Bus.new(config)
 	local self = setmetatable({}, Bus)
 	self.config = config
-	self._devices = {} -- name → device object
-	self._memmap = {} -- {base, size, device, tag}  sorted list
-	self._portmap = {} -- port_number → handler function
-	self._irqLines = {} -- irq_num → {handler, device, count, active}
+	self._devices = {} -- name -> device object
+	self._memmap = {} -- {base, size, device, tag, readOnly}
+	self._portmap = {} -- port_number -> handler function
+	self._irqLines = {} -- legacy callbacks: irq_num -> {handler, device, count, active}
 	self._dmaQueue = {} -- pending DMA transfers
 	self._logs = {}
+	self._fault = nil
+	self._defaultDt = defaultTickDt(config)
 
 	-- Statistics
 	self.stats = {
@@ -20,16 +27,36 @@ function Bus.new(config)
 		portReads = 0,
 		portWrites = 0,
 		irqFired = 0,
+		irqDelivered = 0,
 		dmaBytes = 0,
+		faults = 0,
 	}
+
+	local PIC_M = require(script.Parent.InterruptController)
+	local Timer_M = require(script.Parent.Timer)
+	self.pic = PIC_M.new(config)
+	self.timer = Timer_M.new(config)
+	self._devices.pic = self.pic
+	self._devices.timer = self.timer
+	self.pic:attachBus(self)
+	self.timer:attachBus(self)
+
 	return self
 end
 
---  Device Registration
+-- Device Registration
 
 function Bus:registerDevice(name, device)
 	assert(not self._devices[name], "Bus: device '" .. name .. "' already registered")
 	self._devices[name] = device
+	if name == "cpu" then
+		self._cpu = device
+	end
+	if device and type(device.attachBus) == "function" then
+		pcall(function()
+			device:attachBus(self)
+		end)
+	end
 	self:_log("BUS", "Device registered: " .. name)
 end
 
@@ -37,17 +64,23 @@ function Bus:getDevice(name)
 	return self._devices[name]
 end
 
---  Memory Map
+-- Memory Map
 
---- Map a device into physical address space.
---- device must implement :memRead(offset) and :memWrite(offset, value)
-function Bus:mapMemory(base, size, device, tag)
-	table.insert(self._memmap, { base = base, size = size, device = device, tag = tag or "?" })
-	-- keep sorted by base for binary search
+-- device must implement :memRead(offset) and :memWrite(offset, value)
+function Bus:mapMemory(base, size, device, tag, opts)
+	opts = opts or {}
+	local readOnly = opts.readOnly == true or (type(tag) == "string" and tag:find("ROM") ~= nil)
+	table.insert(self._memmap, {
+		base = base,
+		size = size,
+		device = device,
+		tag = tag or "?",
+		readOnly = readOnly,
+	})
 	table.sort(self._memmap, function(a, b)
 		return a.base < b.base
 	end)
-	self:_log("BUS", string.format("Mapped [%08X–%08X] → %s", base, base + size - 1, tag or "?"))
+	self:_log("BUS", string.format("Mapped [%08X-%08X] -> %s", base, base + size - 1, tag or "?"))
 end
 
 local function findMapping(self, addr)
@@ -59,24 +92,71 @@ local function findMapping(self, addr)
 	return nil
 end
 
+function Bus:_setFault(kind, addr, op, detail)
+	self.stats.faults = self.stats.faults + 1
+	self._fault = {
+		kind = kind,
+		addr = addr,
+		op = op,
+		detail = detail,
+		time = os.clock(),
+	}
+	self:_log(
+		"BUS",
+		string.format("FAULT %s op=%s addr=%08X (%s)", tostring(kind), tostring(op), addr or 0, tostring(detail))
+	)
+end
+
+function Bus:peekFault()
+	return self._fault
+end
+
+function Bus:consumeFault()
+	local f = self._fault
+	self._fault = nil
+	return f
+end
+
 function Bus:memRead(addr)
 	self.stats.memReads = self.stats.memReads + 1
 	local m = findMapping(self, addr)
 	if not m then
-		self:_log("BUS", string.format("WARN memRead unmapped addr %08X", addr))
-		return 0
+		self:_setFault("unmapped-read", addr, "read8", "Address not mapped")
+		return 0xFF
 	end
-	return m.device:memRead(addr - m.base)
+	local ok, value = pcall(function()
+		return m.device:memRead(addr - m.base)
+	end)
+	if not ok then
+		self:_setFault("device-read-fault", addr, "read8", value)
+		return 0xFF
+	end
+	if value == nil then
+		self:_setFault("device-read-nil", addr, "read8", m.tag)
+		return 0xFF
+	end
+	return (tonumber(value) or 0) % 256
 end
 
 function Bus:memWrite(addr, value)
 	self.stats.memWrites = self.stats.memWrites + 1
 	local m = findMapping(self, addr)
 	if not m then
-		self:_log("BUS", string.format("WARN memWrite unmapped addr %08X = %02X", addr, value))
-		return
+		self:_setFault("unmapped-write", addr, "write8", "Address not mapped")
+		return false
 	end
-	m.device:memWrite(addr - m.base, value)
+	if m.readOnly then
+		self:_setFault("readonly-write", addr, "write8", m.tag)
+		return false
+	end
+	local ok, err = pcall(function()
+		m.device:memWrite(addr - m.base, (tonumber(value) or 0) % 256)
+	end)
+	if not ok then
+		self:_setFault("device-write-fault", addr, "write8", err)
+		return false
+	end
+	return true
 end
 
 -- 32-bit word helpers
@@ -89,13 +169,15 @@ function Bus:memRead32(addr)
 end
 
 function Bus:memWrite32(addr, value)
-	self:memWrite(addr, value % 256)
-	self:memWrite(addr + 1, math.floor(value / 256) % 256)
-	self:memWrite(addr + 2, math.floor(value / 65536) % 256)
-	self:memWrite(addr + 3, math.floor(value / 16777216) % 256)
+	local v = tonumber(value) or 0
+	local ok0 = self:memWrite(addr, v % 256)
+	local ok1 = self:memWrite(addr + 1, math.floor(v / 256) % 256)
+	local ok2 = self:memWrite(addr + 2, math.floor(v / 65536) % 256)
+	local ok3 = self:memWrite(addr + 3, math.floor(v / 16777216) % 256)
+	return ok0 and ok1 and ok2 and ok3
 end
 
---  Port I/O
+-- Port I/O
 
 function Bus:registerPort(port, readFn, writeFn, label)
 	self._portmap[port] = { read = readFn, write = writeFn, label = label or string.format("0x%04X", port) }
@@ -105,20 +187,26 @@ function Bus:portRead(port)
 	self.stats.portReads = self.stats.portReads + 1
 	local h = self._portmap[port]
 	if h and h.read then
-		return h.read()
+		local ok, value = pcall(h.read)
+		if ok then
+			return (tonumber(value) or 0) % 256
+		end
 	end
-	return 0xFF -- floating bus
+	return 0xFF
 end
 
 function Bus:portWrite(port, value)
 	self.stats.portWrites = self.stats.portWrites + 1
 	local h = self._portmap[port]
 	if h and h.write then
-		h.write(value)
+		local ok, err = pcall(h.write, (tonumber(value) or 0) % 256)
+		if not ok then
+			self:_setFault("port-write-fault", port, "out", err)
+		end
 	end
 end
 
---  IRQ (Interrupt Request Lines)
+-- IRQ (Interrupt Request Lines)
 
 function Bus:registerIRQ(irqNum, device, handler)
 	if not self._irqLines[irqNum] then
@@ -128,9 +216,13 @@ function Bus:registerIRQ(irqNum, device, handler)
 	self:_log("BUS", string.format("IRQ%d registered for device: %s", irqNum, tostring(device)))
 end
 
---- Fire an interrupt — called by devices (timer, keyboard, disk, etc.)
+-- Fire an interrupt: queue into PIC and also call legacy callbacks.
 function Bus:raiseIRQ(irqNum, data)
 	self.stats.irqFired = self.stats.irqFired + 1
+	if self.pic then
+		self.pic:raiseIRQ(irqNum)
+	end
+
 	local handlers = self._irqLines[irqNum]
 	if not handlers then
 		return
@@ -146,6 +238,28 @@ function Bus:raiseIRQ(irqNum, data)
 	end
 end
 
+function Bus:hasPendingInterrupt()
+	return self.pic and self.pic:hasPending() or false
+end
+
+function Bus:getPendingInterruptVector()
+	if not self.pic then
+		return nil
+	end
+	local vec = self.pic:getNextVector()
+	if vec ~= nil then
+		self.stats.irqDelivered = self.stats.irqDelivered + 1
+	end
+	return vec
+end
+
+function Bus:endOfInterrupt(vector)
+	if self.pic then
+		return self.pic:endOfInterrupt(vector)
+	end
+	return false
+end
+
 function Bus:getIRQStats()
 	local out = {}
 	for irq, handlers in pairs(self._irqLines) do
@@ -156,16 +270,16 @@ function Bus:getIRQStats()
 	return out
 end
 
---  DMA (Direct Memory Access)
+-- DMA (Direct Memory Access)
 
---- Enqueue a DMA transfer.  src/dst are physical addresses; callback fires on completion.
+-- Enqueue a DMA transfer. src/dst are physical addresses; callback fires on completion.
 function Bus:dmaTransfer(src, dst, length, callback)
 	table.insert(self._dmaQueue, { src = src, dst = dst, length = length, cb = callback, done = false })
 end
 
---- Process all pending DMA transfers (called each tick by the motherboard).
-function Bus:processDMA()
-	for i, xfer in ipairs(self._dmaQueue) do
+-- Process all pending DMA transfers.
+function Bus:processDMA(dt)
+	for _, xfer in ipairs(self._dmaQueue) do
 		if not xfer.done then
 			for off = 0, xfer.length - 1 do
 				local byte = self:memRead(xfer.src + off)
@@ -178,7 +292,7 @@ function Bus:processDMA()
 			end
 		end
 	end
-	-- purge completed
+
 	local live = {}
 	for _, x in ipairs(self._dmaQueue) do
 		if not x.done then
@@ -186,9 +300,24 @@ function Bus:processDMA()
 		end
 	end
 	self._dmaQueue = live
+
+	self:tick(dt)
 end
 
---  Internal logging
+function Bus:tick(dt)
+	dt = tonumber(dt) or self._defaultDt
+	if self.timer and type(self.timer.tick) == "function" then
+		self.timer:tick(dt)
+	end
+	-- Let devices progress asynchronous operations.
+	for name, device in pairs(self._devices) do
+		if name ~= "timer" and name ~= "pic" and name ~= "cpu" and type(device.tick) == "function" then
+			device:tick(dt)
+		end
+	end
+end
+
+-- Internal logging
 
 function Bus:_log(tag, msg)
 	local entry = string.format("[%s] %s", tag, msg)
