@@ -47,6 +47,78 @@ return 0
 tty.writeln(process.cwd())
 return 0
 ]],
+	["/bin/mkdir.luau"] = [[
+if #args < 2 then
+	tty.writeln("usage: mkdir <dir> [...]", tty.color(12, 0))
+	return 1
+end
+for i = 2, #args do
+	local ok, err = fs.mkdir(args[i])
+	if not ok then
+		tty.writeln("mkdir: cannot create directory '" .. args[i] .. "': " .. tostring(err), tty.color(12, 0))
+		return 1
+	end
+end
+return 0
+]],
+	["/bin/rm.luau"] = [[
+local recursive = false
+local paths = {}
+for i = 2, #args do
+	if args[i]:sub(1, 1) == "-" then
+		recursive = args[i]:find("r", 2, true) ~= nil or recursive
+	else
+		table.insert(paths, args[i])
+	end
+end
+for _, path in ipairs(paths) do
+	local st = fs.stat(path)
+	if not st then
+		tty.writeln("rm: cannot remove '" .. path .. "': No such file or directory", tty.color(12, 0))
+		return 1
+	end
+	if st.isDir and not recursive then
+		tty.writeln("rm: cannot remove '" .. path .. "': Is a directory", tty.color(12, 0))
+		return 1
+	end
+	fs.rm(path)
+end
+return 0
+]],
+	["/bin/cp.luau"] = [[
+if #args < 3 then
+	tty.writeln("usage: cp <src> <dst>", tty.color(12, 0))
+	return 1
+end
+local ok, result = fs.copy(args[2], args[3])
+if not ok then
+	tty.writeln("cp: " .. tostring(result), tty.color(12, 0))
+	return 1
+end
+return 0
+]],
+	["/bin/mv.luau"] = [[
+if #args < 3 then
+	tty.writeln("usage: mv <src> <dst>", tty.color(12, 0))
+	return 1
+end
+local ok, result = fs.move(args[2], args[3])
+if not ok then
+	tty.writeln("mv: " .. tostring(result), tty.color(12, 0))
+	return 1
+end
+return 0
+]],
+	["/bin/touch.luau"] = [[
+if #args < 2 then
+	tty.writeln("usage: touch <file> [...]", tty.color(12, 0))
+	return 1
+end
+for i = 2, #args do
+	fs.touch(args[i])
+end
+return 0
+]],
 	["/bin/ls.luau"] = [[
 local function listDirectory(path)
 	local entries = fs.ls(path)
@@ -129,6 +201,53 @@ else
 end
 return 0
 ]],
+	["/bin/whoami.luau"] = [[
+tty.writeln(process.user and process.user() or "user")
+return 0
+]],
+	["/bin/id.luau"] = [[
+local user = process.user and process.user() or "user"
+local uid = user == "root" and 0 or 1000
+tty.writeln(string.format("uid=%d(%s) gid=%d(%s) groups=%d(%s)", uid, user, uid, user, uid, user))
+return 0
+]],
+	["/bin/hostname.luau"] = [[
+if args[2] then
+	system.hostname(args[2])
+else
+	tty.writeln(system.hostname())
+end
+return 0
+]],
+	["/bin/uptime.luau"] = [[
+local uptime = system.uptime()
+local h = math.floor(uptime / 3600)
+local m = math.floor((uptime % 3600) / 60)
+local s = math.floor(uptime % 60)
+local procs = process.list and #process.list() or 0
+tty.writeln(string.format(" %s  up %02d:%02d:%02d,  1 user,  load average: 0.00, 0.00, 0.00 (%d procs)", os.date("%H:%M:%S"), h, m, s, procs))
+return 0
+]],
+	["/bin/free.luau"] = [[
+local mi = system.meminfo()
+local function kb(n)
+	return math.floor((n or 0) / 1024)
+end
+tty.writeln(string.format("%-16s%8s%8s%8s", "              ", "total", "used", "free"), tty.color(11, 0))
+tty.writeln(string.format("%-16s%8d%8d%8d", "Mem:", kb(mi.total), kb(mi.used), kb(mi.free)))
+tty.writeln(string.format("%-16s%8d%8d%8d", "Swap:", 0, 0, 0))
+return 0
+]],
+	["/bin/df.luau"] = [[
+local ds = system.diskstats()
+tty.writeln(string.format("%-20s%10s%10s%10s%6s %s", "Filesystem", "1K-blocks", "Used", "Available", "Use%", "Mounted on"), tty.color(11, 0))
+local total = (ds.totalBlocks or 0) * 512 / 1024
+local used = (ds.usedBlocks or 0) * 512 / 1024
+local free = (ds.freeBlocks or 0) * 512 / 1024
+local pct = total > 0 and math.floor(used / total * 100) or 0
+tty.writeln(string.format("%-20s%10d%10d%10d%5d%% %s", "/dev/hda1", math.floor(total), math.floor(used), math.floor(free), pct, "/"))
+return 0
+]],
 	["/bin/wc.luau"] = [[
 local content = args[2] and (fs.read(args[2]) or "") or (process._pipeInput or "")
 local lines, words, bytes = 0, 0, #content
@@ -205,6 +324,103 @@ end
 walk(args[2] or ".")
 return 0
 ]],
+	["/bin/mkdir.luau"] = [[
+for i = 2, #args do
+	local path = fs.exists(args[i]) and args[i] or args[i]
+	if not fs.mkdir(path) then
+		tty.writeln("mkdir: cannot create directory '" .. args[i] .. "'", tty.color(12, 0))
+		return 1
+	end
+end
+return 0
+]],
+	["/bin/rm.luau"] = [[
+local recursive = false
+local paths = {}
+for i = 2, #args do
+	if args[i] == "-r" or args[i] == "-rf" or args[i] == "-fr" then
+		recursive = true
+	elseif args[i]:sub(1, 1) == "-" then
+		-- Ignore unsupported flags for now.
+	else
+		table.insert(paths, args[i])
+	end
+end
+
+for _, path in ipairs(paths) do
+	local target = path
+	if not fs.exists(target) then
+		tty.writeln("rm: cannot remove '" .. path .. "': No such file or directory", tty.color(12, 0))
+		return 1
+	end
+	local stat = fs.stat(target)
+	if stat and stat.isDir and not recursive then
+		tty.writeln("rm: cannot remove '" .. path .. "': Is a directory", tty.color(12, 0))
+		return 1
+	end
+	fs.rm(target)
+end
+return 0
+]],
+	["/bin/cp.luau"] = [[
+if #args < 3 then
+	tty.writeln("usage: cp <src> <dst>", tty.color(12, 0))
+	return 1
+end
+
+local source = fs.read(args[2])
+if not source then
+	tty.writeln("cp: cannot read " .. args[2], tty.color(12, 0))
+	return 1
+end
+
+local target = args[3]
+if fs.exists(target) and fs.stat(target) and fs.stat(target).isDir then
+	target = target .. "/" .. (args[2]:match("[^/]+$") or args[2])
+end
+fs.write(target, source)
+return 0
+]],
+	["/bin/mv.luau"] = [[
+if #args < 3 then
+	tty.writeln("usage: mv <src> <dst>", tty.color(12, 0))
+	return 1
+end
+
+local source = fs.read(args[2])
+if not source then
+	tty.writeln("mv: cannot read " .. args[2], tty.color(12, 0))
+	return 1
+end
+
+local target = args[3]
+if fs.exists(target) and fs.stat(target) and fs.stat(target).isDir then
+	target = target .. "/" .. (args[2]:match("[^/]+$") or args[2])
+end
+fs.write(target, source)
+fs.rm(args[2])
+return 0
+]],
+	["/bin/touch.luau"] = [[
+for i = 2, #args do
+	if not fs.exists(args[i]) then
+		fs.write(args[i], "")
+	end
+end
+return 0
+]],
+	["/bin/df.luau"] = [[
+local stats = fs.stat("/")
+local total = 0
+local free = 0
+if stats then
+	total = stats.total or 0
+	free = stats.free or 0
+end
+tty.writeln(string.format("Filesystem     1K-blocks    Used Available Use% Mounted on"))
+tty.writeln(string.format("novafs         %10d %7d %9d  %2d%% /", math.floor(total / 1024), math.floor((total - free) / 1024), math.floor(free / 1024), total > 0 and math.floor(((total - free) / total) * 100) or 0))
+return 0
+]],
 	["/bin/head.luau"] = [[
 local count = 10
 local path
@@ -270,6 +486,47 @@ if args[2] then
 			end
 		end
 	end
+end
+return 0
+]],
+	["/usr/bin/sysinfo.luau"] = [[
+local info = system.info()
+tty.writeln("=== NovaMachine System Information ===", tty.color(11, 0))
+tty.writeln(string.format("  OS       : %s %s", info.os, info.kernel))
+tty.writeln(string.format("  Hostname : %s", info.hostname))
+tty.writeln(string.format("  Arch     : %s", info.arch))
+tty.writeln("  CPU      : NovaCPU-X1 @ 3.2GHz, 4 cores")
+tty.writeln(string.format("  RAM      : %dMB total / %dMB free", math.floor(info.ramTotal / 1048576), math.floor(info.ramFree / 1048576)))
+tty.writeln(string.format("  Disk     : %dMB total / %dMB free", math.floor((info.diskTotalBlocks * 512) / 1048576), math.floor((info.diskFreeBlocks * 512) / 1048576)))
+tty.writeln(string.format("  GPU      : NovaGFX-400, 1GB VRAM, %dx%d", info.screenW, info.screenH))
+tty.writeln(string.format("  Uptime   : %.0f seconds", info.uptime))
+return 0
+]],
+	["/usr/bin/dmesg.luau"] = [[
+local log = system.dmesg()
+local n = tonumber(args[2]) or #log
+for i = math.max(1, #log - n + 1), #log do
+	tty.writeln(log[i], tty.color(8, 0))
+end
+return 0
+]],
+	["/usr/bin/lspci.luau"] = [[
+for _, dev in ipairs(system.pci()) do
+	tty.writeln(string.format("%02x:%02x.%d %s: %s [%04x:%04x]", dev.bus, dev.dev, dev.fn, dev.class, dev.subclass, dev.vendor, dev.device))
+end
+return 0
+]],
+	["/usr/bin/lsblk.luau"] = [[
+tty.writeln(string.format("%-10s %-6s %-6s %-6s %-10s %s", "NAME", "MAJ:MIN", "RM", "SIZE", "RO", "TYPE"), tty.color(11, 0))
+local ds = system.diskstats()
+local total = math.floor(((ds.totalBlocks or 0) * 512) / 1048576)
+tty.writeln(string.format("%-10s %-6s %-6s %-6s %-10s %s", "hda", "8:0", "0", total .. "M", "0", "disk"))
+tty.writeln(string.format("%-10s %-6s %-6s %-6s %-10s %s", "hda1", "8:1", "0", total .. "M", "0", "part"))
+return 0
+]],
+	["/usr/bin/mount.luau"] = [[
+for _, line in ipairs(system.mounts()) do
+	tty.writeln(line)
 end
 return 0
 ]],

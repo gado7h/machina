@@ -683,6 +683,28 @@ function Shell:_makeRuntimeEnv(args, parsed, execContext)
 
 	local stdinData = self._pipeInput
 
+	local function resolvePath(path)
+		path = tostring(path or "")
+		if path == "" then
+			return shell.cwd
+		end
+		if path:sub(1, 1) == "~" then
+			path = (shell.env.HOME or "/home/" .. shell.username) .. path:sub(2)
+		end
+		if path:sub(1, 1) ~= "/" then
+			path = shell.cwd .. "/" .. path
+		end
+		local parts = {}
+		for seg in path:gmatch("[^/]+") do
+			if seg == ".." then
+				table.remove(parts)
+			elseif seg ~= "." and seg ~= "" then
+				table.insert(parts, seg)
+			end
+		end
+		return "/" .. table.concat(parts, "/")
+	end
+
 	local sandbox = {}
 	sandbox.__nova_exec_ctx = execContext
 
@@ -813,30 +835,62 @@ function Shell:_makeRuntimeEnv(args, parsed, execContext)
 	-- Filesystem API (POSIX-like)
 	sandbox.fs = {
 		read = function(p)
-			return vfs:readFileStr(p)
+			return vfs:readFileStr(resolvePath(p))
 		end,
 		write = function(p, s)
-			vfs:writeFileStr(p, tostring(s))
+			vfs:writeFileStr(resolvePath(p), tostring(s))
 			return true
 		end,
 		append = function(p, s)
-			vfs:appendFile(p, shell:_strBytes(tostring(s)))
+			vfs:appendFile(resolvePath(p), shell:_strBytes(tostring(s)))
 			return true
 		end,
 		exists = function(p)
-			return vfs:exists(p)
+			return vfs:exists(resolvePath(p))
 		end,
 		ls = function(p)
-			return vfs:listDir(p or shell.cwd)
+			return vfs:listDir(resolvePath(p or shell.cwd))
 		end,
 		mkdir = function(p)
-			return vfs:mkdir(p)
+			return vfs:mkdir(resolvePath(p))
 		end,
 		rm = function(p)
-			return vfs:remove(p)
+			return vfs:remove(resolvePath(p))
 		end,
 		stat = function(p)
-			return vfs:stat(p)
+			return vfs:stat(resolvePath(p))
+		end,
+		resolve = function(p)
+			return resolvePath(p)
+		end,
+		copy = function(src, dst)
+			local sourcePath = resolvePath(src)
+			local destPath = resolvePath(dst)
+			local data, err = vfs:readFile(sourcePath)
+			if not data then
+				return false, err
+			end
+			local st = vfs:stat(destPath)
+			if st and st.isDir then
+				destPath = destPath .. "/" .. (sourcePath:match("[^/]+$") or sourcePath)
+			end
+			vfs:writeFile(destPath, data)
+			return true, destPath
+		end,
+		move = function(src, dst)
+			local ok, result = sandbox.fs.copy(src, dst)
+			if not ok then
+				return false, result
+			end
+			vfs:remove(resolvePath(src))
+			return true, result
+		end,
+		touch = function(p)
+			local full = resolvePath(p)
+			if not vfs:exists(full) then
+				vfs:writeFile(full, {})
+			end
+			return true, full
 		end,
 	}
 
@@ -863,6 +917,10 @@ function Shell:_makeRuntimeEnv(args, parsed, execContext)
 			return (shell.pm and shell.pm:getProcessList()) or {}
 		end,
 
+		user = function()
+			return shell.username
+		end,
+
 		exec = function(cmd)
 			shell:_executeLine(tostring(cmd))
 			return shell.exitCode
@@ -878,6 +936,57 @@ function Shell:_makeRuntimeEnv(args, parsed, execContext)
 
 		isForeground = function()
 			return shell:isForegroundBusy()
+		end,
+	}
+
+	sandbox.system = {
+		hostname = function(nextName)
+			if nextName ~= nil and nextName ~= "" then
+				shell.hostname = tostring(nextName)
+				kernel._hostname = shell.hostname
+				vfs:writeFileStr("/etc/hostname", shell.hostname .. "\n")
+			end
+			return shell.hostname
+		end,
+		uptime = function()
+			return kernel:getUptime()
+		end,
+		meminfo = function()
+			return (shell.mm and shell.mm:getMemInfo()) or {}
+		end,
+		diskstats = function()
+			return vfs:getDiskStats()
+		end,
+		pci = function()
+			return shell.config.PCI or {}
+		end,
+		dmesg = function()
+			return kernel:getLog()
+		end,
+		info = function()
+			local mi = (shell.mm and shell.mm:getMemInfo()) or {}
+			local ds = vfs:getDiskStats()
+			return {
+				os = shell.config.OS_NAME,
+				kernel = shell.config.KERNEL_VERSION,
+				hostname = shell.hostname,
+				arch = shell.config.ARCH,
+				screenW = shell.config.SCREEN_W,
+				screenH = shell.config.SCREEN_H,
+				ramTotal = mi.total or 0,
+				ramFree = mi.free or 0,
+				diskTotalBlocks = ds.totalBlocks or 0,
+				diskFreeBlocks = ds.freeBlocks or 0,
+				uptime = kernel:getUptime(),
+			}
+		end,
+		mounts = function()
+			return {
+				"/dev/hda1 on / type novafs (rw,relatime)",
+				"tmpfs on /tmp type tmpfs (rw)",
+				"proc on /proc type proc (rw)",
+				"sysfs on /sys type sysfs (rw)",
+			}
 		end,
 	}
 
@@ -1499,40 +1608,6 @@ function Shell:_buildBuiltins()
 	end
 
 	-- ps
-	B["ps"] = function(args)
-		local procs = self.pm and self.pm:getProcessList() or {}
-		outln(
-			string.format(
-				"  %-6s %-6s %-4s %-10s %-5s %-6s %s",
-				"PID",
-				"PPID",
-				"PRI",
-				"STATE",
-				"CPU%",
-				"MEM",
-				"COMMAND"
-			),
-			0x0B
-		)
-		for _, p in ipairs(procs) do
-			local stateCol = p.state == "R" and 0x0A or p.state == "Z" and 0x0C or 0x07
-			outln(
-				string.format(
-					"  %-6d %-6d %-4d %-10s %-5.1f %-6dK %s",
-					p.pid,
-					p.ppid,
-					p.pri,
-					p.state,
-					p.cpu,
-					p.mem,
-					p.name
-				),
-				stateCol
-			)
-		end
-		return 0
-	end
-
 	-- kill
 	B["kill"] = function(args)
 		local sig = 15
@@ -1577,8 +1652,45 @@ function Shell:_buildBuiltins()
 		)
 		outln("")
 		local psPath = self:_resolveExecutablePath("ps")
-		if psPath then
-			self:_runExternal(psPath, { "ps" }, { cmd = "ps", args = { "ps" } })
+		local vmCfg = self:_getVmConfig()
+		if vmCfg.enabled and psPath then
+			local ok, rc = pcall(function()
+				return self:_runExternal(psPath, { "ps" }, { cmd = "ps", args = { "ps" } })
+			end)
+			if ok and rc == 0 then
+				return 0
+			end
+		end
+
+		local fallbackProcs = self.pm and self.pm:getProcessList() or {}
+		outln(
+			string.format(
+				"  %-6s %-6s %-4s %-10s %-5s %-6s %s",
+				"PID",
+				"PPID",
+				"PRI",
+				"STATE",
+				"CPU%",
+				"MEM",
+				"COMMAND"
+			),
+			0x0B
+		)
+		for _, p in ipairs(fallbackProcs) do
+			local stateCol = p.state == "R" and 0x0A or p.state == "Z" and 0x0C or 0x07
+			outln(
+				string.format(
+					"  %-6d %-6d %-4d %-10s %-5.1f %-6dK %s",
+					p.pid,
+					p.ppid,
+					p.pri,
+					p.state,
+					p.cpu,
+					p.mem,
+					p.name
+				),
+				stateCol
+			)
 		end
 		return 0
 	end
@@ -2815,6 +2927,11 @@ function Shell:_buildBuiltins()
 
 	-- Prefer guest executable files for common userland tools.
 	for _, name in ipairs({
+		"mkdir",
+		"rm",
+		"cp",
+		"mv",
+		"touch",
 		"ls",
 		"cat",
 		"echo",
@@ -2825,6 +2942,12 @@ function Shell:_buildBuiltins()
 		"false",
 		"sleep",
 		"uname",
+		"whoami",
+		"id",
+		"hostname",
+		"uptime",
+		"free",
+		"df",
 		"wc",
 		"grep",
 		"sort",
@@ -2833,6 +2956,11 @@ function Shell:_buildBuiltins()
 		"head",
 		"tail",
 		"ps",
+		"sysinfo",
+		"dmesg",
+		"lspci",
+		"lsblk",
+		"mount",
 		"lua",
 		"pkgmgr",
 	}) do
