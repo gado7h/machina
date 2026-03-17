@@ -859,6 +859,10 @@ function Shell:_makeRuntimeEnv(args, parsed, execContext)
 			return shell.cwd
 		end,
 
+		list = function()
+			return (shell.pm and shell.pm:getProcessList()) or {}
+		end,
+
 		exec = function(cmd)
 			shell:_executeLine(tostring(cmd))
 			return shell.exitCode
@@ -1572,7 +1576,10 @@ function Shell:_buildBuiltins()
 			0x07
 		)
 		outln("")
-		self._builtins["ps"]({ "ps" })
+		local psPath = self:_resolveExecutablePath("ps")
+		if psPath then
+			self:_runExternal(psPath, { "ps" }, { cmd = "ps", args = { "ps" } })
+		end
 		return 0
 	end
 
@@ -2825,6 +2832,7 @@ function Shell:_buildBuiltins()
 		"find",
 		"head",
 		"tail",
+		"ps",
 		"lua",
 		"pkgmgr",
 	}) do
