@@ -59,6 +59,12 @@ Config.TEXT_ROWS = 25
 Config.CHAR_W = 6
 Config.CHAR_H = 10
 
+Config.GLYPH_W = 5
+Config.GLYPH_H = 9
+Config.PAD_X = 0
+Config.PAD_Y = 0
+-- Enable smoothing so higher-detail glyphs render with readable anti-aliased edges.
+Config.FONT_SMOOTHING = true
 Config.GLYPH_W = 4
 Config.GLYPH_H = 8
 Config.PAD_X = 1
