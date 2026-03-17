@@ -56,14 +56,19 @@ Config.SCREEN_H = 200 -- VGA mode 13h height
 Config.TEXT_COLS = 80
 Config.TEXT_ROWS = 25
 
--- Keep cell geometry aligned to the classic 80x25 text grid (320x200 / 80x25 = 4x8).
--- This prevents glyph overlap/clipping and keeps terminal text legible.
+Config.CHAR_W = 6
+Config.CHAR_H = 10
+
+Config.GLYPH_W = 5
+Config.GLYPH_H = 9
+Config.PAD_X = 0
+Config.PAD_Y = 0
+-- Enable smoothing so higher-detail glyphs render with readable anti-aliased edges.
+Config.FONT_SMOOTHING = true
 Config.GLYPH_W = 4
 Config.GLYPH_H = 8
-Config.CHAR_W = 4
-Config.CHAR_H = 8
 Config.PAD_X = 1
-Config.PAD_Y = 0
+Config.PAD_Y = 1
 -- Disable smoothing by default to keep terminal text crisp/pixel-perfect.
 Config.FONT_SMOOTHING = false
 
