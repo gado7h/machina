@@ -12,8 +12,12 @@ local playerGui = player:WaitForChild("PlayerGui")
 --  Module imports
 local NovaMachine = script.Parent
 local Config = require(NovaMachine:WaitForChild("Config"))
-local Motherboard = require(NovaMachine.hardware:WaitForChild("Motherboard"))
-local LuauVM = require(NovaMachine:WaitForChild("LuauVM"))
+local PcSystem = require(NovaMachine.platforms.x86:WaitForChild("PcSystem"))
+local profile = Config.EMULATION and Config.EMULATION.PROFILE or "nova-legacy"
+local LuauVM = nil
+if profile == (Config.EMULATION and Config.EMULATION.LEGACY_PROFILE or "nova-legacy") then
+	LuauVM = require(NovaMachine.outdated.legacy:WaitForChild("LuauVM"))
+end
 
 --  GUI setup
 local function setupGUI()
@@ -303,7 +307,7 @@ local function main()
 	local editableImage = createEditableImage(imageLabel)
 
 	-- Build machine
-	machine = Motherboard.new(Config, editableImage, LuauVM)
+	machine = PcSystem.new(Config, editableImage, LuauVM)
 
 	-- UI chrome
 	addHDDLED(screenFrame, getMachine)

@@ -5,15 +5,11 @@
     "$className": "DataModel",
 
     "ReplicatedStorage": {
-      "Machine": {
-        "$path": "src/machine"
-      }
+      "$path": "src/machine"
     },
 
     "ServerScriptService": {
-      "NovaServer": {
-        "$path": "src/server"
-      }
+      "$path": "src/server"
     }
   }
 }

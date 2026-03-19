@@ -1,13 +1,13 @@
--- ROM module
+-- FirmwareRom module
 
-local ROM = {}
-ROM.__index = ROM
+local FirmwareRom = {}
+FirmwareRom.__index = FirmwareRom
 
-function ROM.new(config)
-	local self = setmetatable({}, ROM)
+function FirmwareRom.new(config)
+	local self = setmetatable({}, FirmwareRom)
 	self.config = config
-	self.size = config.ROM_SIZE
-	self._data = {} -- offset → byte
+	self.size = config.FirmwareRom_SIZE
+	self._data = {} -- offset â†’ byte
 	self._locked = true -- write-protected by default
 	self._unlockSeq = { 0xAA, 0x55, 0xA0 } -- must write to 0x5555, 0x2AAA, 0x5555
 	self._unlockStep = 0
@@ -15,9 +15,9 @@ function ROM.new(config)
 	return self
 end
 
---- Load a firmware image (table of bytes) into ROM.
+--- Load a firmware image (table of bytes) into FirmwareRom.
 --- Called by the system builder before powering on.
-function ROM:flash(bytes)
+function FirmwareRom:flash(bytes)
 	self._locked = false
 	for i, b in ipairs(bytes) do
 		self._data[i - 1] = b % 256
@@ -27,7 +27,7 @@ function ROM:flash(bytes)
 end
 
 --- Load a firmware image from a Lua string.
-function ROM:flashString(str)
+function FirmwareRom:flashString(str)
 	local bytes = {}
 	for i = 1, #str do
 		bytes[i] = string.byte(str, i)
@@ -35,12 +35,12 @@ function ROM:flashString(str)
 	self:flash(bytes)
 end
 
-function ROM:memRead(offset)
+function FirmwareRom:memRead(offset)
 	self.stats.reads = self.stats.reads + 1
 	return self._data[offset] or 0xFF -- unprogrammed NOR = 0xFF
 end
 
-function ROM:memWrite(offset, value)
+function FirmwareRom:memWrite(offset, value)
 	self.stats.writeAttempts = self.stats.writeAttempts + 1
 	-- Implement AMD/SST-style unlock sequence for flash programming
 	if self._locked then
@@ -49,7 +49,7 @@ function ROM:memWrite(offset, value)
 	self._data[offset] = value % 256
 end
 
-function ROM:readRegion(offset, length)
+function FirmwareRom:readRegion(offset, length)
 	local out = {}
 	for i = 0, length - 1 do
 		table.insert(out, self._data[offset + i] or 0xFF)
@@ -57,8 +57,8 @@ function ROM:readRegion(offset, length)
 	return out
 end
 
---- Dump ROM contents as hex string for debugging.
-function ROM:hexDump(offset, length)
+--- Dump FirmwareRom contents as hex string for debugging.
+function FirmwareRom:hexDump(offset, length)
 	local lines = {}
 	local line = {}
 	for i = 0, length - 1 do
@@ -74,11 +74,11 @@ function ROM:hexDump(offset, length)
 	return lines
 end
 
-function ROM:getStats()
+function FirmwareRom:getStats()
 	return self.stats
 end
-function ROM:getSize()
+function FirmwareRom:getSize()
 	return self.size
 end
 
-return ROM
+return FirmwareRom

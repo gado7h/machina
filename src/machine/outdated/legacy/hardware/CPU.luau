@@ -3,6 +3,9 @@
 local CPU = {}
 CPU.__index = CPU
 
+local NativeCommandBridge = require(script.Parent.Parent.software.NativeCommandBridge)
+local NativeSyscalls = require(script.Parent.Parent.software.NativeSyscalls)
+
 local OP = {
 	NOP = 0,
 	MOV = 1,
@@ -69,6 +72,40 @@ local REG_NAMES =
 	{ "R0", "R1", "R2", "R3", "R4", "R5", "R6", "R7", "PC", "SP", "LR", "FLAGS", "CR0", "CR3", "IDTR", "TR" }
 for i, n in ipairs(REG_NAMES) do
 	REG_IDX[n] = i
+end
+
+local function getNativeConfig(config)
+	local native = config and config.NATIVE or {}
+	local userSpaceBase = (config and config.USER_SPACE_BASE) or 0x00200000
+	local userSpaceTop = (config and config.USER_SPACE_TOP) or 0x00800000
+	local ports = config and config.PORT or {}
+	return {
+		maxSteps = native.MAX_STEPS or 8192,
+		exitRegister = native.EXIT_REGISTER or "R1",
+		stdoutPort = native.STDOUT_PORT or ports.COM1_BASE or 0x03F8,
+		defaultLoadAddress = native.DEFAULT_LOAD_ADDRESS or userSpaceBase,
+		defaultStackAddress = native.DEFAULT_STACK_ADDRESS or (userSpaceTop - 4),
+		userSpaceBase = userSpaceBase,
+		userSpaceTop = userSpaceTop,
+		backend = native.BACKEND or "nova32-native",
+	}
+end
+
+local function cloneArray(values)
+	local snapshot = {}
+	for i = 1, #values do
+		local value = values[i]
+		snapshot[i] = type(value) == "table" and table.clone(value) or value
+	end
+	return snapshot
+end
+
+local function appendU32LE(bytes, value)
+	local v = (tonumber(value) or 0) % 0x100000000
+	bytes[#bytes + 1] = v % 256
+	bytes[#bytes + 1] = math.floor(v / 256) % 256
+	bytes[#bytes + 1] = math.floor(v / 65536) % 256
+	bytes[#bytes + 1] = math.floor(v / 16777216) % 256
 end
 
 function CPU.new(bus, config)
@@ -173,6 +210,7 @@ function CPU:reset()
 	self._guestSessions = {}
 	self._guestSessionSerial = 1
 	self._guestLastSessionId = nil
+	self._nativeExecutionContext = nil
 end
 
 function CPU:getReg(name)
@@ -449,6 +487,29 @@ function CPU:_raiseException(reason, addr, vector)
 	self:_serviceInterrupts(true)
 end
 
+function CPU:_dispatchNativeSyscall(vector)
+	local nativeConfig = getNativeConfig(self.config)
+	if vector ~= (self.config.NATIVE and self.config.NATIVE.SYSCALL_VECTOR or NativeSyscalls.VECTOR or nativeConfig.syscallVector) then
+		return false
+	end
+	if type(self._nativeExecutionContext) ~= "table" then
+		return false
+	end
+
+	local syscallNumber = self:getReg("R1")
+	local ok, resultOrErr = pcall(function()
+		return NativeCommandBridge.dispatch(self._nativeExecutionContext, syscallNumber)
+	end)
+	if not ok then
+		error(resultOrErr)
+	end
+	if resultOrErr == nil then
+		error("native-syscall-dispatch-failed")
+	end
+	self:setReg("R1", tonumber(resultOrErr) or 0)
+	return true
+end
+
 local function decode(word)
 	local opcode = math.floor(word / (2 ^ 26)) % 64
 	local rd = math.floor(word / (2 ^ 21)) % 32
@@ -634,8 +695,10 @@ function CPU:step()
 		self:setRegIdx(rd, self:_memRead32(self.reg[REG_IDX.SP]))
 		self.reg[REG_IDX.SP] = (self.reg[REG_IDX.SP] + 4) % 0x100000000
 	elseif opcode == OP.INT then
-		self:interrupt(imm8)
-		self:_serviceInterrupts(true)
+		if not self:_dispatchNativeSyscall(imm8) then
+			self:interrupt(imm8)
+			self:_serviceInterrupts(true)
+		end
 	elseif opcode == OP.IRET then
 		local frame = table.remove(self._interruptStack)
 		if frame then
@@ -800,6 +863,30 @@ function CPU:ensureManagedGuestBackend(runtimeName, backendName)
 	})
 
 	return selectedBackend
+end
+
+function CPU:ensureNativeGuestBackend(name)
+	local native = getNativeConfig(self.config)
+	local backendName = name or native.backend
+
+	if self._guestBackends[backendName] then
+		return backendName
+	end
+
+	self:registerGuestExecutionBackend(backendName, {
+		kind = "native-loader",
+		execute = function(cpu, session)
+			local executable = session.executable or (session.context and session.context.executable)
+			if type(executable) ~= "table" or executable.format ~= "native" then
+				return nil, "native-executable-missing"
+			end
+			return function()
+				return cpu:_runNativeGuestExecutable(executable, session.env, session.context, session)
+			end
+		end,
+	})
+
+	return backendName
 end
 
 function CPU:attachManagedRuntime(name, runtime)
@@ -979,7 +1066,12 @@ function CPU:getGuestExecutionBackend(context)
 		or "luauvm"
 
 	if requested == "native" or exec.kind == "native" or exec.format == "native" then
-		return { kind = "native", name = "nova32" }
+		local backendName = self:ensureNativeGuestBackend(exec.backend or context.nativeBackend)
+		return {
+			kind = "native",
+			name = backendName,
+			backend = self:getGuestBackend(backendName),
+		}
 	end
 
 	if requested == "managed-vm" then
@@ -1024,6 +1116,281 @@ function CPU:_executeManagedRuntimeDirect(runtimeName, bytecode, env, context)
 	return runtime.loadBytecode(bytecode, env, context)
 end
 
+function CPU:_snapshotExecutionState()
+	return {
+		reg = cloneArray(self.reg),
+		idtBase = self._idtBase,
+		pendingSWInterrupts = cloneArray(self._pendingSWInterrupts),
+		interruptStack = cloneArray(self._interruptStack),
+		lastInterruptVector = self._lastInterruptVector,
+		inTrap = self._inTrap,
+		pipeline = table.clone(self.pipeline),
+		pipelineActive = table.clone(self.pipelineActive),
+		latchIF = self._latchIF and table.clone(self._latchIF) or nil,
+		latchID = self._latchID and table.clone(self._latchID) or nil,
+		latchEX = self._latchEX and table.clone(self._latchEX) or nil,
+		latchMA = self._latchMA and table.clone(self._latchMA) or nil,
+	}
+end
+
+function CPU:_restoreExecutionState(snapshot)
+	if type(snapshot) ~= "table" then
+		return
+	end
+
+	for i = 1, #REG_NAMES do
+		self.reg[i] = snapshot.reg and snapshot.reg[i] or 0
+	end
+	self._idtBase = snapshot.idtBase or 0
+	self._pendingSWInterrupts = snapshot.pendingSWInterrupts or {}
+	self._interruptStack = snapshot.interruptStack or {}
+	self._lastInterruptVector = snapshot.lastInterruptVector
+	self._inTrap = snapshot.inTrap == true
+	self.pipeline = snapshot.pipeline or { IF = "NOP", ID = "NOP", RF = "NOP", EX = "NOP", MA = "NOP", WB = "NOP" }
+	self.pipelineActive = snapshot.pipelineActive or {}
+	self._latchIF = snapshot.latchIF
+	self._latchID = snapshot.latchID
+	self._latchEX = snapshot.latchEX
+	self._latchMA = snapshot.latchMA
+end
+
+function CPU:_validateNativeExecutable(executable)
+	if type(executable) ~= "table" then
+		return nil, "invalid-native-executable"
+	end
+
+	local imageSize = tonumber(executable.imageSize) or #(executable.imageBytes or {})
+	local bssSize = tonumber(executable.bssSize) or 0
+	local loadAddress = tonumber(executable.loadAddress)
+	local entryAddress = tonumber(executable.entryAddress)
+	local stackPointer = tonumber(executable.stackPointer)
+	local native = getNativeConfig(self.config)
+	local userSpaceBase = native.userSpaceBase
+	local userSpaceTop = native.userSpaceTop
+	local imageTop = (loadAddress or 0) + imageSize + bssSize
+
+	if not loadAddress or loadAddress < userSpaceBase then
+		return nil, "native-image-load-address-out-of-range"
+	end
+	if imageTop > userSpaceTop then
+		return nil, "native-image-exceeds-user-space"
+	end
+	if not entryAddress or entryAddress < loadAddress or entryAddress >= (loadAddress + imageSize) then
+		return nil, "native-image-entry-address-out-of-range"
+	end
+	if not stackPointer or stackPointer < userSpaceBase or stackPointer >= userSpaceTop then
+		return nil, "native-image-stack-pointer-out-of-range"
+	end
+
+	return {
+		loadAddress = loadAddress,
+		entryAddress = entryAddress,
+		stackPointer = stackPointer,
+		imageSize = imageSize,
+		bssSize = bssSize,
+	}
+end
+
+function CPU:_restoreNativeStdout(previousHandler, port)
+	if not self.bus or not self.bus._portmap then
+		return
+	end
+	self.bus._portmap[port] = previousHandler
+end
+
+function CPU:_captureMemoryRegion(baseAddress, length)
+	local bytes = {}
+	for offset = 0, math.max(0, length) - 1 do
+		bytes[#bytes + 1] = self.bus:memRead(baseAddress + offset)
+	end
+	return bytes
+end
+
+function CPU:_restoreMemoryRegion(baseAddress, bytes)
+	for i, byte in ipairs(bytes or {}) do
+		self.bus:memWrite(baseAddress + i - 1, byte)
+	end
+end
+
+function CPU:_buildNativeAbiData(validated, env, context)
+	local argv = context and context.argv or (env and env.args) or {}
+	local stdinText = ""
+	if env and env.process and type(env.process._pipeInput) == "string" then
+		stdinText = env.process._pipeInput
+	end
+
+	local abiBase = validated.loadAddress + validated.imageSize + validated.bssSize
+	local pointerBytes = {}
+	local stringBytes = {}
+	local currentStringAddress = abiBase + (#argv * 4)
+
+	for _, argValue in ipairs(argv) do
+		appendU32LE(pointerBytes, currentStringAddress + #stringBytes)
+		local text = tostring(argValue or "")
+		for i = 1, #text do
+			stringBytes[#stringBytes + 1] = string.byte(text, i)
+		end
+		stringBytes[#stringBytes + 1] = 0
+	end
+
+	local stdinAddress = abiBase + #pointerBytes + #stringBytes
+	local stdinBytes = {}
+	for i = 1, #stdinText do
+		stdinBytes[#stdinBytes + 1] = string.byte(stdinText, i)
+	end
+
+	local abiBytes = {}
+	for _, byte in ipairs(pointerBytes) do
+		abiBytes[#abiBytes + 1] = byte
+	end
+	for _, byte in ipairs(stringBytes) do
+		abiBytes[#abiBytes + 1] = byte
+	end
+	for _, byte in ipairs(stdinBytes) do
+		abiBytes[#abiBytes + 1] = byte
+	end
+
+	return {
+		bytes = abiBytes,
+		argc = #argv,
+		argvAddress = #argv > 0 and abiBase or 0,
+		stdinAddress = #stdinBytes > 0 and stdinAddress or 0,
+		stdinLength = #stdinBytes,
+	}
+end
+
+function CPU:_runNativeGuestExecutable(executable, env, context, session)
+	local validated, validateErr = self:_validateNativeExecutable(executable)
+	if not validated then
+		error(validateErr)
+	end
+
+	local native = getNativeConfig(self.config)
+	local savedState = self:_snapshotExecutionState()
+	local stdoutPort = native.stdoutPort
+	local previousPortHandler = self.bus and self.bus._portmap and self.bus._portmap[stdoutPort] or nil
+	local output = {}
+	local overwrittenBytes = {}
+	local abiData = self:_buildNativeAbiData(validated, env, context)
+
+	local function writeStdoutByte(byteValue)
+		local byte = (tonumber(byteValue) or 0) % 256
+		local chunk = string.char(byte)
+		output[#output + 1] = chunk
+
+		local tty = env and env.tty or nil
+		if tty and type(tty.write) == "function" and byte ~= 0 then
+			tty.write(chunk)
+		end
+	end
+
+	if self.bus then
+		self.bus:registerPort(stdoutPort, previousPortHandler and previousPortHandler.read or nil, function(value)
+			if previousPortHandler and previousPortHandler.write then
+				previousPortHandler.write(value)
+			end
+			writeStdoutByte(value)
+		end, "native-stdout")
+	end
+
+	local ok, result = pcall(function()
+		self._nativeExecutionContext = {
+			env = env,
+			context = context,
+			executable = executable,
+			session = session,
+		}
+		self._icache = {}
+		self._dcache = {}
+		self._pendingSWInterrupts = {}
+		self._interruptStack = {}
+		self._lastInterruptVector = nil
+		self._inTrap = false
+		self._idtBase = 0
+
+		if self.bus and self.bus.consumeFault then
+			self.bus:consumeFault()
+		end
+
+		local totalSize = validated.imageSize + validated.bssSize + #abiData.bytes
+		if validated.loadAddress + totalSize > native.userSpaceTop then
+			error("native-abi-exceeds-user-space")
+		end
+		overwrittenBytes = self:_captureMemoryRegion(validated.loadAddress, totalSize)
+		for offset = 0, totalSize - 1 do
+			self.bus:memWrite(validated.loadAddress + offset, 0)
+		end
+		for i, byte in ipairs(executable.imageBytes or {}) do
+			self.bus:memWrite(validated.loadAddress + i - 1, byte)
+		end
+		for i, byte in ipairs(abiData.bytes) do
+			self.bus:memWrite(validated.loadAddress + validated.imageSize + validated.bssSize + i - 1, byte)
+		end
+
+		local fault = self.bus and self.bus.consumeFault and self.bus:consumeFault() or nil
+		if fault then
+			error("native-image-load-fault:" .. tostring(fault.kind))
+		end
+
+		for i = 1, #REG_NAMES do
+			self.reg[i] = 0
+		end
+		self.reg[REG_IDX.PC] = validated.entryAddress
+		self.reg[REG_IDX.SP] = validated.stackPointer
+		self.reg[REG_IDX.FLAGS] = 0
+		self.reg[REG_IDX.R2] = abiData.argc
+		self.reg[REG_IDX.R3] = abiData.argvAddress
+		self.reg[REG_IDX.R4] = abiData.stdinAddress
+		self.reg[REG_IDX.R5] = abiData.stdinLength
+
+		local initialExceptionCount = self.stats.exceptions
+		local steps = 0
+		local halted = false
+
+		while steps < native.maxSteps do
+			local op = self:step()
+			steps = steps + 1
+			if op == "HLT" then
+				halted = true
+				break
+			end
+			if op == "FAULT" then
+				error("native-guest-fault")
+			end
+			if self.stats.exceptions > initialExceptionCount then
+				error("native-guest-exception")
+			end
+		end
+
+		if not halted then
+			error("native-guest-step-limit-exceeded")
+		end
+
+		if session then
+			session.nativeSteps = steps
+			session.stdout = table.concat(output)
+		end
+
+		return tonumber(self:getReg(native.exitRegister)) or 0
+	end)
+
+	self:_restoreMemoryRegion(validated.loadAddress, overwrittenBytes)
+	self:_restoreNativeStdout(previousPortHandler, stdoutPort)
+	self:_restoreExecutionState(savedState)
+	self._nativeExecutionContext = nil
+	self._icache = {}
+	self._dcache = {}
+
+	if session then
+		session.stdout = table.concat(output)
+	end
+
+	if not ok then
+		error(result)
+	end
+	return result
+end
+
 function CPU:executeGuestExecutable(executable, env, context)
 	if type(executable) ~= "table" then
 		return nil, "invalid-executable-spec"
@@ -1034,7 +1401,15 @@ function CPU:executeGuestExecutable(executable, env, context)
 	context.executable = context.executable or exec
 
 	if exec.kind == "native" or exec.format == "native" then
-		return nil, "native-guest-loader-not-implemented"
+		local backend = self:getGuestExecutionBackend(context)
+		local session = self:createGuestSession(nil, env, context, backend)
+		session.executable = exec
+		self:enqueueGuestSession(session)
+		self:drainGuestSessions(1)
+		if session.state == "ready" and type(session.result) == "function" then
+			return session.result, nil, session
+		end
+		return nil, session.error or "native-execution-failed", session
 	end
 
 	local runtimeName = exec.runtime or context.runtime or (self.config.VM or {}).MANAGED_RUNTIME or "luauvm"

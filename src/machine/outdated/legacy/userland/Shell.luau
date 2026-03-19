@@ -15,6 +15,13 @@ local function getVmConfig(config)
 	}
 end
 
+local function getNativeConfig(config)
+	local native = config and config.NATIVE or {}
+	return {
+		extension = native.EXTENSION or ".nxe",
+	}
+end
+
 local function firstMeaningfulLine(text)
 	for line in (text .. "\n"):gmatch("([^\n]*)\n") do
 		local trimmed = line:match("^%s*(.-)%s*$")
@@ -69,6 +76,40 @@ function Shell.new(kernel, username)
 		["..."] = "cd ../..",
 	}
 	self._builtins = self:_buildBuiltins()
+	self._preferExternal = {
+		echo = true,
+		cat = true,
+		pwd = true,
+		mkdir = true,
+		rm = true,
+		cp = true,
+		mv = true,
+		touch = true,
+		ls = true,
+		ps = true,
+		date = true,
+		clear = true,
+		["true"] = true,
+		["false"] = true,
+		sleep = true,
+		uname = true,
+		whoami = true,
+		id = true,
+		hostname = true,
+		uptime = true,
+		free = true,
+		df = true,
+		env = true,
+		wc = true,
+		grep = true,
+		head = true,
+		tail = true,
+		sysinfo = true,
+		dmesg = true,
+		lspci = true,
+		lsblk = true,
+		mount = true,
+	}
 	self._loader = ExecutableLoader.new(self.vfs, self.config)
 	self._dispatcher = CommandDispatcher.new({
 		resolveExternal = function(cmd)
@@ -107,6 +148,7 @@ end
 
 function Shell:_resolveExecutablePath(cmd)
 	local vm = self:_getVmConfig()
+	local native = getNativeConfig(self.config)
 	local function isExecutableFile(path)
 		if not self.vfs:exists(path) then
 			return false
@@ -118,10 +160,12 @@ function Shell:_resolveExecutablePath(cmd)
 	local candidates = {}
 	if cmd:sub(1, 1) == "/" then
 		table.insert(candidates, cmd)
+		table.insert(candidates, cmd .. native.extension)
 		table.insert(candidates, cmd .. vm.extension)
 	else
 		for _, dir in ipairs(self:_pathDirs()) do
 			table.insert(candidates, dir .. "/" .. cmd)
+			table.insert(candidates, dir .. "/" .. cmd .. native.extension)
 			table.insert(candidates, dir .. "/" .. cmd .. vm.extension)
 		end
 	end
@@ -135,6 +179,16 @@ function Shell:_resolveExecutablePath(cmd)
 end
 
 function Shell:_classifyCommand(cmd)
+	if self._preferExternal and self._preferExternal[cmd] then
+		local path = self:_resolveExecutablePath(cmd)
+		if path then
+			return {
+				kind = "external",
+				name = cmd,
+				path = path,
+			}
+		end
+	end
 	return self._dispatcher:classify(cmd)
 end
 
@@ -614,12 +668,7 @@ function Shell:_runExternal(path, args, parsed)
 		return 126
 	end
 
-	if spec.kind == "native" then
-		self.gpu:println("nsh: " .. path .. ": native guest binaries are not implemented yet", 0x0C)
-		return 126
-	end
-
-	if not vmCfg.enabled then
+	if spec.kind == "vm" and not vmCfg.enabled then
 		self.gpu:println("nsh: guest VM execution is disabled in config", 0x0C)
 		return 1
 	end

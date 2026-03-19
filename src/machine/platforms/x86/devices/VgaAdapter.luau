@@ -1,7 +1,7 @@
--- GPU module
+-- VgaAdapter module
 
-local GPU = {}
-GPU.__index = GPU
+local VgaAdapter = {}
+VgaAdapter.__index = VgaAdapter
 
 -- CGA 16-color palette (packed ARGB as Lua integer)
 local PALETTE = {
@@ -23,7 +23,7 @@ local PALETTE = {
 	[15] = 0xFFFFFFFF, -- white
 }
 
--- 4×8 bitmap font (ASCII 32-126).
+-- 4Ã—8 bitmap font (ASCII 32-126).
 -- Each glyph is 8 bytes; each byte is one scanline with bits 3..0 = columns 0..3.
 local FONT = {}
 local function F(...)
@@ -202,8 +202,8 @@ local function sampleGlyphSmooth(glyph, u, v)
 	return lerp(top, bot, ty)
 end
 
-function GPU.new(config, editableImage)
-	local self = setmetatable({}, GPU)
+function VgaAdapter.new(config, editableImage)
+	local self = setmetatable({}, VgaAdapter)
 	self.config = config
 	self.editableImage = editableImage -- nil = headless/test mode
 
@@ -224,9 +224,21 @@ function GPU.new(config, editableImage)
 	self._nextFrameTime = 0
 	self._frameInterval = 1 / math.max(1, config.DISPLAY_REFRESH_HZ or 60)
 
-	-- Text buffer: flat array [0 .. COLS*ROWS-1], each entry {char, attr}
+	self._textCellCount = math.max(config.TEXT_COLS * config.TEXT_ROWS, math.floor((config.VIDEO_SIZE or (config.TEXT_COLS * config.TEXT_ROWS * 2)) / 2))
+	self._crtcIndex = 0
+	self._crtc = {
+		[0x0A] = 0x06,
+		[0x0B] = 0x07,
+		[0x0C] = 0x00,
+		[0x0D] = 0x00,
+		[0x0E] = 0x00,
+		[0x0F] = 0x00,
+	}
+	self._miscOutput = 0x67
+
+	-- Text buffer: flat array [0 .. textCellCount-1], each entry {char, attr}
 	self._textBuf = {}
-	for i = 0, config.TEXT_COLS * config.TEXT_ROWS - 1 do
+	for i = 0, self._textCellCount - 1 do
 		self._textBuf[i] = { char = 32, attr = 0x07 }
 	end
 	self._cursorRow = 0
@@ -243,7 +255,7 @@ function GPU.new(config, editableImage)
 		self._framebuf[i] = 0xFF000000
 	end
 
-	-- Native buffer for WritePixelsBuffer — allocated once, reused every frame.
+	-- Native buffer for WritePixelsBuffer â€” allocated once, reused every frame.
 	-- Layout: RGBA u8 bytes, row-major. Size = W * H * 4 bytes.
 	self._pixelBuffer = buffer.create(self.W * self.H * 4)
 
@@ -279,13 +291,79 @@ local function markAllCellsDirty(self)
 	end
 end
 
+local function syncCellToVRAM(self, absoluteIdx)
+	local cell = self._textBuf[absoluteIdx] or { char = 32, attr = 0x07 }
+	local base = absoluteIdx * 2
+	self._vram[base] = cell.char
+	self._vram[base + 1] = cell.attr
+end
+
+local function textStartCell(self)
+	local startAddress = ((self._crtc[0x0C] or 0) * 256) + (self._crtc[0x0D] or 0)
+	return startAddress % math.max(1, self._textCellCount)
+end
+
+local function updateCursorRegisters(self)
+	local cursorCell = (textStartCell(self) + (self._cursorRow * self.config.TEXT_COLS) + self._cursorCol) % math.max(1, self._textCellCount)
+	self._crtc[0x0E] = math.floor(cursorCell / 256) % 256
+	self._crtc[0x0F] = cursorCell % 256
+end
+
+local function applyCursorRegisters(self)
+	local cursorCell = (((self._crtc[0x0E] or 0) * 256) + (self._crtc[0x0F] or 0)) % math.max(1, self._textCellCount)
+	local visibleCell = (cursorCell - textStartCell(self)) % math.max(1, self._textCellCount)
+	local screenCells = self.config.TEXT_COLS * self.config.TEXT_ROWS
+	if visibleCell < screenCells then
+		self._cursorRow = math.floor(visibleCell / self.config.TEXT_COLS)
+		self._cursorCol = visibleCell % self.config.TEXT_COLS
+	end
+end
+
+local function absoluteCellToVisible(self, absoluteCell)
+	local startCell = textStartCell(self)
+	local visibleCell = (absoluteCell - startCell) % math.max(1, self._textCellCount)
+	if visibleCell < 0 or visibleCell >= (self.config.TEXT_COLS * self.config.TEXT_ROWS) then
+		return nil
+	end
+	return visibleCell % self.config.TEXT_COLS, math.floor(visibleCell / self.config.TEXT_COLS)
+end
+
+function VgaAdapter:attachBus(bus)
+	bus:registerPort(self.config.PORT.VGA_MISC_WRITE, function()
+		return self._miscOutput
+	end, function(v)
+		self._miscOutput = bit32.band(tonumber(v) or 0, 0xFF)
+	end, "VGA Misc")
+	bus:registerPort(self.config.PORT.VGA_CRTC_INDEX, function()
+		return self._crtcIndex
+	end, function(v)
+		self._crtcIndex = bit32.band(tonumber(v) or 0, 0x1F)
+	end, "VGA CRTC Index")
+	bus:registerPort(self.config.PORT.VGA_CRTC_DATA, function()
+		return self._crtc[self._crtcIndex] or 0
+	end, function(v)
+		local value = bit32.band(tonumber(v) or 0, 0xFF)
+		self._crtc[self._crtcIndex] = value
+		if self._crtcIndex == 0x0C or self._crtcIndex == 0x0D then
+			markAllCellsDirty(self)
+			self._dirty = true
+			applyCursorRegisters(self)
+		elseif self._crtcIndex == 0x0E or self._crtcIndex == 0x0F then
+			markCellDirty(self, self._cursorCol, self._cursorRow)
+			applyCursorRegisters(self)
+			markCellDirty(self, self._cursorCol, self._cursorRow)
+			self._dirty = true
+		end
+	end, "VGA CRTC Data")
+end
+
 --  Bus / VRAM interface
 
-function GPU:memRead(offset)
+function VgaAdapter:memRead(offset)
 	return self._vram[offset] or 0
 end
 
-function GPU:memWrite(offset, value)
+function VgaAdapter:memWrite(offset, value)
 	self._vram[offset] = value % 256
 	self._dirty = true
 
@@ -296,6 +374,10 @@ function GPU:memWrite(offset, value)
 				self._textBuf[cellIdx].char = value % 256
 			else
 				self._textBuf[cellIdx].attr = value % 256
+			end
+			local visibleCol, visibleRow = absoluteCellToVisible(self, cellIdx)
+			if visibleCol ~= nil and visibleRow ~= nil then
+				markCellDirty(self, visibleCol, visibleRow)
 			end
 		end
 	else
@@ -317,7 +399,7 @@ end
 
 --  High-level text API  (called by BIOS / kernel / shell)
 
-function GPU:setMode(mode)
+function VgaAdapter:setMode(mode)
 	self.mode = mode
 	self._dirty = true
 	if mode == "TEXT" then
@@ -325,27 +407,31 @@ function GPU:setMode(mode)
 	end
 end
 
-function GPU:clearScreen(attr)
+function VgaAdapter:clearScreen(attr)
 	attr = attr or 0x07
-	for i = 0, self.config.TEXT_COLS * self.config.TEXT_ROWS - 1 do
+	for i = 0, self._textCellCount - 1 do
 		self._textBuf[i] = { char = 32, attr = attr }
+		syncCellToVRAM(self, i)
 	end
 	self._cursorRow = 0
 	self._cursorCol = 0
+	self._crtc[0x0C] = 0
+	self._crtc[0x0D] = 0
+	updateCursorRegisters(self)
 	self._lastCursor.col = 0
 	self._lastCursor.row = 0
 	markAllCellsDirty(self)
 	self._dirty = true
 end
 
-function GPU:putChar(col, row, ch, attr)
+function VgaAdapter:putChar(col, row, ch, attr)
 	if col < 0 or col >= self.config.TEXT_COLS then
 		return
 	end
 	if row < 0 or row >= self.config.TEXT_ROWS then
 		return
 	end
-	local idx = row * self.config.TEXT_COLS + col
+	local idx = (textStartCell(self) + (row * self.config.TEXT_COLS) + col) % math.max(1, self._textCellCount)
 	local newChar = (type(ch) == "string") and string.byte(ch, 1) or ch
 	local newAttr = attr or 0x07
 	local cur = self._textBuf[idx]
@@ -356,18 +442,19 @@ function GPU:putChar(col, row, ch, attr)
 		char = newChar,
 		attr = newAttr,
 	}
+	syncCellToVRAM(self, idx)
 	markCellDirty(self, col, row)
 	self._dirty = true
 	self.stats.textWrites = self.stats.textWrites + 1
 end
 
-function GPU:writeString(col, row, str, attr)
+function VgaAdapter:writeString(col, row, str, attr)
 	for i = 1, #str do
 		self:putChar(col + i - 1, row, string.byte(str, i), attr)
 	end
 end
 
-function GPU:print(str, attr)
+function VgaAdapter:print(str, attr)
 	attr = attr or 0x07
 	for i = 1, #str do
 		local c = string.byte(str, i)
@@ -394,40 +481,48 @@ function GPU:print(str, attr)
 			self._cursorRow = self.config.TEXT_ROWS - 1
 		end
 	end
+	updateCursorRegisters(self)
 	self._dirty = true
 end
 
-function GPU:println(str, attr)
+function VgaAdapter:println(str, attr)
 	self:print(str .. "\n", attr)
 end
 
-function GPU:_scrollUp()
+function VgaAdapter:_scrollUp()
 	local cols = self.config.TEXT_COLS
 	local rows = self.config.TEXT_ROWS
+	local startCell = textStartCell(self)
 	for row = 0, rows - 2 do
 		for col = 0, cols - 1 do
-			self._textBuf[row * cols + col] = self._textBuf[(row + 1) * cols + col] or { char = 32, attr = 0x07 }
+			local dstIdx = (startCell + row * cols + col) % math.max(1, self._textCellCount)
+			local srcIdx = (startCell + (row + 1) * cols + col) % math.max(1, self._textCellCount)
+			self._textBuf[dstIdx] = table.clone(self._textBuf[srcIdx] or { char = 32, attr = 0x07 })
+			syncCellToVRAM(self, dstIdx)
 		end
 	end
 	for col = 0, cols - 1 do
-		self._textBuf[(rows - 1) * cols + col] = { char = 32, attr = 0x07 }
+		local idx = (startCell + (rows - 1) * cols + col) % math.max(1, self._textCellCount)
+		self._textBuf[idx] = { char = 32, attr = 0x07 }
+		syncCellToVRAM(self, idx)
 	end
 	markAllCellsDirty(self)
 end
 
-function GPU:moveCursor(col, row)
+function VgaAdapter:moveCursor(col, row)
 	markCellDirty(self, self._cursorCol, self._cursorRow)
 	self._cursorCol = math.max(0, math.min(col, self.config.TEXT_COLS - 1))
 	self._cursorRow = math.max(0, math.min(row, self.config.TEXT_ROWS - 1))
+	updateCursorRegisters(self)
 	markCellDirty(self, self._cursorCol, self._cursorRow)
 	self._dirty = true
 end
 
-function GPU:getCursor()
+function VgaAdapter:getCursor()
 	return self._cursorCol, self._cursorRow
 end
 
-function GPU:toggleCursor()
+function VgaAdapter:toggleCursor()
 	markCellDirty(self, self._lastCursor.col, self._lastCursor.row)
 	markCellDirty(self, self._cursorCol, self._cursorRow)
 	self._cursorVisible = not self._cursorVisible
@@ -435,7 +530,7 @@ function GPU:toggleCursor()
 end
 
 
-function GPU:_setPixelRaw(x, y, argb)
+function VgaAdapter:_setPixelRaw(x, y, argb)
 	if x < 0 or x >= self.W or y < 0 or y >= self.H then
 		return
 	end
@@ -444,7 +539,7 @@ end
 
 --  Pixel API
 
-function GPU:setPixel(x, y, argb)
+function VgaAdapter:setPixel(x, y, argb)
 	if x < 0 or x >= self.W or y < 0 or y >= self.H then
 		return
 	end
@@ -453,7 +548,7 @@ function GPU:setPixel(x, y, argb)
 	self.stats.pixelWrites = self.stats.pixelWrites + 1
 end
 
-function GPU:fillRect(x, y, w, h, argb)
+function VgaAdapter:fillRect(x, y, w, h, argb)
 	if w <= 0 or h <= 0 then
 		return
 	end
@@ -477,7 +572,7 @@ function GPU:fillRect(x, y, w, h, argb)
 	self._dirty = true
 end
 
-function GPU:drawLine(x0, y0, x1, y1, argb)
+function VgaAdapter:drawLine(x0, y0, x1, y1, argb)
 	x0, y0, x1, y1 = math.floor(x0), math.floor(y0), math.floor(x1), math.floor(y1)
 	local dx = math.abs(x1 - x0)
 	local dy = -math.abs(y1 - y0)
@@ -512,7 +607,7 @@ function GPU:drawLine(x0, y0, x1, y1, argb)
 	end
 end
 
-function GPU:drawRect(x, y, w, h, argb, filled)
+function VgaAdapter:drawRect(x, y, w, h, argb, filled)
 	if w <= 0 or h <= 0 then
 		return
 	end
@@ -530,7 +625,7 @@ function GPU:drawRect(x, y, w, h, argb, filled)
 	self:drawLine(x + w - 1, y + 1, x + w - 1, y + h - 2, argb)
 end
 
-function GPU:drawText(x, y, text, fgARGB, bgARGB)
+function VgaAdapter:drawText(x, y, text, fgARGB, bgARGB)
 	bgARGB = bgARGB or 0x00000000
 	for i = 1, #text do
 		self:drawChar(x + (i - 1) * self.CW, y, text:sub(i, i), fgARGB, bgARGB)
@@ -538,7 +633,7 @@ function GPU:drawText(x, y, text, fgARGB, bgARGB)
 	self.stats.guiDrawCalls = self.stats.guiDrawCalls + 1
 end
 
-function GPU:drawChar(x, y, ch, fgARGB, bgARGB)
+function VgaAdapter:drawChar(x, y, ch, fgARGB, bgARGB)
 	local code = (type(ch) == "string") and string.byte(ch, 1) or ch
 	local glyph = getGlyph(code)
 	local written = 0
@@ -589,7 +684,7 @@ function GPU:drawChar(x, y, ch, fgARGB, bgARGB)
 	self._dirty = true
 end
 
-function GPU:blitRect(srcX, srcY, w, h, dstX, dstY)
+function VgaAdapter:blitRect(srcX, srcY, w, h, dstX, dstY)
 	if w <= 0 or h <= 0 then
 		return
 	end
@@ -642,7 +737,7 @@ function GPU:blitRect(srcX, srcY, w, h, dstX, dstY)
 	end
 end
 
-function GPU:moveWindow(srcX, srcY, w, h, dstX, dstY, clearARGB)
+function VgaAdapter:moveWindow(srcX, srcY, w, h, dstX, dstY, clearARGB)
 	self:blitRect(srcX, srcY, w, h, dstX, dstY)
 	if clearARGB ~= nil then
 		self:fillRect(srcX, srcY, w, h, clearARGB)
@@ -652,10 +747,10 @@ end
 --  Flush to EditableImage via WritePixelsBuffer
 --
 --  WritePixelsBuffer takes a native Luau buffer (RGBA u8, row-major).
---  This is ~10× faster than WritePixels(table) because it avoids
+--  This is ~10Ã— faster than WritePixels(table) because it avoids
 --  allocating and iterating a 64k-entry Lua table on every frame.
 
-function GPU:flush()
+function VgaAdapter:flush()
 	if not self._dirty then
 		return
 	end
@@ -689,7 +784,7 @@ function GPU:flush()
 		self._pixelBuffer = pb
 	end
 
-	-- Pack ARGB integer → RGBA bytes into native buffer
+	-- Pack ARGB integer â†’ RGBA bytes into native buffer
 	for i = 0, W * H - 1 do
 		local argb = fb[i] or 0xFF000000
 		local base = i * 4
@@ -708,20 +803,22 @@ function GPU:flush()
 		self.editableImage:WritePixelsBuffer(Vector2.zero, Vector2.new(W, H), pb)
 	end)
 	if not ok then
-		warn("GPU:flush WritePixelsBuffer failed:", err)
+		warn("VgaAdapter:flush WritePixelsBuffer failed:", err)
 	end
 
 	self._dirty = false
 	self._nextFrameTime = now + self._frameInterval
 end
 
-function GPU:_renderText()
+function VgaAdapter:_renderText()
 	local cols = self.config.TEXT_COLS
+	local startCell = textStartCell(self)
 
 	for _, idx in ipairs(self._dirtyCellList) do
 		local row = math.floor(idx / cols)
 		local col = idx % cols
-		local cell = self._textBuf[idx] or { char = 32, attr = 0x07 }
+		local absoluteIdx = (startCell + idx) % math.max(1, self._textCellCount)
+		local cell = self._textBuf[absoluteIdx] or { char = 32, attr = 0x07 }
 		local fg = PALETTE[cell.attr % 16] or 0xFFAAAAAA
 		local bg = PALETTE[math.floor(cell.attr / 16) % 16] or 0xFF000000
 		self:drawChar(col * self.CW, row * self.CH, cell.char, fg, bg)
@@ -730,7 +827,8 @@ function GPU:_renderText()
 	self._dirtyCellList = {}
 
 	markCellDirty(self, self._lastCursor.col, self._lastCursor.row)
-	if self._cursorVisible then
+	local cursorDisabled = bit32.band(self._crtc[0x0A] or 0, 0x20) ~= 0
+	if self._cursorVisible and not cursorDisabled then
 		local cx = self._cursorCol * self.CW
 		local cy = self._cursorRow * self.CH + (self.CH - 1)
 		for i = 0, self.CW - 1 do
@@ -742,9 +840,9 @@ function GPU:_renderText()
 	self._lastCursor.row = self._cursorRow
 end
 
-function GPU:getStats()
+function VgaAdapter:getStats()
 	return self.stats
 end
-GPU.PALETTE = PALETTE
+VgaAdapter.PALETTE = PALETTE
 
-return GPU
+return VgaAdapter

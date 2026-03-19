@@ -1,0 +1,431 @@
+local PcSystem = {}
+PcSystem.__index = PcSystem
+
+local function wrapText(text, width)
+	local out = {}
+	local line = ""
+	local function pushLine(value)
+		out[#out + 1] = value
+	end
+	local function appendWord(word)
+		while #word > width do
+			if line ~= "" then
+				pushLine(line)
+				line = ""
+			end
+			pushLine(word:sub(1, width))
+			word = word:sub(width + 1)
+		end
+		if line == "" then
+			line = word
+		elseif #line + 1 + #word <= width then
+			line = line .. " " .. word
+		else
+			pushLine(line)
+			line = word
+		end
+	end
+	for rawLine in tostring(text):gmatch("([^\n]+)") do
+		line = ""
+		for word in rawLine:gmatch("%S+") do
+			appendWord(word)
+		end
+		if line ~= "" then
+			pushLine(line)
+		end
+	end
+	if #out == 0 then
+		out[1] = ""
+	end
+	return out
+end
+
+local function copyConfig(config)
+	local out = {}
+	for key, value in pairs(config) do
+		out[key] = type(value) == "table" and table.clone(value) or value
+	end
+	return out
+end
+
+local function activeProfile(config)
+	return (config.EMULATION and config.EMULATION.PROFILE) or "nova-legacy"
+end
+
+local function buildBoardConfig(config)
+	local board = copyConfig(config)
+	if activeProfile(config) ~= "x86-bios" then
+		return board
+	end
+
+	local x86 = config.X86 or {}
+	board.DISPLAY_REFRESH_HZ = x86.HEARTBEAT_HZ or board.DISPLAY_REFRESH_HZ
+	board.ROM_BASE = x86.ROM_BASE or board.ROM_BASE
+	board.ROM_SIZE = x86.ROM_SIZE or board.ROM_SIZE
+	board.RAM_BASE = x86.LOW_RAM_BASE or 0
+	board.RAM_SIZE = x86.LOW_RAM_SIZE or board.RAM_SIZE
+	board.VRAM_BASE = x86.VIDEO_BASE or board.VRAM_BASE
+	board.VRAM_SIZE = x86.VIDEO_SIZE or board.VRAM_SIZE
+	board.PIC_VECTOR_BASE_MASTER = x86.PIC_VECTOR_BASE_MASTER or board.PIC_VECTOR_BASE_MASTER
+	board.PIC_VECTOR_BASE_SLAVE = x86.PIC_VECTOR_BASE_SLAVE or board.PIC_VECTOR_BASE_SLAVE
+	return board
+end
+
+function PcSystem.new(config, editableImage, luauvm)
+	local self = setmetatable({}, PcSystem)
+	self.config = config
+	self.boardConfig = buildBoardConfig(config)
+	self.profile = activeProfile(config)
+	self.editableImage = editableImage
+	self.luauvm = luauvm
+	self.runtime = nil
+	self._powered = false
+	self._bootStage = "OFF"
+	self._heartbeatGeneration = 0
+	self._lastHeartbeatAt = 0
+	self._uptimeStart = 0
+	self._cursorTimer = 0
+	self._bootRecord = nil
+	return self
+end
+
+function PcSystem:_buildHardware()
+	local SystemBus = require(script.Parent.devices.SystemBus)
+	local PhysicalMemory = require(script.Parent.devices.PhysicalMemory)
+	local FirmwareRom = require(script.Parent.devices.FirmwareRom)
+	local VgaAdapter = require(script.Parent.devices.VgaAdapter)
+	local AtaController = require(script.Parent.devices.AtaController)
+	local I8042Controller = require(script.Parent.devices.I8042Controller)
+	local Uart8250 = require(script.Parent.devices.Uart8250)
+	local CmosRtc = require(script.Parent.devices.CmosRtc)
+
+	local cpuModule
+	if self.profile == "x86-bios" then
+		cpuModule = require(script.Parent.Cpu80386)
+	else
+		cpuModule = require(script.Parent.Parent.Parent.outdated.legacy.hardware.CPU)
+	end
+
+	self.bus = SystemBus.new(self.boardConfig)
+	self.ram = PhysicalMemory.new(self.boardConfig)
+	self.rom = FirmwareRom.new(self.boardConfig)
+	self.gpu = VgaAdapter.new(self.boardConfig, self.editableImage)
+	self.hdd = AtaController.new(self.boardConfig)
+	self.cpu = cpuModule.new(self.bus, self.boardConfig)
+	self.keyboard = I8042Controller.new(self.boardConfig, self.bus)
+	self.serial = Uart8250.new(self.boardConfig)
+	self.rtc = CmosRtc.new(self.boardConfig)
+
+	if self.luauvm and self.profile ~= "x86-bios" and type(self.luauvm.registerCPU) == "function" then
+		self.luauvm.registerCPU(self.cpu)
+	end
+
+	if self._inputService then
+		self.keyboard:bindRobloxInput(self._inputService)
+	end
+
+	self.nic = { link = "DOWN", ip = "unassigned", mac = "00:1A:2B:3C:4D:5E" }
+
+	self.bus:registerDevice("cpu", self.cpu)
+	self.bus:registerDevice("ram", self.ram)
+	self.bus:registerDevice("rom", self.rom)
+	self.bus:registerDevice("gpu", self.gpu)
+	self.bus:registerDevice("hdd", self.hdd)
+	self.bus:registerDevice("keyboard", self.keyboard)
+	self.bus:registerDevice("serial", self.serial)
+	self.bus:registerDevice("rtc", self.rtc)
+
+	if self.profile == "x86-bios" then
+		self.bus:mapMemory(self.boardConfig.RAM_BASE, self.boardConfig.RAM_SIZE, self.ram, "LOW-RAM")
+		self.bus:mapMemory(self.boardConfig.VRAM_BASE, self.boardConfig.VRAM_SIZE, self.gpu, "VGA-TEXT")
+		self.bus:mapMemory(self.boardConfig.ROM_BASE, self.boardConfig.ROM_SIZE, self.rom, "BIOS-ROM", {
+			readOnly = true,
+		})
+	else
+		local mmio = self.boardConfig.MMIO or {}
+		self.bus:mapMemory(self.boardConfig.ROM_BASE, self.boardConfig.ROM_SIZE, self.rom, "ROM", { readOnly = true })
+		self.bus:mapMemory(self.boardConfig.RAM_BASE, self.boardConfig.RAM_SIZE, self.ram, "RAM")
+		self.bus:mapMemory(self.boardConfig.VRAM_BASE, self.boardConfig.VRAM_SIZE, self.gpu, "VRAM")
+		self.bus:mapMemory(mmio.HDD_BASE or self.boardConfig.MMIO_BASE, mmio.HDD_SIZE or 0x1000, self.hdd, "HDD-MMIO")
+		if self.bus.timer then
+			self.bus:mapMemory(mmio.TIMER_BASE or (self.boardConfig.MMIO_BASE + 0x0800), mmio.TIMER_SIZE or 0x40, self.bus.timer, "TIMER-MMIO")
+		end
+		if self.bus.pic then
+			self.bus:mapMemory(mmio.PIC_BASE or (self.boardConfig.MMIO_BASE + 0x0840), mmio.PIC_SIZE or 0x40, self.bus.pic, "PIC-MMIO")
+		end
+
+		local romStub = {}
+		local header = "NOVAFIRMWARE2.2"
+		for i = 1, #header do
+			romStub[i] = string.byte(header, i)
+		end
+		for i = #header + 1, self.boardConfig.ROM_SIZE do
+			romStub[i] = 0xFF
+		end
+		self.rom:flash(romStub)
+	end
+end
+
+function PcSystem:_buildRuntime()
+	if self.profile == "x86-bios" then
+		local BootController = require(script.Parent.BootController)
+		self.runtime = BootController.new(self)
+		self.runtime:startBoot()
+		return
+	end
+
+	local RuntimeController = require(script.Parent.Parent.Parent.outdated.legacy.software.RuntimeController)
+	self.runtime = RuntimeController.new(self, self.luauvm)
+	self.runtime:startBoot()
+end
+
+function PcSystem:powerOn()
+	if self._powered then
+		return
+	end
+	self._powered = true
+	self._uptimeStart = os.clock()
+	self._bootStage = "OFF"
+	self._bootRecord = {
+		startedAt = self._uptimeStart,
+		stages = {},
+	}
+
+	self:_buildHardware()
+	local ok, err = pcall(function()
+		self:_buildRuntime()
+	end)
+	if not ok then
+		self:_setBootStage("FAULT", tostring(err))
+		if self.gpu then
+			self.gpu:println("runtime init failed", 0x0C)
+			self.gpu:println(tostring(err), 0x0C)
+		end
+	end
+	if self._bootStage ~= "FAULT" and self._powered then
+		self:_startHeartbeat()
+	elseif self.gpu then
+		self.gpu:flush()
+	end
+end
+
+function PcSystem:_stepCPU(dt)
+	local cyclesPerTick
+	if self.profile == "x86-bios" then
+		local x86 = self.config.X86 or {}
+		if self._bootStage == "RUNNING" then
+			cyclesPerTick = x86.RUN_CYCLES_PER_TICK or 256
+		else
+			cyclesPerTick = x86.BOOT_CYCLES_PER_TICK or 768
+		end
+	else
+		cyclesPerTick = 4
+	end
+
+	for _ = 1, cyclesPerTick do
+		local ok, result = pcall(function()
+			return self.cpu:step()
+		end)
+		if not ok then
+			self._bootStage = "FAULT"
+			if self.gpu then
+				local textCols = (self.boardConfig.TEXT_COLS or self.config.TEXT_COLS or 80)
+				local cpuStats = self.cpu and type(self.cpu.getStats) == "function" and self.cpu:getStats() or nil
+				local location = cpuStats
+						and string.format("pc=%05X cs=%04X ip=%04X", cpuStats.pc or 0, cpuStats.cs or 0, cpuStats.ip or 0)
+					or nil
+				self.gpu:println("")
+				self.gpu:println("Emulator fault", 0x0C)
+				for _, line in ipairs(wrapText(tostring(result), math.max(16, textCols - 2))) do
+					self.gpu:println(line, 0x0C)
+				end
+				if location then
+					self.gpu:println(location, 0x0C)
+				end
+				if cpuStats and cpuStats.lastOpcode ~= nil then
+					self.gpu:println(
+						string.format(
+							"last=%02X start=%04X:%04X",
+							cpuStats.lastOpcode,
+							cpuStats.lastCS or 0,
+							cpuStats.lastIP or 0
+						),
+						0x0C
+					)
+					if self.cpu and type(self.cpu.linearAddress) == "function" and type(self.cpu.readPhysical8) == "function" then
+						local startLinear = self.cpu:linearAddress(cpuStats.lastCS or 0, cpuStats.lastIP or 0)
+						local bytes = {}
+						for offset = 0, 5 do
+							bytes[#bytes + 1] = string.format("%02X", self.cpu:readPhysical8(startLinear + offset))
+						end
+						self.gpu:println("bytes=" .. table.concat(bytes, " "), 0x0C)
+					end
+				end
+			end
+			self._powered = false
+			return
+		end
+		if result == "HLT" and self.profile == "x86-bios" then
+			break
+		end
+	end
+
+	if self.profile == "x86-bios" then
+		if self.runtime and type(self.runtime.tick) == "function" then
+			self.runtime:tick(dt)
+		end
+	elseif self._bootStage == "RUNNING" and self.kernel then
+		self.kernel:tick(dt)
+	end
+end
+
+function PcSystem:_startHeartbeat()
+	self._heartbeatGeneration = self._heartbeatGeneration + 1
+	local generation = self._heartbeatGeneration
+	self._lastHeartbeatAt = os.clock()
+
+	local function tick()
+		if not self._powered or generation ~= self._heartbeatGeneration then
+			return
+		end
+
+		local now = os.clock()
+		local tickHz
+		if self.profile == "x86-bios" then
+			tickHz = math.max(1, self.boardConfig.DISPLAY_REFRESH_HZ or 60)
+		else
+			tickHz = math.max(self.boardConfig.CPU_CLOCK_HZ or 1, self.boardConfig.DISPLAY_REFRESH_HZ or 60)
+		end
+		local dt
+		if self.profile == "x86-bios" then
+			dt = 1 / tickHz
+		else
+			dt = math.max(1 / tickHz, now - (self._lastHeartbeatAt or now))
+		end
+		self._lastHeartbeatAt = now
+		self.bus:processDMA(dt)
+		self:_stepCPU(dt)
+
+		self._cursorTimer = self._cursorTimer + dt
+		if self._cursorTimer >= 0.5 then
+			self._cursorTimer = 0
+			self.gpu:toggleCursor()
+		end
+
+		self.gpu:flush()
+		task.delay(dt, tick)
+	end
+
+	local startHz
+	if self.profile == "x86-bios" then
+		startHz = math.max(1, self.boardConfig.DISPLAY_REFRESH_HZ or 60)
+	else
+		startHz = math.max(1, self.boardConfig.CPU_CLOCK_HZ or 20)
+	end
+	task.delay(1 / startHz, tick)
+end
+
+function PcSystem:bindInput(inputService)
+	self._inputService = inputService
+	if self.keyboard then
+		self.keyboard:bindRobloxInput(inputService)
+	end
+end
+
+function PcSystem:reboot()
+	if self.keyboard then
+		self.keyboard:unbind()
+	end
+
+	self._powered = false
+	self._heartbeatGeneration = self._heartbeatGeneration + 1
+	self._bootStage = "OFF"
+	self.runtime = nil
+	self.kernel = nil
+	self._bootRecord = nil
+
+	if self.ram then
+		self.ram._mem = {}
+	end
+
+	if self.gpu then
+		self.gpu:clearScreen()
+	end
+
+	task.delay(0.5, function()
+		self:powerOn()
+	end)
+end
+
+function PcSystem:_setBootStage(stage, detail)
+	self._bootStage = stage
+	if self._bootRecord then
+		table.insert(self._bootRecord.stages, {
+			stage = stage,
+			uptime = os.clock() - self._uptimeStart,
+			detail = detail,
+		})
+	end
+end
+
+function PcSystem:setBootRecord(record)
+	self._bootRecord = self._bootRecord or { startedAt = self._uptimeStart, stages = {} }
+	for key, value in pairs(record or {}) do
+		self._bootRecord[key] = value
+	end
+end
+
+function PcSystem:getBootRecord()
+	return self._bootRecord
+end
+
+function PcSystem:getStats()
+	local cpuStats = self.cpu and self.cpu:getStats() or {}
+	local ramStats = self.ram and self.ram:getStats() or {}
+	local hddStats = self.hdd and self.hdd:getStats() or {}
+	local gpuStats = self.gpu and self.gpu:getStats() or {}
+	local busStats = self.bus and self.bus:getStats() or {}
+	local picStats = (self.bus and self.bus.pic and self.bus.pic.getStats and self.bus.pic:getStats()) or {}
+	local timerStats = (self.bus and self.bus.timer and self.bus.timer.getStats and self.bus.timer:getStats()) or {}
+	local serialStats = self.serial and self.serial.getStats and self.serial:getStats() or {}
+	local rtcStats = self.rtc and self.rtc.getStats and self.rtc:getStats() or {}
+
+	return {
+		powered = self._powered,
+		bootStage = self._bootStage,
+		uptime = os.clock() - self._uptimeStart,
+		bootRecord = self._bootRecord,
+		cpuStats = cpuStats,
+		ramStats = ramStats,
+		hddStats = hddStats,
+		gpuStats = gpuStats,
+		busStats = busStats,
+		hardware = {
+			cpu = cpuStats,
+			ram = ramStats,
+			hdd = hddStats,
+			gpu = gpuStats,
+			bus = busStats,
+			pic = picStats,
+			timer = timerStats,
+			serial = serialStats,
+			rtc = rtcStats,
+		},
+		software = {
+			profile = self.profile,
+			bootStage = self._bootStage,
+			kernelRunning = self.kernel ~= nil,
+			runtimeInitialized = self.runtime ~= nil,
+		},
+	}
+end
+
+function PcSystem:isPowered()
+	return self._powered
+end
+
+function PcSystem:getBootStage()
+	return self._bootStage
+end
+
+return PcSystem

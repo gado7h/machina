@@ -1,15 +1,15 @@
--- Bus module
+-- SystemBus module
 
-local Bus = {}
-Bus.__index = Bus
+local SystemBus = {}
+SystemBus.__index = SystemBus
 
 local function defaultTickDt(config)
 	local hz = math.max(config.CPU_CLOCK_HZ or 1, config.DISPLAY_REFRESH_HZ or 60)
 	return 1 / math.max(1, hz)
 end
 
-function Bus.new(config)
-	local self = setmetatable({}, Bus)
+function SystemBus.new(config)
+	local self = setmetatable({}, SystemBus)
 	self.config = config
 	self._devices = {} -- name -> device object
 	self._memmap = {} -- {base, size, device, tag, readOnly}
@@ -32,10 +32,10 @@ function Bus.new(config)
 		faults = 0,
 	}
 
-	local PIC_M = require(script.Parent.InterruptController)
-	local Timer_M = require(script.Parent.Timer)
-	self.pic = PIC_M.new(config)
-	self.timer = Timer_M.new(config)
+	local Pic8259Module = require(script.Parent.Pic8259)
+	local Pit8254Module = require(script.Parent.Pit8254)
+	self.pic = Pic8259Module.new(config)
+	self.timer = Pit8254Module.new(config)
 	self._devices.pic = self.pic
 	self._devices.timer = self.timer
 	self.pic:attachBus(self)
@@ -46,8 +46,8 @@ end
 
 -- Device Registration
 
-function Bus:registerDevice(name, device)
-	assert(not self._devices[name], "Bus: device '" .. name .. "' already registered")
+function SystemBus:registerDevice(name, device)
+	assert(not self._devices[name], "SystemBus: device '" .. name .. "' already registered")
 	self._devices[name] = device
 	if name == "cpu" then
 		self._cpu = device
@@ -60,14 +60,14 @@ function Bus:registerDevice(name, device)
 	self:_log("BUS", "Device registered: " .. name)
 end
 
-function Bus:getDevice(name)
+function SystemBus:getDevice(name)
 	return self._devices[name]
 end
 
 -- Memory Map
 
 -- device must implement :memRead(offset) and :memWrite(offset, value)
-function Bus:mapMemory(base, size, device, tag, opts)
+function SystemBus:mapMemory(base, size, device, tag, opts)
 	opts = opts or {}
 	local readOnly = opts.readOnly == true or (type(tag) == "string" and tag:find("ROM") ~= nil)
 	table.insert(self._memmap, {
@@ -92,7 +92,7 @@ local function findMapping(self, addr)
 	return nil
 end
 
-function Bus:_setFault(kind, addr, op, detail)
+function SystemBus:_setFault(kind, addr, op, detail)
 	self.stats.faults = self.stats.faults + 1
 	self._fault = {
 		kind = kind,
@@ -107,17 +107,17 @@ function Bus:_setFault(kind, addr, op, detail)
 	)
 end
 
-function Bus:peekFault()
+function SystemBus:peekFault()
 	return self._fault
 end
 
-function Bus:consumeFault()
+function SystemBus:consumeFault()
 	local f = self._fault
 	self._fault = nil
 	return f
 end
 
-function Bus:memRead(addr)
+function SystemBus:memRead(addr)
 	self.stats.memReads = self.stats.memReads + 1
 	local m = findMapping(self, addr)
 	if not m then
@@ -138,7 +138,7 @@ function Bus:memRead(addr)
 	return (tonumber(value) or 0) % 256
 end
 
-function Bus:memWrite(addr, value)
+function SystemBus:memWrite(addr, value)
 	self.stats.memWrites = self.stats.memWrites + 1
 	local m = findMapping(self, addr)
 	if not m then
@@ -160,7 +160,7 @@ function Bus:memWrite(addr, value)
 end
 
 -- 32-bit word helpers
-function Bus:memRead32(addr)
+function SystemBus:memRead32(addr)
 	local b0 = self:memRead(addr)
 	local b1 = self:memRead(addr + 1)
 	local b2 = self:memRead(addr + 2)
@@ -168,7 +168,7 @@ function Bus:memRead32(addr)
 	return b0 + b1 * 256 + b2 * 65536 + b3 * 16777216
 end
 
-function Bus:memWrite32(addr, value)
+function SystemBus:memWrite32(addr, value)
 	local v = tonumber(value) or 0
 	local ok0 = self:memWrite(addr, v % 256)
 	local ok1 = self:memWrite(addr + 1, math.floor(v / 256) % 256)
@@ -179,11 +179,19 @@ end
 
 -- Port I/O
 
-function Bus:registerPort(port, readFn, writeFn, label)
-	self._portmap[port] = { read = readFn, write = writeFn, label = label or string.format("0x%04X", port) }
+function SystemBus:registerPort(port, readFn, writeFn, label, read16Fn, write16Fn, read32Fn, write32Fn)
+	self._portmap[port] = {
+		read = readFn,
+		write = writeFn,
+		read16 = read16Fn,
+		write16 = write16Fn,
+		read32 = read32Fn,
+		write32 = write32Fn,
+		label = label or string.format("0x%04X", port),
+	}
 end
 
-function Bus:portRead(port)
+function SystemBus:portRead(port)
 	self.stats.portReads = self.stats.portReads + 1
 	local h = self._portmap[port]
 	if h and h.read then
@@ -195,7 +203,7 @@ function Bus:portRead(port)
 	return 0xFF
 end
 
-function Bus:portWrite(port, value)
+function SystemBus:portWrite(port, value)
 	self.stats.portWrites = self.stats.portWrites + 1
 	local h = self._portmap[port]
 	if h and h.write then
@@ -206,9 +214,67 @@ function Bus:portWrite(port, value)
 	end
 end
 
+function SystemBus:portRead16(port)
+	self.stats.portReads = self.stats.portReads + 1
+	local h = self._portmap[port]
+	if h and h.read16 then
+		local ok, value = pcall(h.read16)
+		if ok then
+			return (tonumber(value) or 0) % 0x10000
+		end
+	end
+	local lo = self:portRead(port)
+	local hi = self:portRead(port + 1)
+	return lo + hi * 0x100
+end
+
+function SystemBus:portWrite16(port, value)
+	self.stats.portWrites = self.stats.portWrites + 1
+	local h = self._portmap[port]
+	local masked = (tonumber(value) or 0) % 0x10000
+	if h and h.write16 then
+		local ok, err = pcall(h.write16, masked)
+		if not ok then
+			self:_setFault("port-write-fault", port, "out16", err)
+		end
+		return
+	end
+	self:portWrite(port, masked % 0x100)
+	self:portWrite(port + 1, math.floor(masked / 0x100) % 0x100)
+end
+
+function SystemBus:portRead32(port)
+	self.stats.portReads = self.stats.portReads + 1
+	local h = self._portmap[port]
+	if h and h.read32 then
+		local ok, value = pcall(h.read32)
+		if ok then
+			return (tonumber(value) or 0) % 0x100000000
+		end
+	end
+	local lo = self:portRead16(port)
+	local hi = self:portRead16(port + 2)
+	return lo + hi * 0x10000
+end
+
+function SystemBus:portWrite32(port, value)
+	self.stats.portWrites = self.stats.portWrites + 1
+	local h = self._portmap[port]
+	local masked = (tonumber(value) or 0) % 0x100000000
+	if h and h.write32 then
+		local ok, err = pcall(h.write32, masked)
+		if not ok then
+			self:_setFault("port-write-fault", port, "out32", err)
+		end
+		return
+	end
+	self:portWrite16(port, masked % 0x10000)
+	self:portWrite16(port + 2, math.floor(masked / 0x10000) % 0x10000)
+end
+
 -- IRQ (Interrupt Request Lines)
 
-function Bus:registerIRQ(irqNum, device, handler)
+function SystemBus:registerIRQ(irqNum, device, handler)
 	if not self._irqLines[irqNum] then
 		self._irqLines[irqNum] = {}
 	end
@@ -217,7 +283,7 @@ function Bus:registerIRQ(irqNum, device, handler)
 end
 
 -- Fire an interrupt: queue into PIC and also call legacy callbacks.
-function Bus:raiseIRQ(irqNum, data)
+function SystemBus:raiseIRQ(irqNum, data)
 	self.stats.irqFired = self.stats.irqFired + 1
 	if self.pic then
 		self.pic:raiseIRQ(irqNum)
@@ -238,11 +304,11 @@ function Bus:raiseIRQ(irqNum, data)
 	end
 end
 
-function Bus:hasPendingInterrupt()
+function SystemBus:hasPendingInterrupt()
 	return self.pic and self.pic:hasPending() or false
 end
 
-function Bus:getPendingInterruptVector()
+function SystemBus:getPendingInterruptVector()
 	if not self.pic then
 		return nil
 	end
@@ -253,14 +319,14 @@ function Bus:getPendingInterruptVector()
 	return vec
 end
 
-function Bus:endOfInterrupt(vector)
+function SystemBus:endOfInterrupt(vector)
 	if self.pic then
 		return self.pic:endOfInterrupt(vector)
 	end
 	return false
 end
 
-function Bus:getIRQStats()
+function SystemBus:getIRQStats()
 	local out = {}
 	for irq, handlers in pairs(self._irqLines) do
 		for _, h in ipairs(handlers) do
@@ -273,12 +339,12 @@ end
 -- DMA (Direct Memory Access)
 
 -- Enqueue a DMA transfer. src/dst are physical addresses; callback fires on completion.
-function Bus:dmaTransfer(src, dst, length, callback)
+function SystemBus:dmaTransfer(src, dst, length, callback)
 	table.insert(self._dmaQueue, { src = src, dst = dst, length = length, cb = callback, done = false })
 end
 
 -- Process all pending DMA transfers.
-function Bus:processDMA(dt)
+function SystemBus:processDMA(dt)
 	for _, xfer in ipairs(self._dmaQueue) do
 		if not xfer.done then
 			for off = 0, xfer.length - 1 do
@@ -304,7 +370,7 @@ function Bus:processDMA(dt)
 	self:tick(dt)
 end
 
-function Bus:tick(dt)
+function SystemBus:tick(dt)
 	dt = tonumber(dt) or self._defaultDt
 	if self.timer and type(self.timer.tick) == "function" then
 		self.timer:tick(dt)
@@ -319,7 +385,7 @@ end
 
 -- Internal logging
 
-function Bus:_log(tag, msg)
+function SystemBus:_log(tag, msg)
 	local entry = string.format("[%s] %s", tag, msg)
 	table.insert(self._logs, entry)
 	if #self._logs > 500 then
@@ -327,7 +393,7 @@ function Bus:_log(tag, msg)
 	end
 end
 
-function Bus:getLog(n)
+function SystemBus:getLog(n)
 	n = n or #self._logs
 	local start = math.max(1, #self._logs - n + 1)
 	local out = {}
@@ -337,8 +403,8 @@ function Bus:getLog(n)
 	return out
 end
 
-function Bus:getStats()
+function SystemBus:getStats()
 	return self.stats
 end
 
-return Bus
+return SystemBus

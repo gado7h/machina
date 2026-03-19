@@ -3,6 +3,9 @@
 local ExecutableLoader = {}
 ExecutableLoader.__index = ExecutableLoader
 
+local NativeAssembler = require(script.Parent.NativeAssembler)
+local NativeExecutable = require(script.Parent.NativeExecutable)
+
 local function getVmConfig(config)
 	local vm = config and config.VM or {}
 	return {
@@ -12,6 +15,13 @@ local function getVmConfig(config)
 		runtime = vm.MANAGED_RUNTIME or "luauvm",
 		backend = vm.DEFAULT_BACKEND or "cpu-managed",
 		cpuBackend = vm.CPU_BACKEND or "luauvm-cpu",
+	}
+end
+
+local function getNativeConfig(config)
+	local native = config and config.NATIVE or {}
+	return {
+		extension = native.EXTENSION or ".nxe",
 	}
 end
 
@@ -33,12 +43,31 @@ function ExecutableLoader.new(vfs, config)
 end
 
 function ExecutableLoader:load(path)
-	local content, err = self.vfs:readFileStr(path)
-	if not content then
+	local bytes, err = self.vfs:readFile(path)
+	if not bytes then
 		return nil, err
 	end
 
+	if NativeExecutable.isImage(bytes, self.config) then
+		local spec, parseErr = NativeExecutable.parse(bytes, self.config)
+		if not spec then
+			return nil, parseErr
+		end
+		spec.path = path
+		spec.exists = true
+		return spec
+	end
+
 	local vm = getVmConfig(self.config)
+	local native = getNativeConfig(self.config)
+	if path:sub(-#native.extension) == native.extension then
+		return nil, "native-image-invalid"
+	end
+
+	local content, textErr = self.vfs:readFileStr(path)
+	if not content then
+		return nil, textErr
+	end
 	local pragma = firstMeaningfulLine(content)
 	local spec = {
 		path = path,
@@ -48,9 +77,27 @@ function ExecutableLoader:load(path)
 	}
 
 	if pragma == vm.nativePragma then
-		spec.kind = "native"
-		spec.format = "native"
-		return spec
+		local ok, imageOrErr = pcall(function()
+			return NativeAssembler.compile(content, self.config, {
+				sourcePath = path,
+			})
+		end)
+		if not ok then
+			return nil, imageOrErr
+		end
+
+		local assembled, parseErr = NativeExecutable.parse(imageOrErr, self.config)
+		if not assembled then
+			return nil, parseErr
+		end
+
+		assembled.path = path
+		assembled.exists = true
+		assembled.source = content
+		assembled.sourceFormat = "native-source"
+		assembled.pragma = pragma
+		assembled.assembled = true
+		return assembled
 	end
 
 	if path:sub(-#vm.extension) == vm.extension and pragma == vm.pragma then

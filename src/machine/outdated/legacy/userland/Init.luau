@@ -4,6 +4,8 @@ local Init = {}
 Init.__index = Init
 
 local GuestPrograms = require(script.Parent.GuestPrograms)
+local NativePrograms = require(script.Parent.NativePrograms)
+local NativeSourcePrograms = require(script.Parent.NativeSourcePrograms)
 
 local function getVmConfig(config)
 	local vm = config and config.VM or {}
@@ -153,6 +155,16 @@ function Init:_populateBin()
 	for path, src in pairs(scripts) do
 		self.vfs:writeFileStr(path, src)
 	end
+
+	local nativePrograms = NativePrograms.materialize(self.config)
+	for path, imageBytes in pairs(nativePrograms) do
+		self.vfs:writeFile(path, imageBytes)
+	end
+
+	local nativeSources = NativeSourcePrograms.materialize()
+	for path, source in pairs(nativeSources) do
+		self.vfs:writeFileStr(path, source)
+	end
 end
 
 function Init:_precompileBin()
@@ -162,7 +174,7 @@ function Init:_precompileBin()
 	for _, dir in ipairs({ "/bin", "/usr/bin" }) do
 		local entries = self.vfs:listDir(dir) or {}
 		for _, e in ipairs(entries) do
-			if not e.isDir then
+			if not e.isDir and e.name:sub(-#self.vmConfig.extension) == self.vmConfig.extension then
 				local src = self.vfs:readFileStr(dir .. "/" .. e.name)
 				if src and firstMeaningfulLine(src) == self.vmConfig.pragma then
 					pcall(function()
