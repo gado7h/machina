@@ -1,4 +1,0 @@
-interface:
-  display_name: "Systems Emulation"
-  short_description: "Build emulators, kernels, and low-level software"
-  default_prompt: "Use $systems-emulation to implement or debug an emulated computer, kernel, or OS subsystem."

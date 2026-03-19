@@ -4,5 +4,5 @@
 # Roblox Studio lock files
 /*.rbxlx.lock
 /*.rbxl.lock
-
+/skills
 sourcemap.json

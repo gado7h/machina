@@ -1,4 +1,0 @@
-interface:
-  display_name: "Roblox Development"
-  short_description: "Build and debug Luau Roblox projects"
-  default_prompt: "Use $roblox-development to implement or fix a Roblox Studio feature in this Luau project."
