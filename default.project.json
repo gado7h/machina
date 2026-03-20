@@ -11,9 +11,6 @@
       "Config": {
         "$path": "src/Config.luau"
       },
-      "Host": {
-        "$path": "src/Host.client.luau"
-      },
       "net_bridge": {
         "$path": "src/net_bridge"
       }
