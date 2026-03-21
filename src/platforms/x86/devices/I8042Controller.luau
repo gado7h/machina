@@ -14,87 +14,87 @@ local COMMAND_SYSTEM_FLAG = 0x04
 local COMMAND_DISABLE_KEYBOARD = 0x10
 
 local SCAN_MAKE = {
-	[Enum.KeyCode.A] = 0x1E,
-	[Enum.KeyCode.B] = 0x30,
-	[Enum.KeyCode.C] = 0x2E,
-	[Enum.KeyCode.D] = 0x20,
-	[Enum.KeyCode.E] = 0x12,
-	[Enum.KeyCode.F] = 0x21,
-	[Enum.KeyCode.G] = 0x22,
-	[Enum.KeyCode.H] = 0x23,
-	[Enum.KeyCode.I] = 0x17,
-	[Enum.KeyCode.J] = 0x24,
-	[Enum.KeyCode.K] = 0x25,
-	[Enum.KeyCode.L] = 0x26,
-	[Enum.KeyCode.M] = 0x32,
-	[Enum.KeyCode.N] = 0x31,
-	[Enum.KeyCode.O] = 0x18,
-	[Enum.KeyCode.P] = 0x19,
-	[Enum.KeyCode.Q] = 0x10,
-	[Enum.KeyCode.R] = 0x13,
-	[Enum.KeyCode.S] = 0x1F,
-	[Enum.KeyCode.T] = 0x14,
-	[Enum.KeyCode.U] = 0x16,
-	[Enum.KeyCode.V] = 0x2F,
-	[Enum.KeyCode.W] = 0x11,
-	[Enum.KeyCode.X] = 0x2D,
-	[Enum.KeyCode.Y] = 0x15,
-	[Enum.KeyCode.Z] = 0x2C,
-	[Enum.KeyCode.Zero] = 0x0B,
-	[Enum.KeyCode.One] = 0x02,
-	[Enum.KeyCode.Two] = 0x03,
-	[Enum.KeyCode.Three] = 0x04,
-	[Enum.KeyCode.Four] = 0x05,
-	[Enum.KeyCode.Five] = 0x06,
-	[Enum.KeyCode.Six] = 0x07,
-	[Enum.KeyCode.Seven] = 0x08,
-	[Enum.KeyCode.Eight] = 0x09,
-	[Enum.KeyCode.Nine] = 0x0A,
-	[Enum.KeyCode.Return] = 0x1C,
-	[Enum.KeyCode.Space] = 0x39,
-	[Enum.KeyCode.Backspace] = 0x0E,
-	[Enum.KeyCode.Tab] = 0x0F,
-	[Enum.KeyCode.Escape] = 0x01,
-	[Enum.KeyCode.LeftShift] = 0x2A,
-	[Enum.KeyCode.RightShift] = 0x36,
-	[Enum.KeyCode.LeftControl] = 0x1D,
-	[Enum.KeyCode.RightControl] = { 0xE0, 0x1D },
-	[Enum.KeyCode.LeftAlt] = 0x38,
-	[Enum.KeyCode.RightAlt] = { 0xE0, 0x38 },
-	[Enum.KeyCode.CapsLock] = 0x3A,
-	[Enum.KeyCode.F1] = 0x3B,
-	[Enum.KeyCode.F2] = 0x3C,
-	[Enum.KeyCode.F3] = 0x3D,
-	[Enum.KeyCode.F4] = 0x3E,
-	[Enum.KeyCode.F5] = 0x3F,
-	[Enum.KeyCode.F6] = 0x40,
-	[Enum.KeyCode.F7] = 0x41,
-	[Enum.KeyCode.F8] = 0x42,
-	[Enum.KeyCode.F9] = 0x43,
-	[Enum.KeyCode.F10] = 0x44,
-	[Enum.KeyCode.F11] = 0x57,
-	[Enum.KeyCode.F12] = 0x58,
-	[Enum.KeyCode.Up] = { 0xE0, 0x48 },
-	[Enum.KeyCode.Down] = { 0xE0, 0x50 },
-	[Enum.KeyCode.Left] = { 0xE0, 0x4B },
-	[Enum.KeyCode.Right] = { 0xE0, 0x4D },
-	[Enum.KeyCode.Delete] = { 0xE0, 0x53 },
-	[Enum.KeyCode.Insert] = { 0xE0, 0x52 },
-	[Enum.KeyCode.Home] = { 0xE0, 0x47 },
-	[Enum.KeyCode.End] = { 0xE0, 0x4F },
-	[Enum.KeyCode.PageUp] = { 0xE0, 0x49 },
-	[Enum.KeyCode.PageDown] = { 0xE0, 0x51 },
-	[Enum.KeyCode.Minus] = 0x0C,
-	[Enum.KeyCode.Equals] = 0x0D,
-	[Enum.KeyCode.LeftBracket] = 0x1A,
-	[Enum.KeyCode.RightBracket] = 0x1B,
-	[Enum.KeyCode.Semicolon] = 0x27,
-	[Enum.KeyCode.Quote] = 0x28,
-	[Enum.KeyCode.Backquote] = 0x29,
-	[Enum.KeyCode.BackSlash] = 0x2B,
-	[Enum.KeyCode.Comma] = 0x33,
-	[Enum.KeyCode.Period] = 0x34,
-	[Enum.KeyCode.Slash] = 0x35,
+	A = 0x1E,
+	B = 0x30,
+	C = 0x2E,
+	D = 0x20,
+	E = 0x12,
+	F = 0x21,
+	G = 0x22,
+	H = 0x23,
+	I = 0x17,
+	J = 0x24,
+	K = 0x25,
+	L = 0x26,
+	M = 0x32,
+	N = 0x31,
+	O = 0x18,
+	P = 0x19,
+	Q = 0x10,
+	R = 0x13,
+	S = 0x1F,
+	T = 0x14,
+	U = 0x16,
+	V = 0x2F,
+	W = 0x11,
+	X = 0x2D,
+	Y = 0x15,
+	Z = 0x2C,
+	Zero = 0x0B,
+	One = 0x02,
+	Two = 0x03,
+	Three = 0x04,
+	Four = 0x05,
+	Five = 0x06,
+	Six = 0x07,
+	Seven = 0x08,
+	Eight = 0x09,
+	Nine = 0x0A,
+	Return = 0x1C,
+	Space = 0x39,
+	Backspace = 0x0E,
+	Tab = 0x0F,
+	Escape = 0x01,
+	LeftShift = 0x2A,
+	RightShift = 0x36,
+	LeftControl = 0x1D,
+	RightControl = { 0xE0, 0x1D },
+	LeftAlt = 0x38,
+	RightAlt = { 0xE0, 0x38 },
+	CapsLock = 0x3A,
+	F1 = 0x3B,
+	F2 = 0x3C,
+	F3 = 0x3D,
+	F4 = 0x3E,
+	F5 = 0x3F,
+	F6 = 0x40,
+	F7 = 0x41,
+	F8 = 0x42,
+	F9 = 0x43,
+	F10 = 0x44,
+	F11 = 0x57,
+	F12 = 0x58,
+	Up = { 0xE0, 0x48 },
+	Down = { 0xE0, 0x50 },
+	Left = { 0xE0, 0x4B },
+	Right = { 0xE0, 0x4D },
+	Delete = { 0xE0, 0x53 },
+	Insert = { 0xE0, 0x52 },
+	Home = { 0xE0, 0x47 },
+	End = { 0xE0, 0x4F },
+	PageUp = { 0xE0, 0x49 },
+	PageDown = { 0xE0, 0x51 },
+	Minus = 0x0C,
+	Equals = 0x0D,
+	LeftBracket = 0x1A,
+	RightBracket = 0x1B,
+	Semicolon = 0x27,
+	Quote = 0x28,
+	Backquote = 0x29,
+	BackSlash = 0x2B,
+	Comma = 0x33,
+	Period = 0x34,
+	Slash = 0x35,
 }
 
 local SC_TO_ASCII_LOWER = {
@@ -306,51 +306,25 @@ function I8042Controller:_queueScanSequence(sequence, isBreak)
 end
 
 function I8042Controller:_setModifierState(kc, isDown)
-	if kc == Enum.KeyCode.LeftShift or kc == Enum.KeyCode.RightShift then
+	if kc == "LeftShift" or kc == "RightShift" then
 		self._shift = isDown
-	elseif kc == Enum.KeyCode.LeftControl or kc == Enum.KeyCode.RightControl then
+	elseif kc == "LeftControl" or kc == "RightControl" then
 		self._ctrl = isDown
-	elseif kc == Enum.KeyCode.LeftAlt or kc == Enum.KeyCode.RightAlt then
+	elseif kc == "LeftAlt" or kc == "RightAlt" then
 		self._alt = isDown
-	elseif kc == Enum.KeyCode.CapsLock and isDown then
+	elseif kc == "CapsLock" and isDown then
 		self._capsLock = not self._capsLock
 	end
 end
 
-function I8042Controller:bindRobloxInput(UIS)
-	self:unbind()
-	self._enabled = true
-	self._uisDown = UIS.InputBegan:Connect(function(input, gameProcessed)
-		if gameProcessed then
-			return
-		end
-		self:_onKeyDown(input)
-	end)
-	self._uisUp = UIS.InputEnded:Connect(function(input)
-		self:_onKeyUp(input)
-	end)
-end
-
-function I8042Controller:unbind()
-	if self._uisDown then
-		self._uisDown:Disconnect()
-		self._uisDown = nil
-	end
-	if self._uisUp then
-		self._uisUp:Disconnect()
-		self._uisUp = nil
-	end
-	self._enabled = false
-end
-
-function I8042Controller:_onKeyDown(input)
-	if input.UserInputType ~= Enum.UserInputType.Keyboard or not self._scanningEnabled then
+function I8042Controller:keyDown(key)
+	if not self._scanningEnabled then
 		return
 	end
-	local kc = input.KeyCode
-	self:_setModifierState(kc, true)
 
-	local sequence = SCAN_MAKE[kc]
+	self:_setModifierState(key, true)
+
+	local sequence = SCAN_MAKE[key]
 	if not sequence then
 		return
 	end
@@ -363,13 +337,14 @@ function I8042Controller:_onKeyDown(input)
 	end
 end
 
-function I8042Controller:_onKeyUp(input)
-	if input.UserInputType ~= Enum.UserInputType.Keyboard or not self._scanningEnabled then
+function I8042Controller:keyUp(key)
+	if not self._scanningEnabled then
 		return
 	end
-	local kc = input.KeyCode
-	self:_setModifierState(kc, false)
-	local sequence = SCAN_MAKE[kc]
+
+	self:_setModifierState(key, false)
+
+	local sequence = SCAN_MAKE[key]
 	if sequence then
 		self:_queueScanSequence(sequence, true)
 	end

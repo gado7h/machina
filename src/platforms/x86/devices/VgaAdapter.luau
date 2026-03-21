@@ -203,11 +203,9 @@ local function sampleGlyphSmooth(glyph, u, v)
 	return lerp(top, bot, ty)
 end
 
-function VgaAdapter.new(config, editableImage)
+function VgaAdapter.new(config)
 	local self = setmetatable({}, VgaAdapter)
 	self.config = config
-	self.editableImage = editableImage -- nil = headless/test mode
-
 	self.W = config.SCREEN_W
 	self.H = config.SCREEN_H
 	self.CW = config.CHAR_W
@@ -761,51 +759,21 @@ function VgaAdapter:moveWindow(srcX, srcY, w, h, dstX, dstY, clearARGB)
 	end
 end
 
---  Flush to EditableImage via WritePixelsBuffer
---
---  WritePixelsBuffer takes a native Luau buffer (RGBA u8, row-major).
---  This is ~10Ã— faster than WritePixels(table) because it avoids
---  allocating and iterating a 64k-entry Lua table on every frame.
-
-function VgaAdapter:flush()
-	if not self._dirty then
-		return
-	end
-
-	local now = os.clock()
-	if self._nextFrameTime ~= 0 and now < self._nextFrameTime then
-		return
-	end
-
-	if not self.editableImage then
-		self._dirty = false
-		self._nextFrameTime = now + self._frameInterval
-		return
-	end
-
-	if self.mode == "TEXT" then
-		self:_renderText()
-	end
-
-	self.stats.flushes = self.stats.flushes + 1
-
+function VgaAdapter:_packPixelBuffer()
 	local fb = self._framebuf
 	local pb = self._pixelBuffer
 	local W = self.W
 	local H = self.H
 
-	-- Ensure buffer is the right size (handles reboot/resize edge cases)
 	local needed = W * H * 4
 	if buffer.len(pb) ~= needed then
 		pb = buffer.create(needed)
 		self._pixelBuffer = pb
 	end
 
-	-- Pack ARGB integer â†’ RGBA bytes into native buffer
 	for i = 0, W * H - 1 do
 		local argb = fb[i] or 0xFF000000
 		local base = i * 4
-		-- Arithmetic unpack (avoids bit32 overhead in tight loop)
 		local a = math.floor(argb / 16777216) % 256
 		local r = math.floor(argb / 65536) % 256
 		local g = math.floor(argb / 256) % 256
@@ -816,15 +784,44 @@ function VgaAdapter:flush()
 		buffer.writeu8(pb, base + 3, a)
 	end
 
-	local ok, err = pcall(function()
-		self.editableImage:WritePixelsBuffer(Vector2.zero, Vector2.new(W, H), pb)
-	end)
-	if not ok then
-		warn("VgaAdapter:flush WritePixelsBuffer failed:", err)
+	return pb
+end
+
+function VgaAdapter:present(presentFn)
+	if not self._dirty then
+		return
+	end
+
+	local now = os.clock()
+	if self._nextFrameTime ~= 0 and now < self._nextFrameTime then
+		return
+	end
+
+	if self.mode == "TEXT" then
+		self:_renderText()
+	end
+
+	self.stats.flushes = self.stats.flushes + 1
+
+	local pixelBuffer = self:_packPixelBuffer()
+	if presentFn then
+		presentFn(pixelBuffer, self.W, self.H)
 	end
 
 	self._dirty = false
 	self._nextFrameTime = now + self._frameInterval
+end
+
+function VgaAdapter:getFrame()
+	if self.mode == "TEXT" and self._dirty then
+		self:_renderText()
+	end
+
+	return {
+		width = self.W,
+		height = self.H,
+		buffer = self:_packPixelBuffer(),
+	}
 end
 
 function VgaAdapter:_renderText()
