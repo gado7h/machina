@@ -68,12 +68,12 @@ local function buildBoardConfig(config)
 	return board
 end
 
-function PcSystem.new(config, editableImage)
+function PcSystem.new(config)
 	local self = setmetatable({}, PcSystem)
 	self.config = config
 	self.boardConfig = buildBoardConfig(config)
 	self.profile = activeProfile(config)
-	self.editableImage = editableImage
+	self._presentFrame = nil
 	self.runtime = nil
 	self._powered = false
 	self._bootStage = "OFF"
@@ -99,16 +99,12 @@ function PcSystem:_buildHardware()
 	self.bus = SystemBus.new(self.boardConfig)
 	self.ram = PhysicalMemory.new(self.boardConfig)
 	self.rom = FirmwareRom.new(self.boardConfig)
-	self.gpu = VgaAdapter.new(self.boardConfig, self.editableImage)
+	self.gpu = VgaAdapter.new(self.boardConfig)
 	self.hdd = AtaController.new(self.boardConfig)
 	self.cpu = Cpu80386.new(self.bus, self.boardConfig)
 	self.keyboard = I8042Controller.new(self.boardConfig, self.bus)
 	self.serial = Uart8250.new(self.boardConfig)
 	self.rtc = CmosRtc.new(self.boardConfig)
-
-	if self._inputService then
-		self.keyboard:bindRobloxInput(self._inputService)
-	end
 
 	self.nic = { link = "DOWN", ip = "unassigned", mac = "00:1A:2B:3C:4D:5E" }
 
@@ -160,7 +156,7 @@ function PcSystem:powerOn()
 	if self._bootStage ~= "FAULT" and self._powered then
 		self:_startHeartbeat()
 	elseif self.gpu then
-		self.gpu:flush()
+		self:presentFrame()
 	end
 end
 
@@ -258,7 +254,7 @@ function PcSystem:_startHeartbeat()
 			self.gpu:toggleCursor()
 		end
 
-		self.gpu:flush()
+		self:presentFrame()
 		task.delay(dt, tick)
 	end
 
@@ -266,18 +262,29 @@ function PcSystem:_startHeartbeat()
 	task.delay(1 / startHz, tick)
 end
 
-function PcSystem:bindInput(inputService)
-	self._inputService = inputService
+function PcSystem:setFramePresenter(presentFrame)
+	self._presentFrame = presentFrame
+end
+
+function PcSystem:keyDown(key)
 	if self.keyboard then
-		self.keyboard:bindRobloxInput(inputService)
+		self.keyboard:keyDown(key)
+	end
+end
+
+function PcSystem:keyUp(key)
+	if self.keyboard then
+		self.keyboard:keyUp(key)
+	end
+end
+
+function PcSystem:presentFrame()
+	if self.gpu then
+		self.gpu:present(self._presentFrame)
 	end
 end
 
 function PcSystem:_powerDown(clearScreen)
-	if self.keyboard then
-		self.keyboard:unbind()
-	end
-
 	self._powered = false
 	self._heartbeatGeneration = self._heartbeatGeneration + 1
 	self._bootStage = "OFF"
@@ -292,7 +299,7 @@ function PcSystem:_powerDown(clearScreen)
 
 	if clearScreen and self.gpu then
 		self.gpu:clearScreen()
-		self.gpu:flush()
+		self:presentFrame()
 	end
 end
 
