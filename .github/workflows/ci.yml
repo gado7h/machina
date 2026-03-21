@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint-and-build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Rokit
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL https://github.com/rojo-rbx/rokit/releases/latest/download/rokit-linux.zip -o rokit.zip
+          python3 - <<'PY'
+          import zipfile
+          zipfile.ZipFile("rokit.zip").extractall("rokit-bin")
+          PY
+          chmod +x rokit-bin/rokit
+          echo "$PWD/rokit-bin" >> "$GITHUB_PATH"
+
+      - name: Install toolchain
+        run: rokit install
+
+      - name: Verify toolchain
+        run: |
+          rojo --version
+          selene --version
+          stylua --version
+
+      - name: Lint with Selene
+        run: selene src
+
+      - name: Check formatting with StyLua
+        run: stylua --check src
+
+      - name: Build with Rojo
+        run: rojo build default.project.json -o Machina.rbxlx
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: machina-build
+          path: Machina.rbxlx
