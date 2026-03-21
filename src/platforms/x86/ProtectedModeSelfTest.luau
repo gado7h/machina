@@ -112,7 +112,7 @@ function ProtectedModeSelfTest.run(machine, config)
 		end
 
 		local flagValue = machine.ram:memRead(flagOffset)
-		local passed = cpu.protectedMode and cpu.seg.CS == 0x0008 and cpu.seg.DS == 0x0010 and flagValue == 0x5A
+		local isPassed = cpu.protectedMode and cpu.seg.CS == 0x0008 and cpu.seg.DS == 0x0010 and flagValue == 0x5A
 		local result = string.format(
 			"mode=%s cs=%04X ds=%04X cr0=%04X flag=%02X",
 			cpu.protectedMode and "protected" or "real",
@@ -121,7 +121,7 @@ function ProtectedModeSelfTest.run(machine, config)
 			cpu.cr0,
 			flagValue
 		)
-		return passed, result
+		return isPassed, result
 	end)
 
 	if cpuSnapshot then

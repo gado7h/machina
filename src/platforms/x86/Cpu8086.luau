@@ -420,11 +420,8 @@ function Cpu8086:_invokeInterrupt(vector, _hardware)
 			local statusMask = bit32.bor(FLAG_CF, FLAG_ZF, FLAG_SF, FLAG_OF)
 			self.ip = returnIP
 			self.seg.CS = returnCS
-			self.flags = bit32.bor(
-				bit32.band(savedFlags, bit32.bnot(statusMask)),
-				bit32.band(self.flags, statusMask),
-				0x0002
-			)
+			self.flags =
+				bit32.bor(bit32.band(savedFlags, bit32.bnot(statusMask)), bit32.band(self.flags, statusMask), 0x0002)
 			self.stats.interrupts = self.stats.interrupts + 1
 			return true
 		end
@@ -462,7 +459,7 @@ function Cpu8086:step()
 		self:setReg16(opcode - 0xB8, self:fetch16())
 	elseif opcode >= 0xB0 and opcode <= 0xB7 then
 		self:setReg8(opcode - 0xB0, self:fetch8())
-	elseif opcode == 0x90 then
+		--elseif opcode == 0x90 then
 		-- nop
 	elseif opcode == 0xFA then
 		self:setFlag(FLAG_IF, false)
@@ -647,12 +644,7 @@ function Cpu8086:step()
 		self.stats.portWrites = self.stats.portWrites + 1
 		self.bus:portWrite16(port, self:getReg16(0))
 	else
-		self._lastError = string.format(
-			"unsupported opcode 0x%02X at %04X:%04X",
-			opcode,
-			self.seg.CS,
-			startIP
-		)
+		self._lastError = string.format("unsupported opcode 0x%02X at %04X:%04X", opcode, self.seg.CS, startIP)
 		self.halted = true
 		error(self._lastError)
 	end

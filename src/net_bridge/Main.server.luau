@@ -25,14 +25,14 @@ network.remotes.LoadHDD.OnServerInvoke = function(player)
 	return snapshot
 end
 
-network.remotes.SyncMachineState.OnServerInvoke = function(player, state)
+network.remotes.SyncMachineState.OnServerInvoke = function(_, state)
 	if type(state) ~= "table" then
 		return false, "invalid state"
 	end
 	return true
 end
 
-Players.PlayerRemoving:Connect(function(player)
+Players.PlayerRemoving:Connect(function(_)
 	-- Hook point for deferred autosave orchestration
 	-- (machines can call SaveHDD proactively before player leaves)
 end)

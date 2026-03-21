@@ -25,7 +25,6 @@ local PALETTE = {
 
 -- 4Ã—8 bitmap font (ASCII 32-126).
 -- Each glyph is 8 bytes; each byte is one scanline with bits 3..0 = columns 0..3.
-local FONT = {}
 local function F(...)
 	return { ... }
 end
@@ -126,15 +125,12 @@ local _GLYPHS = {
 	[125] = F(12, 2, 2, 1, 2, 2, 12, 0), -- }
 	[126] = F(0, 0, 5, 10, 0, 0, 0, 0), -- ~
 }
-for k, v in pairs(_GLYPHS) do
-	FONT[k] = v
-end
+local FONT = table.clone(_GLYPHS)
 
 local GLYPH_DEFAULT = F(15, 9, 9, 9, 9, 15, 0, 0)
 local function getGlyph(ch)
 	return FONT[ch] or GLYPH_DEFAULT
 end
-
 
 local function clamp(v, lo, hi)
 	if v < lo then
@@ -170,7 +166,12 @@ local function blendARGB(bg, fg, alpha)
 	local _, br, bgc, bb = unpackARGB(bg)
 	local _, fr, fgc, fb = unpackARGB(fg)
 	local t = alpha / 255
-	return packARGB(255, math.floor(lerp(br, fr, t) + 0.5), math.floor(lerp(bgc, fgc, t) + 0.5), math.floor(lerp(bb, fb, t) + 0.5))
+	return packARGB(
+		255,
+		math.floor(lerp(br, fr, t) + 0.5),
+		math.floor(lerp(bgc, fgc, t) + 0.5),
+		math.floor(lerp(bb, fb, t) + 0.5)
+	)
 end
 
 local function glyphBit(glyph, gx, gy)
@@ -224,7 +225,10 @@ function VgaAdapter.new(config, editableImage)
 	self._nextFrameTime = 0
 	self._frameInterval = 1 / math.max(1, config.DISPLAY_REFRESH_HZ or 60)
 
-	self._textCellCount = math.max(config.TEXT_COLS * config.TEXT_ROWS, math.floor((config.VIDEO_SIZE or (config.TEXT_COLS * config.TEXT_ROWS * 2)) / 2))
+	self._textCellCount = math.max(
+		config.TEXT_COLS * config.TEXT_ROWS,
+		math.floor((config.VIDEO_SIZE or (config.TEXT_COLS * config.TEXT_ROWS * 2)) / 2)
+	)
 	self._crtcIndex = 0
 	self._crtc = {
 		[0x0A] = 0x06,
@@ -268,7 +272,6 @@ function VgaAdapter.new(config, editableImage)
 	return self
 end
 
-
 local function markCellDirty(self, col, row)
 	if col < 0 or col >= self.config.TEXT_COLS then
 		return
@@ -304,7 +307,8 @@ local function textStartCell(self)
 end
 
 local function updateCursorRegisters(self)
-	local cursorCell = (textStartCell(self) + (self._cursorRow * self.config.TEXT_COLS) + self._cursorCol) % math.max(1, self._textCellCount)
+	local cursorCell = (textStartCell(self) + (self._cursorRow * self.config.TEXT_COLS) + self._cursorCol)
+		% math.max(1, self._textCellCount)
 	self._crtc[0x0E] = math.floor(cursorCell / 256) % 256
 	self._crtc[0x0F] = cursorCell % 256
 end
@@ -529,7 +533,6 @@ function VgaAdapter:toggleCursor()
 	self._dirty = true
 end
 
-
 function VgaAdapter:_setPixelRaw(x, y, argb)
 	if x < 0 or x >= self.W or y < 0 or y >= self.H then
 		return
@@ -659,7 +662,16 @@ function VgaAdapter:drawChar(x, y, ch, fgARGB, bgARGB)
 		for col = 0, drawW - 1 do
 			local px = x + self.PX + col
 			local py = y + self.PY + row
-			if px >= x and px < x + self.CW and py >= y and py < y + self.CH and px >= 0 and px < self.W and py >= 0 and py < self.H then
+			if
+				px >= x
+				and px < x + self.CW
+				and py >= y
+				and py < y + self.CH
+				and px >= 0
+				and px < self.W
+				and py >= 0
+				and py < self.H
+			then
 				local coverage
 				if self.fontSmoothing then
 					local denomW = math.max(1, drawW)
@@ -668,7 +680,12 @@ function VgaAdapter:drawChar(x, y, ch, fgARGB, bgARGB)
 					local v0 = ((row + 0.25) / denomH) * 8 - 0.5
 					local u1 = ((col + 0.75) / denomW) * 4 - 0.5
 					local v1 = ((row + 0.75) / denomH) * 8 - 0.5
-					coverage = (sampleGlyphSmooth(glyph, u0, v0) + sampleGlyphSmooth(glyph, u1, v0) + sampleGlyphSmooth(glyph, u0, v1) + sampleGlyphSmooth(glyph, u1, v1)) * 0.25
+					coverage = (
+						sampleGlyphSmooth(glyph, u0, v0)
+						+ sampleGlyphSmooth(glyph, u1, v0)
+						+ sampleGlyphSmooth(glyph, u0, v1)
+						+ sampleGlyphSmooth(glyph, u1, v1)
+					) * 0.25
 				else
 					coverage = glyphBit(glyph, math.floor((col / drawW) * 4), math.floor((row / drawH) * 8))
 				end

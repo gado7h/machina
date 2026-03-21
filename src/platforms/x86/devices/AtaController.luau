@@ -96,15 +96,22 @@ function AtaController:attachBus(bus)
 	self._bus = bus
 	local base = self.config.PORT.IDE_PRIMARY_CMD
 	local ctrl = self.config.PORT.IDE_PRIMARY_CTRL
-	bus:registerPort(base + 0, function()
-		return self:_readData8()
-	end, function(v)
-		self:_writeData8(v)
-	end, "IDE Data", function()
-		return self:_readData16()
-	end, function(v)
-		self:_writeData16(v)
-	end)
+	bus:registerPort(
+		base + 0,
+		function()
+			return self:_readData8()
+		end,
+		function(v)
+			self:_writeData8(v)
+		end,
+		"IDE Data",
+		function()
+			return self:_readData16()
+		end,
+		function(v)
+			self:_writeData16(v)
+		end
+	)
 	bus:registerPort(base + 1, function()
 		return self._error
 	end, function(v)

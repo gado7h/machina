@@ -1,0 +1,19 @@
+{
+  "name": "Machina Dev",
+  "emitLegacyScripts": false,
+  "tree": {
+    "$className": "DataModel",
+
+    "ReplicatedStorage": {
+      "platforms": {
+        "$path": "src/platforms"
+      },
+      "Config": {
+        "$path": "src/Config.luau"
+      },
+      "net_bridge": {
+        "$path": "src/net_bridge"
+      }
+    }
+  }
+}

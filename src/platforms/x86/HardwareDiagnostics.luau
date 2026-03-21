@@ -189,7 +189,8 @@ local function testVGA(machine, config)
 	restoreStats(bus, busStats)
 
 	local passed = glyph == string.byte("Z") and attr == 0x1E and col == 5 and row == 0
-	return passed, string.format("char=%s attr=%s cursor=%d,%d", formatHex(glyph), formatHex(attr), col or -1, row or -1)
+	return passed,
+		string.format("char=%s attr=%s cursor=%d,%d", formatHex(glyph), formatHex(attr), col or -1, row or -1)
 end
 
 local function testKeyboard(machine, config)
@@ -237,13 +238,14 @@ local function testKeyboard(machine, config)
 	restoreStats(bus, busStats)
 
 	local passed = selfTest == 0x55 and ack == 0xFA and identA == 0xAB and identB == 0x83
-	return passed, string.format(
-		"selftest=%s ack=%s ident=%s,%s",
-		formatHex(selfTest),
-		formatHex(ack),
-		formatHex(identA),
-		formatHex(identB)
-	)
+	return passed,
+		string.format(
+			"selftest=%s ack=%s ident=%s,%s",
+			formatHex(selfTest),
+			formatHex(ack),
+			formatHex(identA),
+			formatHex(identB)
+		)
 end
 
 local function testRTC(machine, config)
@@ -269,7 +271,13 @@ local function testRTC(machine, config)
 	restoreStats(rtc, rtcStats)
 	restoreStats(bus, busStats)
 
-	local passed = bit32.band(statusB, 0x02) ~= 0 and sec >= 0 and sec < 60 and min >= 0 and min < 60 and hour >= 0 and hour < 24
+	local passed = bit32.band(statusB, 0x02) ~= 0
+		and sec >= 0
+		and sec < 60
+		and min >= 0
+		and min < 60
+		and hour >= 0
+		and hour < 24
 	return passed, string.format("time=%02d:%02d:%02d statusB=%s", hour, min, sec, formatHex(statusB))
 end
 

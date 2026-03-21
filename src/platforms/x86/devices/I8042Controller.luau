@@ -439,7 +439,7 @@ function I8042Controller:_writeCtrl(value)
 	elseif v == 0xAA then
 		self._status = bit32.bor(self._status, STATUS_SYSTEM)
 		self:_pushOutputByte(0x55)
-	elseif v == 0xAB then
+	elseif v == 0xAB or v == 0xFE then
 		self:_pushOutputByte(0x00)
 	elseif v == 0xAD then
 		self._scanningEnabled = false
@@ -447,8 +447,6 @@ function I8042Controller:_writeCtrl(value)
 	elseif v == 0xAE then
 		self._scanningEnabled = true
 		self._controllerCommandByte = bit32.band(self._controllerCommandByte, bit32.bnot(COMMAND_DISABLE_KEYBOARD))
-	elseif v == 0xFE then
-		self:_pushOutputByte(0x00)
 	end
 	self._status = bit32.band(self._status, bit32.bnot(STATUS_COMMAND))
 end

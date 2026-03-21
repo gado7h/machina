@@ -325,7 +325,15 @@ local function isCondJump(name)
 end
 
 local function estimateInstruction(name, operands, default32)
-	if name == "NOP" or name == "RET" or name == "RETF" or name == "IRET" or name == "CLI" or name == "STI" or name == "HLT" then
+	if
+		name == "NOP"
+		or name == "RET"
+		or name == "RETF"
+		or name == "IRET"
+		or name == "CLI"
+		or name == "STI"
+		or name == "HLT"
+	then
 		return 1
 	end
 	if name == "INT" then
@@ -336,28 +344,21 @@ local function estimateInstruction(name, operands, default32)
 		local src = operands[2]
 		assert(dst and src, "Assembler8086: IN requires two operands")
 		local dstWidth = operandWidth(dst, default32)
-		local dstIsAccumulator = (dst.kind == "reg8" and dst.code == 0) or ((dstWidth == 16 or dstWidth == 32) and dst.code == 0)
+		local dstIsAccumulator = (dst.kind == "reg8" and dst.code == 0)
+			or ((dstWidth == 16 or dstWidth == 32) and dst.code == 0)
 		local srcIsPort = src.kind == "imm" or (src.kind == "reg16" and src.code == REG16.DX)
-		assert(
-			dstIsAccumulator and srcIsPort,
-			"Assembler8086: supported IN forms are IN AL|AX|EAX, imm8|DX"
-		)
+		assert(dstIsAccumulator and srcIsPort, "Assembler8086: supported IN forms are IN AL|AX|EAX, imm8|DX")
 		return src.kind == "imm" and 2 or 1
 	end
 	if name == "OUT" then
 		local dst = operands[1]
 		local src = operands[2]
-		assert(
-			dst and src,
-			"Assembler8086: OUT requires two operands"
-		)
+		assert(dst and src, "Assembler8086: OUT requires two operands")
 		local dstIsPort = dst.kind == "imm" or (dst.kind == "reg16" and dst.code == REG16.DX)
 		local srcWidth = operandWidth(src, default32)
-		local srcIsAccumulator = (src.kind == "reg8" and src.code == 0) or ((srcWidth == 16 or srcWidth == 32) and src.code == 0)
-		assert(
-			dstIsPort and srcIsAccumulator,
-			"Assembler8086: supported OUT forms are OUT imm8|DX, AL|AX|EAX"
-		)
+		local srcIsAccumulator = (src.kind == "reg8" and src.code == 0)
+			or ((srcWidth == 16 or srcWidth == 32) and src.code == 0)
+		assert(dstIsPort and srcIsAccumulator, "Assembler8086: supported OUT forms are OUT imm8|DX, AL|AX|EAX")
 		return dst.kind == "imm" and 2 or 1
 	end
 	if name == "LGDT" or name == "LIDT" then
@@ -436,7 +437,10 @@ local function estimateInstruction(name, operands, default32)
 		if dst.kind == "reg16" and src.kind == "seg" then
 			return (default32 and 1 or 0) + 2
 		end
-		if (dst.kind == "reg16" or dst.kind == "reg32") and ((src.kind == "reg16" or src.kind == "reg32") or src.kind == "mem") then
+		if
+			(dst.kind == "reg16" or dst.kind == "reg32")
+			and ((src.kind == "reg16" or src.kind == "reg32") or src.kind == "mem")
+		then
 			local width = operandWidth(dst, default32)
 			return (needsAddressPrefix(src, default32) and 1 or 0)
 				+ (needsOperandPrefix(width, default32) and 1 or 0)
@@ -740,10 +744,7 @@ local function encodeInstruction(inst, bytes, symbols, currentAddress, origin, d
 			bytes[#bytes + 1] = evalExpr(src.expr, symbols, currentAddress, origin) % 256
 			return
 		end
-		assert(
-			src.kind == "reg16" and src.code == REG16.DX,
-			"Assembler8086: supported IN forms are IN AL|AX, imm8|DX"
-		)
+		assert(src.kind == "reg16" and src.code == REG16.DX, "Assembler8086: supported IN forms are IN AL|AX, imm8|DX")
 		bytes[#bytes + 1] = dstIsWord and 0xED or 0xEC
 		return
 	end
@@ -821,7 +822,8 @@ local function encodeInstruction(inst, bytes, symbols, currentAddress, origin, d
 			encodeMem(bytes, op, 4, symbols, currentAddress, origin)
 		else
 			local target = evalExpr(op.expr, symbols, currentAddress, origin)
-			local rel = target - (currentAddress + (needsOperandPrefix(width, default32) and 1 or 0) + 1 + (width == 32 and 4 or 2))
+			local rel = target
+				- (currentAddress + (needsOperandPrefix(width, default32) and 1 or 0) + 1 + (width == 32 and 4 or 2))
 			bytes[#bytes + 1] = 0xE9
 			if width == 32 then
 				encodeDword(bytes, rel)
@@ -843,7 +845,8 @@ local function encodeInstruction(inst, bytes, symbols, currentAddress, origin, d
 			encodeMem(bytes, op, 2, symbols, currentAddress, origin)
 		else
 			local target = evalExpr(op.expr, symbols, currentAddress, origin)
-			local rel = target - (currentAddress + (needsOperandPrefix(width, default32) and 1 or 0) + 1 + (width == 32 and 4 or 2))
+			local rel = target
+				- (currentAddress + (needsOperandPrefix(width, default32) and 1 or 0) + 1 + (width == 32 and 4 or 2))
 			bytes[#bytes + 1] = 0xE8
 			if width == 32 then
 				encodeDword(bytes, rel)

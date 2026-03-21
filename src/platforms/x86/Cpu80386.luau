@@ -777,7 +777,7 @@ function Cpu80386:step()
 		self:_setRegByWidth(opcode - 0xB8, operandWidth, self:_fetchImmediate(operandWidth))
 	elseif opcode >= 0xB0 and opcode <= 0xB7 then
 		self:setReg8(opcode - 0xB0, self:fetch8())
-	elseif opcode == 0x90 then
+	--elseif opcode == 0x90 then
 	elseif opcode == 0xFA then
 		self:setFlag(FLAG_IF, false)
 	elseif opcode == 0xFB then
@@ -839,7 +839,8 @@ function Cpu80386:step()
 		self:_writeRMByWidth(decoded, operandWidth, imm)
 	elseif opcode == 0x33 then
 		local decoded = self:_decodeModRMForAddressSize(addressOverride)
-		local value = bit32.bxor(self:_getRegByWidth(decoded.reg, operandWidth), self:_readRMByWidth(decoded, operandWidth))
+		local value =
+			bit32.bxor(self:_getRegByWidth(decoded.reg, operandWidth), self:_readRMByWidth(decoded, operandWidth))
 		self:_setRegByWidth(decoded.reg, operandWidth, value)
 		self:_updateLogicFlags(operandWidth, value)
 	elseif opcode == 0x32 then
@@ -868,13 +869,21 @@ function Cpu80386:step()
 		self:_sub(8, self:_readRM8(decoded), self:getReg8(decoded.reg))
 	elseif opcode == 0x39 then
 		local decoded = self:_decodeModRMForAddressSize(addressOverride)
-		self:_sub(operandWidth, self:_readRMByWidth(decoded, operandWidth), self:_getRegByWidth(decoded.reg, operandWidth))
+		self:_sub(
+			operandWidth,
+			self:_readRMByWidth(decoded, operandWidth),
+			self:_getRegByWidth(decoded.reg, operandWidth)
+		)
 	elseif opcode == 0x3A then
 		local decoded = self:_decodeModRMForAddressSize(addressOverride)
 		self:_sub(8, self:getReg8(decoded.reg), self:_readRM8(decoded))
 	elseif opcode == 0x3B then
 		local decoded = self:_decodeModRMForAddressSize(addressOverride)
-		self:_sub(operandWidth, self:_getRegByWidth(decoded.reg, operandWidth), self:_readRMByWidth(decoded, operandWidth))
+		self:_sub(
+			operandWidth,
+			self:_getRegByWidth(decoded.reg, operandWidth),
+			self:_readRMByWidth(decoded, operandWidth)
+		)
 	elseif opcode == 0xE8 then
 		local rel = operandWidth == 32 and signExtend32(self:fetch32()) or signExtend16(self:fetch16())
 		local returnIP = self:_currentIP()

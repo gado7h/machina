@@ -85,7 +85,8 @@ function BiosInterrupts:_readSectors(cpu)
 		self:_setDiskStatus(cpu, 0x04)
 		return true
 	end
-	local totalSectors = self.machine.hdd.getTotalSectors and self.machine.hdd:getTotalSectors() or self.machine.hdd.totalSectors
+	local totalSectors = self.machine.hdd.getTotalSectors and self.machine.hdd:getTotalSectors()
+		or self.machine.hdd.totalSectors
 	if (startLba + math.max(0, count - 1)) >= (tonumber(totalSectors) or 0) then
 		self:_setCarry(cpu, true)
 		self:_setDiskStatus(cpu, 0x04)

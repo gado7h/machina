@@ -538,7 +538,7 @@ local function buildProtectedModeMonitorSource()
 		"PROMPT:",
 		'  DB "root@machina:~# ", 0',
 		"NEWLINE:",
-		'  DB 13, 10, 0',
+		"  DB 13, 10, 0",
 		"HELP_MSG:",
 		'  DB "help    show available commands", 13, 10, "clear   clear the screen", 13, 10, "cls     alias for clear", 13, 10, "echo    print arguments", 13, 10, "uname   show system identity", 13, 10, "reboot  reset the monitor", 13, 10, 0',
 		"UNAME_MSG:",
@@ -566,7 +566,8 @@ local function buildProtectedModeStubSource(config, pmOffset, kernelBaseLinear, 
 	local x86 = config.X86 or {}
 	local codeDesc = descriptorWords(kernelBaseLinear, 0x9A, 0x000FFFFF, 0x0C)
 	local dataDesc = descriptorWords(kernelBaseLinear, 0x92, 0x000FFFFF, 0x0C)
-	local videoDesc = descriptorWords(x86.VIDEO_BASE or 0xB8000, 0x92, math.max(0, (x86.VIDEO_SIZE or 0x8000) - 1), 0x04)
+	local videoDesc =
+		descriptorWords(x86.VIDEO_BASE or 0xB8000, 0x92, math.max(0, (x86.VIDEO_SIZE or 0x8000) - 1), 0x04)
 	return table.concat({
 		"ORG 0x0000",
 		"START:",
@@ -598,9 +599,25 @@ local function buildProtectedModeStubSource(config, pmOffset, kernelBaseLinear, 
 		'  DB "IA-32 protected-mode bring-up", 13, 10, 0',
 		"GDT:",
 		"  DW 0x0000, 0x0000, 0x0000, 0x0000",
-		"  DW " .. hex16(codeDesc.limitLow) .. ", " .. hex16(codeDesc.baseLow) .. ", " .. hex16(codeDesc.accessBaseMid) .. ", " .. hex16(codeDesc.flagsBaseHigh),
-		"  DW " .. hex16(dataDesc.limitLow) .. ", " .. hex16(dataDesc.baseLow) .. ", " .. hex16(dataDesc.accessBaseMid) .. ", " .. hex16(dataDesc.flagsBaseHigh),
-		"  DW " .. hex16(videoDesc.limitLow) .. ", " .. hex16(videoDesc.baseLow) .. ", " .. hex16(videoDesc.accessBaseMid) .. ", " .. hex16(videoDesc.flagsBaseHigh),
+		"  DW "
+			.. hex16(codeDesc.limitLow)
+			.. ", "
+			.. hex16(codeDesc.baseLow)
+			.. ", "
+			.. hex16(codeDesc.accessBaseMid)
+			.. ", "
+			.. hex16(codeDesc.flagsBaseHigh),
+		"  DW "
+			.. hex16(dataDesc.limitLow)
+			.. ", "
+			.. hex16(dataDesc.baseLow)
+			.. ", "
+			.. hex16(dataDesc.accessBaseMid)
+			.. ", "
+			.. hex16(dataDesc.flagsBaseHigh),
+		"  DW " .. hex16(videoDesc.limitLow) .. ", " .. hex16(videoDesc.baseLow) .. ", " .. hex16(
+			videoDesc.accessBaseMid
+		) .. ", " .. hex16(videoDesc.flagsBaseHigh),
 		"GDT_DESC:",
 		"  DW GDT_END - GDT - 1",
 		"  DW " .. hex16(gdtLinear % 0x10000),
@@ -649,15 +666,25 @@ local function buildProtectedModeBringUp(config)
 	local bootSource
 	local kernelLoadLinear = (x86.KERNEL_LOAD_SEG or 0x1000) * 16
 	for _ = 1, 4 do
-		local placeholderStub = Assembler8086.compile(buildProtectedModeStubSource(config, 0, kernelLoadLinear, kernelLoadLinear))
+		local placeholderStub =
+			Assembler8086.compile(buildProtectedModeStubSource(config, 0, kernelLoadLinear, kernelLoadLinear))
 		local pmOffset = #placeholderStub.bytes
-		local provisionalStub = Assembler8086.compile(buildProtectedModeStubSource(config, pmOffset, kernelLoadLinear, kernelLoadLinear))
+		local provisionalStub =
+			Assembler8086.compile(buildProtectedModeStubSource(config, pmOffset, kernelLoadLinear, kernelLoadLinear))
 		local gdtOffset = provisionalStub.symbols and provisionalStub.symbols.GDT or 0
 		local gdtLinear = kernelLoadLinear + gdtOffset
-		stubArtifact = Assembler8086.compile(buildProtectedModeStubSource(config, pmOffset, kernelLoadLinear, gdtLinear))
+		stubArtifact =
+			Assembler8086.compile(buildProtectedModeStubSource(config, pmOffset, kernelLoadLinear, gdtLinear))
 		pmOffset = #stubArtifact.bytes
 		if pmOffset ~= #placeholderStub.bytes then
-			stubArtifact = Assembler8086.compile(buildProtectedModeStubSource(config, pmOffset, kernelLoadLinear, kernelLoadLinear + (stubArtifact.symbols and stubArtifact.symbols.GDT or 0)))
+			stubArtifact = Assembler8086.compile(
+				buildProtectedModeStubSource(
+					config,
+					pmOffset,
+					kernelLoadLinear,
+					kernelLoadLinear + (stubArtifact.symbols and stubArtifact.symbols.GDT or 0)
+				)
+			)
 			pmOffset = #stubArtifact.bytes
 		end
 		monitorArtifact = Assembler8086.compile(buildProtectedModeMonitorSource(), {

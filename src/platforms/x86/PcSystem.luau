@@ -183,7 +183,12 @@ function PcSystem:_stepCPU(dt)
 				local textCols = (self.boardConfig.TEXT_COLS or self.config.TEXT_COLS or 80)
 				local cpuStats = self.cpu and type(self.cpu.getStats) == "function" and self.cpu:getStats() or nil
 				local location = cpuStats
-						and string.format("pc=%05X cs=%04X ip=%04X", cpuStats.pc or 0, cpuStats.cs or 0, cpuStats.ip or 0)
+						and string.format(
+							"pc=%05X cs=%04X ip=%04X",
+							cpuStats.pc or 0,
+							cpuStats.cs or 0,
+							cpuStats.ip or 0
+						)
 					or nil
 				self.gpu:println("")
 				self.gpu:println("Emulator fault", 0x0C)
@@ -203,7 +208,11 @@ function PcSystem:_stepCPU(dt)
 						),
 						0x0C
 					)
-					if self.cpu and type(self.cpu.linearAddress) == "function" and type(self.cpu.readPhysical8) == "function" then
+					if
+						self.cpu
+						and type(self.cpu.linearAddress) == "function"
+						and type(self.cpu.readPhysical8) == "function"
+					then
 						local startLinear = self.cpu:linearAddress(cpuStats.lastCS or 0, cpuStats.lastIP or 0)
 						local bytes = {}
 						for offset = 0, 5 do
