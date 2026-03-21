@@ -28,7 +28,7 @@ jobs:
         run: rokit --version
 
       - name: Install toolchain
-        run: rokit install
+        run: rokit rokit install --no-trust-check
 
       - name: Verify toolchain
         run: |
