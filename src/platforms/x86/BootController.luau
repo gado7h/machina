@@ -20,8 +20,8 @@ end
 
 function BootController:startBoot()
 	self.machine:_setBootStage("BIOS")
-	self.machine.gpu:setMode("TEXT")
-	self.machine.gpu:clearScreen(0x07)
+	self.machine.gpu:clearHostOverlay()
+	self.machine.gpu:biosSetVideoMode(0x03)
 
 	if self.machine.bus and self.machine.bus.timer then
 		self.machine.bus.timer._enabled = false
@@ -33,8 +33,9 @@ function BootController:startBoot()
 	end)
 	if not ok then
 		self.machine:_setBootStage("FAULT", tostring(imageOrErr))
-		self.machine.gpu:println("x86 image build failed", 0x0C)
-		self.machine.gpu:println(tostring(imageOrErr), 0x0C)
+		self.machine.gpu:hostClear(0x0C)
+		self.machine.gpu:hostWriteLine("x86 image build failed", 0x0C)
+		self.machine.gpu:hostWriteLine(tostring(imageOrErr), 0x0C)
 		return
 	end
 
@@ -54,7 +55,8 @@ function BootController:startBoot()
 		diagnostics = HardwareDiagnostics.run(self.machine, self.config)
 		if diagnosticsConfig.PRINT_SUMMARY ~= false then
 			local color = diagnostics.passed and 0x0A or 0x0E
-			self.machine.gpu:println(
+			self.machine.gpu:hostClear(color)
+			self.machine.gpu:hostWriteLine(
 				string.format("Device diagnostics %d/%d", diagnostics.passedCount, diagnostics.totalCount),
 				color
 			)
@@ -87,6 +89,7 @@ function BootController:startBoot()
 		readyFlagLinear = self._readyFlagLinear,
 		diagnostics = diagnostics,
 	})
+	self.machine.gpu:clearHostOverlay()
 	self.machine:_setBootStage("BIOS")
 end
 

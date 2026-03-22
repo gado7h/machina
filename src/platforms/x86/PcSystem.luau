@@ -149,8 +149,9 @@ function PcSystem:powerOn()
 	if not ok then
 		self:_setBootStage("FAULT", tostring(err))
 		if self.gpu then
-			self.gpu:println("runtime init failed", 0x0C)
-			self.gpu:println(tostring(err), 0x0C)
+			self.gpu:hostClear(0x0C)
+			self.gpu:hostWriteLine("runtime init failed", 0x0C)
+			self.gpu:hostWriteLine(tostring(err), 0x0C)
 		end
 	end
 	if self._bootStage ~= "FAULT" and self._powered then
@@ -186,16 +187,16 @@ function PcSystem:_stepCPU(dt)
 							cpuStats.ip or 0
 						)
 					or nil
-				self.gpu:println("")
-				self.gpu:println("Emulator fault", 0x0C)
+				self.gpu:hostClear(0x0C)
+				self.gpu:hostWriteLine("Emulator fault", 0x0C)
 				for _, line in ipairs(wrapText(tostring(result), math.max(16, textCols - 2))) do
-					self.gpu:println(line, 0x0C)
+					self.gpu:hostWriteLine(line, 0x0C)
 				end
 				if location then
-					self.gpu:println(location, 0x0C)
+					self.gpu:hostWriteLine(location, 0x0C)
 				end
 				if cpuStats and cpuStats.lastOpcode ~= nil then
-					self.gpu:println(
+					self.gpu:hostWriteLine(
 						string.format(
 							"last=%02X start=%04X:%04X",
 							cpuStats.lastOpcode,
@@ -214,7 +215,7 @@ function PcSystem:_stepCPU(dt)
 						for offset = 0, 5 do
 							bytes[#bytes + 1] = string.format("%02X", self.cpu:readPhysical8(startLinear + offset))
 						end
-						self.gpu:println("bytes=" .. table.concat(bytes, " "), 0x0C)
+						self.gpu:hostWriteLine("bytes=" .. table.concat(bytes, " "), 0x0C)
 					end
 				end
 			end
@@ -298,7 +299,8 @@ function PcSystem:_powerDown(clearScreen)
 	end
 
 	if clearScreen and self.gpu then
-		self.gpu:clearScreen()
+		self.gpu:clearHostOverlay()
+		self.gpu:biosSetVideoMode(0x03)
 		self:presentFrame()
 	end
 end

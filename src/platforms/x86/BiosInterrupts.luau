@@ -42,16 +42,13 @@ end
 
 function BiosInterrupts:_teletype(cpu)
 	local ch = cpu:getReg8(0)
-	self.machine.gpu:print(string.char(ch == 0 and 32 or ch), 0x07)
+	self.machine.gpu:biosTeletype(ch == 0 and 32 or ch, 0x07)
 	self:_setCarry(cpu, false)
 end
 
 function BiosInterrupts:_setVideoMode(cpu)
 	local mode = cpu:getReg8(0)
-	if mode == 0x03 then
-		self.machine.gpu:setMode("TEXT")
-		self.machine.gpu:clearScreen(0x07)
-	end
+	self.machine.gpu:biosSetVideoMode(mode)
 	self:_setCarry(cpu, false)
 end
 

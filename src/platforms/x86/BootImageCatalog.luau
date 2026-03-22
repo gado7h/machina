@@ -567,7 +567,7 @@ local function buildProtectedModeStubSource(config, pmOffset, kernelBaseLinear, 
 	local codeDesc = descriptorWords(kernelBaseLinear, 0x9A, 0x000FFFFF, 0x0C)
 	local dataDesc = descriptorWords(kernelBaseLinear, 0x92, 0x000FFFFF, 0x0C)
 	local videoDesc =
-		descriptorWords(x86.VIDEO_BASE or 0xB8000, 0x92, math.max(0, (x86.VIDEO_SIZE or 0x8000) - 1), 0x04)
+		descriptorWords(x86.TEXT_BUFFER_BASE or 0xB8000, 0x92, math.max(0, (x86.TEXT_BUFFER_SIZE or 0x8000) - 1), 0x04)
 	return table.concat({
 		"ORG 0x0000",
 		"START:",
@@ -635,6 +635,215 @@ local function concatBytes(first, second)
 		out[#out + 1] = byte
 	end
 	return out
+end
+
+local function buildStandaloneBootImage(config, name, bootSource)
+	local biosArtifact = BiosRom.buildArtifact(config)
+	local bootArtifact = Assembler8086.compile(bootSource)
+	assert(#bootArtifact.bytes <= 512, name .. " boot sector exceeds 512 bytes")
+
+	local sectors = {}
+	local bootSector = {}
+	for index = 1, 512 do
+		bootSector[index] = bootArtifact.bytes[index] or 0
+	end
+	sectors[0] = bootSector
+
+	return {
+		name = name,
+		romBytes = BiosRom.buildROMBytes(config, biosArtifact),
+		sectors = sectors,
+		layout = {
+			kernelSectorStart = 0,
+			kernelSectorCount = 0,
+			fsSuperSector = 0,
+			rootDirSector = 0,
+			rootDirSectorCount = 0,
+			dataStartSector = 0,
+			fileCount = 0,
+		},
+		files = {},
+		symbols = {
+			bios = biosArtifact.symbols,
+			bootSector = bootArtifact.symbols,
+			kernel = {},
+		},
+	}
+end
+
+local function buildVgaTextValidation(config)
+	local source = table.concat({
+		"ORG 0x7C00",
+		"START:",
+		"  MOV AX, 0x0003",
+		"  INT 0x10",
+		"  MOV AX, 0xB800",
+		"  MOV DS, AX",
+		"  XOR DI, DI",
+		"  MOV SI, TEXT_MSG",
+		"TEXT_LOOP:",
+		"  MOV AL, [SI]",
+		"  CMP AL, 0",
+		"  JE HANG",
+		"  MOV [DI], AL",
+		"  INC DI",
+		"  MOV BYTE [DI], 0x1E",
+		"  INC DI",
+		"  INC SI",
+		"  JMP TEXT_LOOP",
+		"HANG:",
+		"  HLT",
+		"  JMP HANG",
+		"TEXT_MSG:",
+		'  DB "VGA 03h TEXT VALIDATION", 0',
+		"PADTO 0x7DFE, 0",
+		"DW 0xAA55",
+	}, "\n")
+	return buildStandaloneBootImage(config, "VgaTextValidation", source)
+end
+
+local function buildVgaMode13Validation(config)
+	local source = table.concat({
+		"ORG 0x7C00",
+		"START:",
+		"  MOV AX, 0x0013",
+		"  INT 0x10",
+		"  MOV AX, 0xA000",
+		"  MOV DS, AX",
+		"  XOR DI, DI",
+		"  XOR BX, BX",
+		"FILL_LOOP:",
+		"  MOV AL, BL",
+		"  MOV [DI], AL",
+		"  INC DI",
+		"  INC BL",
+		"  CMP DI, 0xFA00",
+		"  JNE FILL_LOOP",
+		"HANG:",
+		"  HLT",
+		"  JMP HANG",
+		"PADTO 0x7DFE, 0",
+		"DW 0xAA55",
+	}, "\n")
+	return buildStandaloneBootImage(config, "VgaMode13Validation", source)
+end
+
+local function buildVgaPlanarValidation(config)
+	local source = table.concat({
+		"ORG 0x7C00",
+		"START:",
+		"  MOV AX, 0x000D",
+		"  INT 0x10",
+		"  MOV DX, 0x03C4",
+		"  MOV AL, 0x02",
+		"  OUT DX, AL",
+		"  INC DX",
+		"  MOV AL, 0x0F",
+		"  OUT DX, AL",
+		"  MOV DX, 0x03CE",
+		"  MOV AL, 0x08",
+		"  OUT DX, AL",
+		"  INC DX",
+		"  MOV AL, 0xFF",
+		"  OUT DX, AL",
+		"  MOV AX, 0xA000",
+		"  MOV DS, AX",
+		"  XOR DI, DI",
+		"  MOV CX, 8000",
+		"  MOV AL, 0xAA",
+		"PLANAR_LOOP:",
+		"  MOV [DI], AL",
+		"  INC DI",
+		"  LOOP PLANAR_LOOP",
+		"HANG:",
+		"  HLT",
+		"  JMP HANG",
+		"PADTO 0x7DFE, 0",
+		"DW 0xAA55",
+	}, "\n")
+	return buildStandaloneBootImage(config, "VgaPlanarValidation", source)
+end
+
+local function buildVgaFontValidation(config)
+	local source = table.concat({
+		"ORG 0x7C00",
+		"START:",
+		"  MOV AX, 0x0003",
+		"  INT 0x10",
+		"  MOV DX, 0x03C4",
+		"  MOV AL, 0x02",
+		"  OUT DX, AL",
+		"  INC DX",
+		"  MOV AL, 0x04",
+		"  OUT DX, AL",
+		"  MOV DX, 0x03CE",
+		"  MOV AL, 0x04",
+		"  OUT DX, AL",
+		"  INC DX",
+		"  MOV AL, 0x02",
+		"  OUT DX, AL",
+		"  DEC DX",
+		"  MOV AL, 0x06",
+		"  OUT DX, AL",
+		"  INC DX",
+		"  MOV AL, 0x00",
+		"  OUT DX, AL",
+		"  MOV AX, 0xA000",
+		"  MOV DS, AX",
+		"  MOV DI, 0x0820",
+		"  MOV CX, 16",
+		"FONT_LOOP:",
+		"  MOV AL, 0x18",
+		"  MOV [DI], AL",
+		"  INC DI",
+		"  LOOP FONT_LOOP",
+		"  MOV AX, 0x0003",
+		"  INT 0x10",
+		"  MOV AX, 0xB800",
+		"  MOV DS, AX",
+		"  MOV BYTE [0], 'A'",
+		"  MOV BYTE [1], 0x1F",
+		"HANG:",
+		"  HLT",
+		"  JMP HANG",
+		"PADTO 0x7DFE, 0",
+		"DW 0xAA55",
+	}, "\n")
+	return buildStandaloneBootImage(config, "VgaFontValidation", source)
+end
+
+local function buildVgaPaletteValidation(config)
+	local source = table.concat({
+		"ORG 0x7C00",
+		"START:",
+		"  MOV AX, 0x0013",
+		"  INT 0x10",
+		"  MOV DX, 0x03C8",
+		"  XOR AL, AL",
+		"  OUT DX, AL",
+		"  INC DX",
+		"  MOV AL, 0x3F",
+		"  OUT DX, AL",
+		"  XOR AL, AL",
+		"  OUT DX, AL",
+		"  XOR AL, AL",
+		"  OUT DX, AL",
+		"  MOV AX, 0xA000",
+		"  MOV DS, AX",
+		"  XOR DI, DI",
+		"  MOV CX, 0xFA00",
+		"  XOR AL, AL",
+		"PALETTE_LOOP:",
+		"  MOV [DI], AL",
+		"  INC DI",
+		"  LOOP PALETTE_LOOP",
+		"HANG:",
+		"  HLT",
+		"  JMP HANG",
+		"PADTO 0x7DFE, 0",
+		"DW 0xAA55",
+	}, "\n")
+	return buildStandaloneBootImage(config, "VgaPaletteValidation", source)
 end
 
 local function mergeSymbols(...)
@@ -784,6 +993,31 @@ end
 BootImageCatalog.ProtectedModeBringUp = {
 	name = "ProtectedModeBringUp",
 	build = buildProtectedModeBringUp,
+}
+
+BootImageCatalog.VgaTextValidation = {
+	name = "VgaTextValidation",
+	build = buildVgaTextValidation,
+}
+
+BootImageCatalog.VgaMode13Validation = {
+	name = "VgaMode13Validation",
+	build = buildVgaMode13Validation,
+}
+
+BootImageCatalog.VgaPlanarValidation = {
+	name = "VgaPlanarValidation",
+	build = buildVgaPlanarValidation,
+}
+
+BootImageCatalog.VgaFontValidation = {
+	name = "VgaFontValidation",
+	build = buildVgaFontValidation,
+}
+
+BootImageCatalog.VgaPaletteValidation = {
+	name = "VgaPaletteValidation",
+	build = buildVgaPaletteValidation,
 }
 
 return BootImageCatalog

@@ -445,21 +445,21 @@ function I8042Controller:pollLine(currentLine, echo, gpu)
 		for i = #currentLine, 1, -1 do
 			currentLine[i] = nil
 		end
-		if echo and gpu then
-			gpu:print("\n")
+		if echo and gpu and gpu.biosTeletype then
+			gpu:biosTeletype(10)
 		end
 		return line
 	elseif ch == "\b" then
 		if #currentLine > 0 then
 			table.remove(currentLine)
-			if echo and gpu then
-				gpu:print("\b")
+			if echo and gpu and gpu.biosTeletype then
+				gpu:biosTeletype(8)
 			end
 		end
 	else
 		table.insert(currentLine, ch)
-		if echo and gpu then
-			gpu:print(ch)
+		if echo and gpu and gpu.biosTeletype then
+			gpu:biosTeletype(string.byte(ch))
 		end
 	end
 	return nil
