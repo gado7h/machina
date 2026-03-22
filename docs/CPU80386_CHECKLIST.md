@@ -106,12 +106,17 @@ Bundled guest-visible CPU validation images:
 - `CpuProtectedModeValidation`
 - `CpuExceptionValidation`
 
-Diagnostics that now execute those images headlessly during boot diagnostics:
+Headless diagnostic result names:
 
 - `cpu_pm_validation`
 - `cpu_exception_validation`
 
-These run when `Config.X86.DIAGNOSTICS.RUN_GUEST_CPU_VALIDATIONS = true`.
+Review-only entry points:
+
+- `HardwareDiagnostics.runGuestCPUValidations(machine, config)`
+- `HardwareDiagnostics.runReviewSuite(machine, config)`
+
+These guest CPU validations do **not** run during normal boot diagnostics. They are review-only because they step full guest images and can stall Roblox Studio if they are kept on the synchronous boot path.
 
 ### CpuProtectedModeValidation
 
@@ -159,7 +164,7 @@ Diagnostics evidence:
 The CPU subsystem passes the current phase when:
 
 - the bundled guest-visible CPU validation images boot and show their pass strings
-- the boot diagnostics report passing `cpu_pm_validation` and `cpu_exception_validation` results
+- the review-only CPU validation suite reports passing `cpu_pm_validation` and `cpu_exception_validation` results
 - protected-mode bring-up no longer depends on fake host control-flow shortcuts
 - operand-size and address-size behavior match the locked machine contract for the implemented instruction set
 - far control transfers and interrupt returns behave consistently in protected mode

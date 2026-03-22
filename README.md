@@ -20,6 +20,8 @@ The locked emulator target and subsystem acceptance criteria are documented in [
 
 CPU behavior coverage and guest-visible CPU validation images are documented in [`docs/CPU80386_CHECKLIST.md`](docs/CPU80386_CHECKLIST.md).
 
+Heavy guest-image CPU validations are wired as review-only diagnostics through `HardwareDiagnostics.runGuestCPUValidations(...)` and `HardwareDiagnostics.runReviewSuite(...)`, not through the default synchronous boot path.
+
 VGA fidelity and current implementation limits are documented in [`docs/VGA_EMULATION.md`](docs/VGA_EMULATION.md).
 
 MachinaOS is the default environment, providing a minimal operating system layer for interacting with the emulated hardware and experimenting with low-level software.

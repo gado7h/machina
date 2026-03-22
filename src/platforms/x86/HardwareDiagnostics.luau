@@ -212,8 +212,8 @@ local function runGuestValidationImage(machine, config, imageName, expectedText)
 	local snapshot = snapshotMachineForGuestValidation(machine)
 	local success, passed, detail = pcall(function()
 		local diagConfig = ((config.X86 or {}).DIAGNOSTICS or {})
-		local maxSteps = diagConfig.GUEST_VALIDATION_MAX_STEPS or 50000
-		local yieldEvery = diagConfig.GUEST_VALIDATION_YIELD_EVERY or 2000
+		local maxSteps = diagConfig.REVIEW_GUEST_VALIDATION_MAX_STEPS or 50000
+		local yieldEvery = diagConfig.REVIEW_GUEST_VALIDATION_YIELD_EVERY or 2000
 		local image = buildCatalogImage(config, imageName)
 		machine.hdd._sectors = {}
 		for lba, sector in pairs(image.sectors or {}) do
@@ -794,8 +794,23 @@ local function testCpuExceptionValidation(machine, config)
 	return runGuestValidationImage(machine, config, "CpuExceptionValidation", "cpu exception validation PASS")
 end
 
+local function summarizeResults(results)
+	local passedCount = 0
+	for _, result in ipairs(results) do
+		if result.passed then
+			passedCount = passedCount + 1
+		end
+	end
+
+	return {
+		passed = passedCount == #results,
+		passedCount = passedCount,
+		totalCount = #results,
+		results = results,
+	}
+end
+
 function HardwareDiagnostics.run(machine, config)
-	local diagConfig = ((config.X86 or {}).DIAGNOSTICS or {})
 	local results = {
 		wrapTest("pic", function()
 			return testPIC(machine, config)
@@ -832,28 +847,31 @@ function HardwareDiagnostics.run(machine, config)
 		end),
 	}
 
-	if diagConfig.RUN_GUEST_CPU_VALIDATIONS == true then
-		results[#results + 1] = wrapTest("cpu_pm_validation", function()
+	return summarizeResults(results)
+end
+
+function HardwareDiagnostics.runGuestCPUValidations(machine, config)
+	return summarizeResults({
+		wrapTest("cpu_pm_validation", function()
 			return testCpuProtectedModeValidation(machine, config)
-		end)
-		results[#results + 1] = wrapTest("cpu_exception_validation", function()
+		end),
+		wrapTest("cpu_exception_validation", function()
 			return testCpuExceptionValidation(machine, config)
-		end)
-	end
+		end),
+	})
+end
 
-	local passedCount = 0
-	for _, result in ipairs(results) do
-		if result.passed then
-			passedCount = passedCount + 1
-		end
+function HardwareDiagnostics.runReviewSuite(machine, config)
+	local base = HardwareDiagnostics.run(machine, config)
+	local cpu = HardwareDiagnostics.runGuestCPUValidations(machine, config)
+	local results = {}
+	for _, result in ipairs(base.results) do
+		results[#results + 1] = result
 	end
-
-	return {
-		passed = passedCount == #results,
-		passedCount = passedCount,
-		totalCount = #results,
-		results = results,
-	}
+	for _, result in ipairs(cpu.results) do
+		results[#results + 1] = result
+	end
+	return summarizeResults(results)
 end
 
 return HardwareDiagnostics
