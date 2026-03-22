@@ -1,70 +1,63 @@
-# VGA Emulation Status
+# VGA Coverage
 
-## Scope
+## Target
 
-`src/platforms/x86/devices/VgaAdapter.luau` models the active x86 display as a guest-visible VGA device instead of only a direct Luau drawing surface.
+Machina currently targets a baseline IBM VGA-compatible programming model for text mode, planar graphics modes, and mode `13h`-class chained `256`-color graphics.
 
-The current implementation covers:
+The interrupt model follows that target:
+
+- baseline VGA does not expose a standard dedicated IRQ line
+- vertical retrace is surfaced through `Input Status 1` polling
+- Machina therefore does **not** raise a VGA interrupt in the current machine model
+
+## Acceptance Coverage
+
+| Acceptance area | Status | Notes |
+| --- | --- | --- |
+| Guest software sees real VGA register surfaces | Partial | Attribute controller, sequencer, graphics controller, CRTC, misc-output, DAC, and `Input Status 1` are exposed through x86 port I/O. |
+| BIOS / video code can interact with the adapter | Partial | BIOS mode set and teletype flow through the VGA device, and guest memory writes go through the VGA aperture rather than a host-only text console. |
+| Text mode `03h` behavior | Partial | `0xB8000` text memory, cursor registers, blink/background intensity, start-address scrolling, and plane-2 font-backed text rendering are modeled. |
+| Mode `13h` behavior | Partial | Chained `320x200x256` byte writes are supported and scan-doubled to the host surface. |
+| Planar graphics behavior | Partial | Planar reads, write modes `0-3`, latches, set/reset, read mode `1`, and DAC/palette color resolution are modeled. |
+| Plane `2` font upload | Implemented | Guest writes can upload glyph data into plane `2`, and text rendering consumes uploaded font rows. |
+| DAC / palette handling | Implemented | DAC read/write index sequencing and palette lookup are supported. |
+| Hardware cursor | Implemented | Cursor state is driven from CRTC registers and rendered in text mode. |
+| Timing / retrace behavior | Partial | Retrace/display-enable status now derives from CRTC-style timing state instead of a fixed wall-clock bit, but it is not cycle-accurate. |
+| VGA interrupt signaling | N/A by target | Baseline VGA IRQ generation is intentionally not modeled because the target hardware contract does not define one. |
+| Stronger compatibility validation | Partial | Internal diagnostics now cover text, DAC, font upload, planar modes, and timing state; external compatibility suites are still pending. |
+
+## Implemented Areas
 
 - VGA aperture mapping across `0xA0000-0xBFFFF`
 - text memory at `0xB8000`
-- attribute controller, sequencer, graphics controller, CRTC, misc-output, and DAC port surfaces
-- BIOS-facing mode switching for `03h`, planar graphics modes, and `13h`
-- DAC palette read/write sequencing
-- hardware cursor state from CRTC registers
-- host-side overlay rendering for emulator faults and diagnostics
+- sequencer, graphics controller, attribute controller, CRTC, misc-output, DAC, and status-register access
+- mode-driven rendering for text, planar graphics, and chained `13h`
+- plane-`2` font-backed text rendering
+- blink vs. background-intensity text attribute handling
+- start-address scrolling and hardware cursor state
+- host-only overlay output for emulator faults and diagnostics
 
-## Guest-Visible Modes
+## Remaining Gaps
 
-The active BIOS path is currently wired for:
+- Full IBM VGA timing is still approximated, not cycle-accurate.
+- Plane / odd-even corner cases and font-map selection are narrower than a full hardware implementation.
+- No external VGA conformance suite is wired into the repo yet.
+- The built-in default font is still a synthesized fallback until overwritten by guest font upload.
 
-- `03h`: `80x25` text mode
-- `0Dh`, `0Eh`, `10h`: planar graphics class
-- `13h`: `320x200x256`
+## Validation
 
-The host surface is `640x400`:
+Current internal diagnostics cover:
 
-- text mode is rasterized as `80x25` cells with `8x16` output cells
-- `320x200` graphics modes are scan-doubled to `640x400`
-
-## Host Integration
-
-Host-side emulator messages do not directly mutate guest VGA state.
-
-Instead, the device exposes a narrow host-only overlay API:
-
-- `hostClear`
-- `hostWrite`
-- `hostWriteLine`
-- `clearHostOverlay`
-
-This keeps emulator faults visible even when guest VGA state is invalid.
-
-## Current Limitations
-
-The adapter is much closer to a hardware-facing VGA path than the older pseudo-console version, but it is not yet a full cycle-accurate VGA.
-
-Known limitations:
-
-- The glyph ROM is still an approximated built-in font rather than a dumped IBM VGA font ROM.
-- Register coverage is focused on the mode/control surfaces needed by the current x86 boot path.
-- Full CRTC timing is not cycle-accurate beyond frame pacing and a simple retrace bit.
-- Planar write behavior is simplified compared with full VGA write-mode edge cases.
-- Font upload through plane `2` is not implemented yet.
-- No VGA IRQ is generated in the current machine model.
-
-## Recommended Validation
-
-Useful validation for the current implementation:
-
-- text writes at `0xB8000`
-- CRTC cursor register behavior
+- text memory writes at `0xB8000`
+- CRTC cursor behavior
 - DAC read/write sequencing
-- mode `13h` byte access through the VGA aperture
+- mode `13h` aperture byte access
+- plane `2` font upload/readback
+- planar write-mode and latch behavior
+- timing status transitions across display-enable and retrace windows
 
-Future validation should add:
+Recommended next validation:
 
-- planar write-mode compliance tests
-- attribute-controller palette tests
-- font-plane upload tests
-- CRTC start-address and panning tests
+- run dedicated VGA register/mode conformance programs
+- add explicit font-render regression images
+- add planar write-mode reference cases from known VGA test software

@@ -340,6 +340,17 @@ function VgaAdapter.new(config)
 		defaultAttr = 0x0C,
 	}
 	clearCells(self._hostOverlay.cells, config.TEXT_COLS * config.TEXT_ROWS, self._hostOverlay.defaultAttr)
+	self._latch = { [0] = 0, [1] = 0, [2] = 0, [3] = 0 }
+	self._fontHeight = 16
+	self._timing = {
+		elapsed = 0,
+		frameTime = 1 / 70,
+		lineTime = 1 / (70 * 449),
+		currentLine = 0,
+		currentColumn = 0,
+		inDisplayEnable = true,
+		inVerticalRetrace = false,
+	}
 	self._dirty = true
 
 	self.stats = {
@@ -357,6 +368,20 @@ function VgaAdapter.new(config)
 
 	self:biosSetVideoMode(0x03)
 	self:clearHostOverlay()
+	for code = 0, 255 do
+		local glyph = getGlyph(code)
+		local base = code * 32
+		for row = 0, 15 do
+			local sourceRow = glyph[math.floor(row / 2) + 1] or 0
+			local bits = 0
+			for col = 0, 3 do
+				if bit32.band(sourceRow, bit32.lshift(1, 3 - col)) ~= 0 then
+					bits = bit32.bor(bits, bit32.lshift(1, 7 - col * 2), bit32.lshift(1, 6 - col * 2))
+				end
+			end
+			self._planes[2][base + row] = bits
+		end
+	end
 
 	return self
 end
@@ -956,6 +981,196 @@ local function resetAttributePalette(self)
 	self._attribute[0x14] = 0x00
 end
 
+local function overflowBit(reg, bitIndex)
+	return bit32.band(bit32.rshift(reg or 0, bitIndex), 0x01)
+end
+
+local function readVerticalField(self, lowReg, highBitMask, extraBitMask, adjust)
+	local overflow = self._crtc[0x07] or 0
+	local maxScan = self._crtc[0x09] or 0
+	local value = self._crtc[lowReg] or 0
+	if bit32.band(highBitMask, 0x100) ~= 0 and overflowBit(overflow, 0) ~= 0 then
+		value = bit32.bor(value, 0x100)
+	end
+	if bit32.band(highBitMask, 0x200) ~= 0 and overflowBit(overflow, 5) ~= 0 then
+		value = bit32.bor(value, 0x200)
+	end
+	if bit32.band(extraBitMask or 0, 0x200) ~= 0 and overflowBit(maxScan, 5) ~= 0 then
+		value = bit32.bor(value, 0x200)
+	end
+	return value + (adjust or 0)
+end
+
+local function fontByte(self, charCode, row)
+	local offset = ((tonumber(charCode) or 0) % 256) * 32 + ((tonumber(row) or 0) % 32)
+	return self._planes[2][offset] or 0
+end
+
+local function updateTimingState(self)
+	local charWidth = 8
+	local clockSelect = bit32.band(bit32.rshift(self._miscOutput or 0, 2), 0x03)
+	local dotClock = (clockSelect == 1 or clockSelect == 3) and 28322000 or 25175000
+	local horizontalTotal = ((self._crtc[0x00] or 0) + 5)
+	local horizontalDisplay = ((self._crtc[0x01] or 0) + 1)
+	local verticalTotal = readVerticalField(self, 0x06, 0x300, 0x200, 2)
+	local verticalDisplay = readVerticalField(self, 0x12, 0x300, 0, 1)
+	local verticalRetraceStart = readVerticalField(self, 0x10, 0x300, 0, 0)
+	local verticalRetraceEnd = (self._crtc[0x11] or 0) % 16
+
+	horizontalTotal = math.max(1, horizontalTotal)
+	horizontalDisplay = math.max(1, math.min(horizontalDisplay, horizontalTotal))
+	verticalTotal = math.max(1, verticalTotal)
+	verticalDisplay = math.max(1, math.min(verticalDisplay, verticalTotal))
+
+	local lineTime = (horizontalTotal * charWidth) / dotClock
+	local frameTime = lineTime * verticalTotal
+	self._timing.lineTime = lineTime
+	self._timing.frameTime = frameTime
+
+	local elapsed = self._timing.elapsed % frameTime
+	local currentLine = math.floor(elapsed / lineTime)
+	local currentColumn = math.floor(((elapsed % lineTime) / lineTime) * horizontalTotal)
+	local inVretrace = currentLine >= verticalRetraceStart
+		and currentLine <= math.min(verticalTotal - 1, verticalRetraceStart + verticalRetraceEnd)
+	local inDisplay = currentLine < verticalDisplay and currentColumn < horizontalDisplay
+
+	self._timing.currentLine = currentLine
+	self._timing.currentColumn = currentColumn
+	self._timing.inVerticalRetrace = inVretrace
+	self._timing.inDisplayEnable = inDisplay
+end
+
+local function decodeWindow(self, address)
+	local mapSelect = bit32.rshift(bit32.band(self._graphics[0x06] or 0, 0x0C), 2)
+	if mapSelect == 0 then
+		if address < 0 or address >= 0x20000 then
+			return nil
+		end
+		return address
+	elseif mapSelect == 1 then
+		if address < 0 or address >= 0x10000 then
+			return nil
+		end
+		return address
+	elseif mapSelect == 2 then
+		if address < 0x10000 or address >= 0x18000 then
+			return nil
+		end
+		return address - 0x10000
+	end
+	if address < 0x18000 or address >= 0x20000 then
+		return nil
+	end
+	return address - 0x18000
+end
+
+local function isTextState(self)
+	return bit32.band(self._attribute[0x10] or 0, 0x01) == 0 and bit32.band(self._graphics[0x06] or 0, 0x01) == 0
+end
+
+local function isChain4State(self)
+	return bit32.band(self._sequencer[0x04] or 0, 0x04) ~= 0 and bit32.band(self._graphics[0x05] or 0, 0x40) ~= 0
+end
+
+local function loadLatches(self, planeOffset)
+	local offset = (tonumber(planeOffset) or 0) % self._planeSize
+	for plane = 0, 3 do
+		self._latch[plane] = self._planes[plane][offset] or 0
+	end
+	return offset
+end
+
+local function rotateRight8(value, count)
+	local shift = (tonumber(count) or 0) % 8
+	local byteValue = (tonumber(value) or 0) % 256
+	if shift == 0 then
+		return byteValue
+	end
+	return bit32.band(bit32.bor(bit32.rshift(byteValue, shift), bit32.lshift(byteValue, 8 - shift)), 0xFF)
+end
+
+local function applyRasterOp(func, source, latch)
+	if func == 1 then
+		return bit32.band(source, latch)
+	elseif func == 2 then
+		return bit32.bor(source, latch)
+	elseif func == 3 then
+		return bit32.bxor(source, latch)
+	end
+	return source
+end
+
+local function fullByte(bitValue)
+	return bitValue ~= 0 and 0xFF or 0x00
+end
+
+local function planarRead(self, apertureOffset)
+	local offset = loadLatches(self, apertureOffset)
+	local readMode = bit32.band(bit32.rshift(self._graphics[0x05] or 0, 3), 0x01)
+	if readMode == 0 then
+		local selectedPlane = bit32.band(self._graphics[0x04] or 0, 0x03)
+		return self._planes[selectedPlane][offset] or 0
+	end
+
+	local colorCompare = self._graphics[0x02] or 0
+	local colorDontCare = self._graphics[0x07] or 0x0F
+	local result = 0
+	for bitIndex = 0, 7 do
+		local pixelColor = 0
+		for plane = 0, 3 do
+			local planeBit = bit32.band(bit32.rshift(self._latch[plane], 7 - bitIndex), 0x01)
+			pixelColor = bit32.bor(pixelColor, bit32.lshift(planeBit, plane))
+		end
+		if bit32.band(pixelColor, colorDontCare) == bit32.band(colorCompare, colorDontCare) then
+			result = bit32.bor(result, bit32.lshift(1, 7 - bitIndex))
+		end
+	end
+	return result
+end
+
+local function planarWrite(self, apertureOffset, value)
+	local offset = loadLatches(self, apertureOffset)
+	local mapMask = self._sequencer[0x02] or 0x0F
+	local writeMode = bit32.band(self._graphics[0x05] or 0, 0x03)
+	local rotateCount = bit32.band(self._graphics[0x03] or 0, 0x07)
+	local logicalOp = bit32.band(bit32.rshift(self._graphics[0x03] or 0, 3), 0x03)
+	local bitMask = self._graphics[0x08] or 0xFF
+	local setReset = self._graphics[0x00] or 0
+	local enableSetReset = self._graphics[0x01] or 0
+	local rotated = rotateRight8(value, rotateCount)
+
+	for plane = 0, 3 do
+		local planeMask = bit32.lshift(1, plane)
+		if bit32.band(mapMask, planeMask) ~= 0 then
+			local latch = self._latch[plane]
+			local source = rotated
+			local writeMask = bitMask
+
+			if writeMode == 0 then
+				if bit32.band(enableSetReset, planeMask) ~= 0 then
+					source = fullByte(bit32.band(bit32.rshift(setReset, plane), 0x01))
+				end
+				source = applyRasterOp(logicalOp, source, latch)
+			elseif writeMode == 1 then
+				source = latch
+				writeMask = 0xFF
+			elseif writeMode == 2 then
+				source = fullByte(bit32.band(bit32.rshift(value, plane), 0x01))
+				source = applyRasterOp(logicalOp, source, latch)
+			else
+				source = fullByte(bit32.band(bit32.rshift(setReset, plane), 0x01))
+				writeMask = bit32.band(rotated, bitMask)
+				source = applyRasterOp(logicalOp, source, latch)
+			end
+
+			self._planes[plane][offset] = bit32.bor(
+				bit32.band(source, writeMask),
+				bit32.band(latch, bit32.band(bit32.bnot(writeMask), 0xFF))
+			)
+		end
+	end
+end
+
 local function syncTextCellFromPlanes(self, cellIdx)
 	local idx = cellIdx % math.max(1, self._textCellCount)
 	self._textBuf[idx] = {
@@ -1078,7 +1293,17 @@ function VgaAdapter:_renderHardwareText()
 
 			local fg = self:_attributeColor(fgIndex)
 			local bg = self:_attributeColor(bgIndex)
-			self:drawChar(col * self.CW, row * self.CH, cell.char or 32, suppressGlyph and bg or fg, bg)
+			local charCode = cell.char or 32
+			for glyphRow = 0, self._fontHeight - 1 do
+				local rowBits = fontByte(self, charCode, glyphRow)
+				local py = row * self.CH + glyphRow
+				local base = py * self.W
+				for glyphCol = 0, 7 do
+					local mask = bit32.lshift(1, 7 - glyphCol)
+					local on = bit32.band(rowBits, mask) ~= 0
+					self._framebuf[base + col * self.CW + glyphCol] = (not suppressGlyph and on) and fg or bg
+				end
+			end
 
 			local drawCursor = (not cursorDisabled)
 				and self._cursorVisible
@@ -1352,8 +1577,8 @@ function VgaAdapter:attachBus(bus)
 	end, "VGA CRTC Data")
 	bus:registerPort(self.config.PORT.VGA_INPUT_STATUS1, function()
 		self._attrFlipFlop = false
-		local framePhase = (os.clock() % self._frameInterval) / self._frameInterval
-		self._status1 = framePhase >= 0.92 and 0x08 or 0x01
+		updateTimingState(self)
+		self._status1 = (self._timing.inVerticalRetrace and 0x08 or 0x00) + (self._timing.inDisplayEnable and 0x00 or 0x01)
 		return self._status1
 	end, nil, "VGA Input Status 1")
 end
@@ -1361,10 +1586,8 @@ end
 function VgaAdapter:memRead(offset)
 	self.stats.vramReads = self.stats.vramReads + 1
 	local address = (tonumber(offset) or 0) % self._apertureSize
-	if self.mode == "TEXT" then
-		if address < self._textBaseOffset or address >= self._textBaseOffset + self._textByteCount then
-			return 0xFF
-		end
+	local apertureOffset = decodeWindow(self, address)
+	if isTextState(self) and address >= self._textBaseOffset and address < self._textBaseOffset + self._textByteCount then
 		local textOffset = address - self._textBaseOffset
 		local cellIdx = math.floor(textOffset / 2) % math.max(1, self._textCellCount)
 		if textOffset % 2 == 0 then
@@ -1372,15 +1595,16 @@ function VgaAdapter:memRead(offset)
 		end
 		return self._planes[1][cellIdx] or 0x07
 	end
-
-	if self.mode == "MODE13" then
-		local plane = address % 4
-		local planeOffset = math.floor(address / 4) % self._planeSize
-		return self._planes[plane][planeOffset] or 0
+	if apertureOffset == nil then
+		return 0xFF
 	end
 
-	local planeOffset = address % self._planeSize
-	return self._planes[0][planeOffset] or 0
+	if isChain4State(self) then
+		local plane = apertureOffset % 4
+		local planeOffset = math.floor(apertureOffset / 4) % self._planeSize
+		return self._planes[plane][planeOffset] or 0
+	end
+	return planarRead(self, apertureOffset % self._planeSize)
 end
 
 function VgaAdapter:memWrite(offset, value)
@@ -1388,10 +1612,7 @@ function VgaAdapter:memWrite(offset, value)
 	local address = (tonumber(offset) or 0) % self._apertureSize
 	local byteValue = (tonumber(value) or 0) % 256
 
-	if self.mode == "TEXT" then
-		if address < self._textBaseOffset or address >= self._textBaseOffset + self._textByteCount then
-			return
-		end
+	if isTextState(self) and address >= self._textBaseOffset and address < self._textBaseOffset + self._textByteCount then
 		local textOffset = address - self._textBaseOffset
 		local cellIdx = math.floor(textOffset / 2) % math.max(1, self._textCellCount)
 		if textOffset % 2 == 0 then
@@ -1404,14 +1625,17 @@ function VgaAdapter:memWrite(offset, value)
 		self._dirty = true
 		return
 	end
+	local apertureOffset = decodeWindow(self, address)
+	if apertureOffset == nil then
+		return
+	end
 
-	if self.mode == "MODE13" then
-		local plane = address % 4
-		local planeOffset = math.floor(address / 4) % self._planeSize
+	if isChain4State(self) then
+		local plane = apertureOffset % 4
+		local planeOffset = math.floor(apertureOffset / 4) % self._planeSize
 		self._planes[plane][planeOffset] = byteValue
 	else
-		local planeOffset = address % self._planeSize
-		self._planes[0][planeOffset] = byteValue
+		planarWrite(self, apertureOffset % self._planeSize, byteValue)
 	end
 	self._dirty = true
 end
@@ -1527,9 +1751,9 @@ function VgaAdapter:flush(presentFn)
 		return
 	end
 
-	if self.mode == "TEXT" then
+	if isTextState(self) then
 		self:_renderHardwareText()
-	elseif self.mode == "MODE13" then
+	elseif isChain4State(self) then
 		self:_renderMode13()
 	else
 		self:_renderPlanar()
@@ -1549,6 +1773,11 @@ end
 
 function VgaAdapter:present(presentFn)
 	self:flush(presentFn)
+end
+
+function VgaAdapter:tick(dt)
+	self._timing.elapsed = self._timing.elapsed + math.max(0, tonumber(dt) or 0)
+	updateTimingState(self)
 end
 
 function VgaAdapter:getStats()

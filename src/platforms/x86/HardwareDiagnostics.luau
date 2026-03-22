@@ -258,6 +258,147 @@ local function testVGA(machine, config)
 		)
 end
 
+local function testVGAFontPlane(machine, config)
+	local bus = machine.bus
+	local gpu = machine.gpu
+	local graphicsBase = ((config.X86 or {}).VIDEO_BASE) or config.VRAM_BASE or 0xA0000
+	local busStats = copyStats(bus)
+	local gpuStats = copyStats(gpu)
+	local savedGraphics = deepCopy(gpu._graphics)
+	local savedSeq = deepCopy(gpu._sequencer)
+	local targetChar = 65
+	local targetOffset = targetChar * 32
+	local original = {}
+
+	for row = 0, 15 do
+		bus:portWrite(config.PORT.VGA_SEQ_INDEX, 0x02)
+		bus:portWrite(config.PORT.VGA_SEQ_DATA, 0x04)
+		bus:portWrite(config.PORT.VGA_GC_INDEX, 0x06)
+		bus:portWrite(config.PORT.VGA_GC_DATA, 0x00)
+		bus:portWrite(config.PORT.VGA_GC_INDEX, 0x04)
+		bus:portWrite(config.PORT.VGA_GC_DATA, 0x02)
+		original[row] = bus:memRead(graphicsBase + targetOffset + row)
+	end
+
+	for row = 0, 15 do
+		bus:memWrite(graphicsBase + targetOffset + row, (row % 2 == 0) and 0x18 or 0x3C)
+	end
+
+	local uploaded = {}
+	for row = 0, 15 do
+		uploaded[row] = bus:memRead(graphicsBase + targetOffset + row)
+	end
+
+	for row = 0, 15 do
+		bus:memWrite(graphicsBase + targetOffset + row, original[row] or 0)
+	end
+
+	gpu._graphics = deepCopy(savedGraphics)
+	gpu._sequencer = deepCopy(savedSeq)
+	restoreStats(gpu, gpuStats)
+	restoreStats(bus, busStats)
+
+	local passed = true
+	for row = 0, 15 do
+		local expected = (row % 2 == 0) and 0x18 or 0x3C
+		if uploaded[row] ~= expected then
+			passed = false
+			break
+		end
+	end
+	return passed, string.format("font_plane_char=%d row0=%s row1=%s", targetChar, formatHex(uploaded[0]), formatHex(uploaded[1]))
+end
+
+local function testVGAPlanar(machine, config)
+	local bus = machine.bus
+	local gpu = machine.gpu
+	local graphicsBase = ((config.X86 or {}).VIDEO_BASE) or config.VRAM_BASE or 0xA0000
+	local busStats = copyStats(bus)
+	local gpuStats = copyStats(gpu)
+	local savedGraphics = deepCopy(gpu._graphics)
+	local savedSeq = deepCopy(gpu._sequencer)
+
+	gpu:biosSetVideoMode(0x0D)
+	bus:portWrite(config.PORT.VGA_SEQ_INDEX, 0x02)
+	bus:portWrite(config.PORT.VGA_SEQ_DATA, 0x0F)
+	bus:portWrite(config.PORT.VGA_GC_INDEX, 0x08)
+	bus:portWrite(config.PORT.VGA_GC_DATA, 0xFF)
+	bus:portWrite(config.PORT.VGA_GC_INDEX, 0x03)
+	bus:portWrite(config.PORT.VGA_GC_DATA, 0x00)
+	bus:portWrite(config.PORT.VGA_GC_INDEX, 0x05)
+	bus:portWrite(config.PORT.VGA_GC_DATA, 0x00)
+	bus:memWrite(graphicsBase, 0xA5)
+
+	bus:portWrite(config.PORT.VGA_GC_INDEX, 0x04)
+	bus:portWrite(config.PORT.VGA_GC_DATA, 0x00)
+	local plane0 = bus:memRead(graphicsBase)
+
+	bus:portWrite(config.PORT.VGA_GC_INDEX, 0x05)
+	bus:portWrite(config.PORT.VGA_GC_DATA, 0x01)
+	bus:memWrite(graphicsBase, 0x00)
+	bus:portWrite(config.PORT.VGA_GC_INDEX, 0x05)
+	bus:portWrite(config.PORT.VGA_GC_DATA, 0x00)
+	local plane0AfterMode1 = bus:memRead(graphicsBase)
+
+	bus:portWrite(config.PORT.VGA_GC_INDEX, 0x00)
+	bus:portWrite(config.PORT.VGA_GC_DATA, 0x0F)
+	bus:portWrite(config.PORT.VGA_GC_INDEX, 0x01)
+	bus:portWrite(config.PORT.VGA_GC_DATA, 0x0F)
+	bus:portWrite(config.PORT.VGA_GC_INDEX, 0x08)
+	bus:portWrite(config.PORT.VGA_GC_DATA, 0xF0)
+	bus:portWrite(config.PORT.VGA_GC_INDEX, 0x05)
+	bus:portWrite(config.PORT.VGA_GC_DATA, 0x00)
+	bus:memWrite(graphicsBase, 0x00)
+	local setResetPlane0 = bus:memRead(graphicsBase)
+
+	gpu._graphics = deepCopy(savedGraphics)
+	gpu._sequencer = deepCopy(savedSeq)
+	restoreStats(gpu, gpuStats)
+	restoreStats(bus, busStats)
+
+	local passed = plane0 == 0xA5 and plane0AfterMode1 == 0xA5 and setResetPlane0 == 0xF5
+	return passed,
+		string.format(
+			"plane0=%s mode1=%s setreset=%s",
+			formatHex(plane0),
+			formatHex(plane0AfterMode1),
+			formatHex(setResetPlane0)
+		)
+end
+
+local function testVGATiming(machine, _config)
+	local gpu = machine.gpu
+	local bus = machine.bus
+	local gpuStats = copyStats(gpu)
+	local elapsed = gpu._timing.elapsed
+	local sawDisplay = false
+	local sawRetrace = false
+
+	for _ = 1, 256 do
+		gpu:tick((gpu._timing.frameTime or (1 / 70)) / 256)
+		local status = bus:portRead(machine.config.PORT.VGA_INPUT_STATUS1)
+		if bit32.band(status, 0x08) ~= 0 then
+			sawRetrace = true
+		end
+		if bit32.band(status, 0x01) == 0 then
+			sawDisplay = true
+		end
+	end
+
+	gpu._timing.elapsed = elapsed
+	gpu:tick(0)
+	restoreStats(gpu, gpuStats)
+
+	return sawDisplay and sawRetrace,
+		string.format(
+			"display_enable=%s vertical_retrace=%s line=%d column=%d",
+			tostring(sawDisplay),
+			tostring(sawRetrace),
+			gpu._timing.currentLine or -1,
+			gpu._timing.currentColumn or -1
+		)
+end
+
 local function testKeyboard(machine, config)
 	local bus = machine.bus
 	local keyboard = machine.keyboard
@@ -457,6 +598,15 @@ function HardwareDiagnostics.run(machine, config)
 		end),
 		wrapTest("vga", function()
 			return testVGA(machine, config)
+		end),
+		wrapTest("vga_font_plane", function()
+			return testVGAFontPlane(machine, config)
+		end),
+		wrapTest("vga_planar_modes", function()
+			return testVGAPlanar(machine, config)
+		end),
+		wrapTest("vga_timing", function()
+			return testVGATiming(machine, config)
 		end),
 		wrapTest("keyboard", function()
 			return testKeyboard(machine, config)
