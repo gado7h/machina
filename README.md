@@ -18,6 +18,8 @@ Rendering is handled through a virtual VGA device with text and pixel modes, dis
 
 The locked emulator target and subsystem acceptance criteria are documented in [`docs/TARGET_MACHINE.md`](docs/TARGET_MACHINE.md).
 
+CPU behavior coverage and guest-visible CPU validation images are documented in [`docs/CPU80386_CHECKLIST.md`](docs/CPU80386_CHECKLIST.md).
+
 VGA fidelity and current implementation limits are documented in [`docs/VGA_EMULATION.md`](docs/VGA_EMULATION.md).
 
 MachinaOS is the default environment, providing a minimal operating system layer for interacting with the emulated hardware and experimenting with low-level software.
@@ -227,3 +229,9 @@ end
 
 main()
 ```
+
+Notes about diagnostics and validations
+
+- Internal hardware self-tests remain available through `HardwareDiagnostics.run(...)`.
+- Heavy guest-image CPU validation runners that were previously exposed via `HardwareDiagnostics.runGuestCPUValidations(...)` and `HardwareDiagnostics.runReviewSuite(...)` have been removed from the HardwareDiagnostics module. The repository still contains guest-visible VGA validation images (text, mode13, planar, font, palette) and internal diagnostics, but the review-only guest-image validation runners are no longer present in the default code paths.
+
