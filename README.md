@@ -16,6 +16,8 @@ A runtime-assembled BIOS initializes the system, provides interrupt services (vi
 
 Rendering is handled through a virtual VGA device with text and pixel modes, displayed via Roblox UI primitives. Input is translated into hardware-level keyboard signals, and system state can be observed through a live interface.
 
+The locked emulator target and subsystem acceptance criteria are documented in [`docs/TARGET_MACHINE.md`](docs/TARGET_MACHINE.md).
+
 VGA fidelity and current implementation limits are documented in [`docs/VGA_EMULATION.md`](docs/VGA_EMULATION.md).
 
 MachinaOS is the default environment, providing a minimal operating system layer for interacting with the emulated hardware and experimenting with low-level software.
