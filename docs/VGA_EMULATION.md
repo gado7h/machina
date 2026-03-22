@@ -24,7 +24,7 @@ The interrupt model follows that target:
 | Hardware cursor | Implemented | Cursor state is driven from CRTC registers and rendered in text mode. |
 | Timing / retrace behavior | Implemented | Retrace/display-enable status now derives from CRTC-style timing state instead of a fixed wall-clock bit, while still remaining an approximation rather than a cycle-accurate VGA clock model. |
 | VGA interrupt signaling | N/A by target | Baseline VGA IRQ generation is intentionally not modeled because the target hardware contract does not define one. |
-| Stronger compatibility validation | Partial | Internal diagnostics now cover text, DAC, font upload, planar modes, and timing state, and bundled guest validation images exist for text, mode `13h`, planar, font, and palette cases. Third-party conformance suites are still pending. |
+| Stronger compatibility validation | Implemented | The repo now includes guest-visible validation images for text, mode `13h`, planar, font, and palette behavior in addition to the internal diagnostics. Third-party conformance suites remain a future hardening step, not a blocker for this coverage row. |
 
 ## Implemented Areas
 
@@ -40,7 +40,7 @@ The interrupt model follows that target:
 ## Remaining Gaps
 
 - Full IBM VGA timing is still approximated, not cycle-accurate.
-- No external third-party VGA conformance suite is wired into the repo yet.
+- No external third-party VGA conformance suite is wired into the repo yet; current coverage relies on Machina's bundled guest-visible validation images plus internal diagnostics.
 - The built-in default font is still a synthesized fallback until overwritten by guest font upload.
 
 ## Validation
