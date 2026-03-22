@@ -40,8 +40,8 @@ Privilege behavior in Machina's current target is therefore intentionally narrow
 
 ### Reset / Real Mode
 
-- [ ] reset vector execution at `F000:FFF0`
-- [ ] real-mode segment:offset translation
+- [x] reset vector execution at `F000:FFF0`
+- [x] real-mode segment:offset translation
 - [ ] BIOS boot path runs without host-side shortcuts
 
 ### Operand / Address Size
@@ -94,8 +94,8 @@ Privilege behavior in Machina's current target is therefore intentionally narrow
 ### Interrupts / Exceptions
 
 - [x] software interrupt dispatch through IDT
-- [ ] hardware interrupt dispatch through IDT
-- [ ] interrupt vs trap gate IF behavior
+- [x] hardware interrupt dispatch through IDT
+- [x] interrupt vs trap gate IF behavior
 - [x] invalid opcode exception path for unsupported opcodes
 - [x] stack frame shape matches the implemented ring-`0` gate width
 
