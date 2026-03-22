@@ -3,22 +3,6 @@
 local PhysicalMemory = {}
 PhysicalMemory.__index = PhysicalMemory
 
-local function pageSizeFor(config)
-	return config.PAGE_SIZE or 4096
-end
-
-local function markDirtyRange(self, offset, length)
-	local pageSize = pageSizeFor(self.config)
-	if pageSize <= 0 or length <= 0 then
-		return
-	end
-	local firstPage = math.floor(offset / pageSize)
-	local lastPage = math.floor((offset + length - 1) / pageSize)
-	for page = firstPage, lastPage do
-		self._dirty[page] = true
-	end
-end
-
 function PhysicalMemory.new(config)
 	local self = setmetatable({}, PhysicalMemory)
 	self.config = config
@@ -39,7 +23,9 @@ end
 function PhysicalMemory:memWrite(offset, value)
 	self.stats.writes = self.stats.writes + 1
 	self._mem[offset] = value % 256
-	markDirtyRange(self, offset, 1)
+	-- mark page dirty
+	local page = math.floor(offset / self.config.PAGE_SIZE)
+	self._dirty[page] = true
 end
 
 function PhysicalMemory:readRegion(offset, length)
@@ -51,20 +37,17 @@ function PhysicalMemory:readRegion(offset, length)
 end
 
 function PhysicalMemory:writeRegion(offset, bytes)
-	local length = #bytes
 	for i, b in ipairs(bytes) do
 		self._mem[offset + i - 1] = b % 256
 	end
-	self.stats.writes = self.stats.writes + length
-	markDirtyRange(self, offset, length)
+	local page = math.floor(offset / self.config.PAGE_SIZE)
+	self._dirty[page] = true
 end
 
 function PhysicalMemory:clear(offset, length)
 	for i = 0, length - 1 do
 		self._mem[offset + i] = 0
 	end
-	self.stats.writes = self.stats.writes + length
-	markDirtyRange(self, offset, length)
 end
 
 function PhysicalMemory:getUsedBytes()

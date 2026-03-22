@@ -62,7 +62,6 @@ function BootController:startBoot()
 			)
 		end
 		self.machine.cpu:reset()
-		self.machine.gpu:biosSetVideoMode(0x03)
 	end
 	if self.machine.bus and self.machine.bus.timer then
 		self.machine.bus.timer._enabled = true

@@ -177,8 +177,6 @@ function Uart8250:_writeFCR(v)
 		self._rxFifo = {}
 		self._lsr = bit32.band(self._lsr, bit32.bnot(LSR_DATA_READY))
 	end
-	self._irqPending = false
-	self:_updateIRQ()
 end
 
 function Uart8250:_readLSR()

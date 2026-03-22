@@ -92,58 +92,6 @@ local function findMapping(self, addr)
 	return nil
 end
 
-local function rawPortRead(self, port, width)
-	local h = self._portmap[port]
-	if not h then
-		return nil
-	end
-	if width == 1 and h.read then
-		local ok, value = pcall(h.read)
-		if ok then
-			return (tonumber(value) or 0) % 0x100
-		end
-	elseif width == 2 and h.read16 then
-		local ok, value = pcall(h.read16)
-		if ok then
-			return (tonumber(value) or 0) % 0x10000
-		end
-	elseif width == 4 and h.read32 then
-		local ok, value = pcall(h.read32)
-		if ok then
-			return (tonumber(value) or 0) % 0x100000000
-		end
-	end
-	return nil
-end
-
-local function rawPortWrite(self, port, value, width)
-	local h = self._portmap[port]
-	if not h then
-		return false
-	end
-	local masked = tonumber(value) or 0
-	if width == 1 and h.write then
-		local ok, err = pcall(h.write, masked % 0x100)
-		if not ok then
-			self:_setFault("port-write-fault", port, "out", err)
-		end
-		return true
-	elseif width == 2 and h.write16 then
-		local ok, err = pcall(h.write16, masked % 0x10000)
-		if not ok then
-			self:_setFault("port-write-fault", port, "out16", err)
-		end
-		return true
-	elseif width == 4 and h.write32 then
-		local ok, err = pcall(h.write32, masked % 0x100000000)
-		if not ok then
-			self:_setFault("port-write-fault", port, "out32", err)
-		end
-		return true
-	end
-	return false
-end
-
 function SystemBus:_setFault(kind, addr, op, detail)
 	self.stats.faults = self.stats.faults + 1
 	self._fault = {
@@ -245,58 +193,83 @@ end
 
 function SystemBus:portRead(port)
 	self.stats.portReads = self.stats.portReads + 1
-	local value = rawPortRead(self, port, 1)
-	if value ~= nil then
-		return value
+	local h = self._portmap[port]
+	if h and h.read then
+		local ok, value = pcall(h.read)
+		if ok then
+			return (tonumber(value) or 0) % 256
+		end
 	end
 	return 0xFF
 end
 
 function SystemBus:portWrite(port, value)
 	self.stats.portWrites = self.stats.portWrites + 1
-	rawPortWrite(self, port, value, 1)
+	local h = self._portmap[port]
+	if h and h.write then
+		local ok, err = pcall(h.write, (tonumber(value) or 0) % 256)
+		if not ok then
+			self:_setFault("port-write-fault", port, "out", err)
+		end
+	end
 end
 
 function SystemBus:portRead16(port)
 	self.stats.portReads = self.stats.portReads + 1
-	local value = rawPortRead(self, port, 2)
-	if value ~= nil then
-		return value
+	local h = self._portmap[port]
+	if h and h.read16 then
+		local ok, value = pcall(h.read16)
+		if ok then
+			return (tonumber(value) or 0) % 0x10000
+		end
 	end
-	local lo = rawPortRead(self, port, 1) or 0xFF
-	local hi = rawPortRead(self, port + 1, 1) or 0xFF
+	local lo = self:portRead(port)
+	local hi = self:portRead(port + 1)
 	return lo + hi * 0x100
 end
 
 function SystemBus:portWrite16(port, value)
 	self.stats.portWrites = self.stats.portWrites + 1
+	local h = self._portmap[port]
 	local masked = (tonumber(value) or 0) % 0x10000
-	if rawPortWrite(self, port, masked, 2) then
+	if h and h.write16 then
+		local ok, err = pcall(h.write16, masked)
+		if not ok then
+			self:_setFault("port-write-fault", port, "out16", err)
+		end
 		return
 	end
-	rawPortWrite(self, port, masked % 0x100, 1)
-	rawPortWrite(self, port + 1, math.floor(masked / 0x100) % 0x100, 1)
+	self:portWrite(port, masked % 0x100)
+	self:portWrite(port + 1, math.floor(masked / 0x100) % 0x100)
 end
 
 function SystemBus:portRead32(port)
 	self.stats.portReads = self.stats.portReads + 1
-	local value = rawPortRead(self, port, 4)
-	if value ~= nil then
-		return value
+	local h = self._portmap[port]
+	if h and h.read32 then
+		local ok, value = pcall(h.read32)
+		if ok then
+			return (tonumber(value) or 0) % 0x100000000
+		end
 	end
-	local lo = rawPortRead(self, port, 2) or 0xFFFF
-	local hi = rawPortRead(self, port + 2, 2) or 0xFFFF
+	local lo = self:portRead16(port)
+	local hi = self:portRead16(port + 2)
 	return lo + hi * 0x10000
 end
 
 function SystemBus:portWrite32(port, value)
 	self.stats.portWrites = self.stats.portWrites + 1
+	local h = self._portmap[port]
 	local masked = (tonumber(value) or 0) % 0x100000000
-	if rawPortWrite(self, port, masked, 4) then
+	if h and h.write32 then
+		local ok, err = pcall(h.write32, masked)
+		if not ok then
+			self:_setFault("port-write-fault", port, "out32", err)
+		end
 		return
 	end
-	rawPortWrite(self, port, masked % 0x10000, 2)
-	rawPortWrite(self, port + 2, math.floor(masked / 0x10000) % 0x10000, 2)
+	self:portWrite16(port, masked % 0x10000)
+	self:portWrite16(port + 2, math.floor(masked / 0x10000) % 0x10000)
 end
 
 -- IRQ (Interrupt Request Lines)

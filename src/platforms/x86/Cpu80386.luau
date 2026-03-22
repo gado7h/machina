@@ -9,13 +9,6 @@ local FLAG_ZF = 0x0040
 local FLAG_SF = 0x0080
 local FLAG_IF = 0x0200
 local FLAG_OF = 0x0800
-local FLAG_TF = 0x0100
-
-local VECTOR_UD = 6
-local VECTOR_TS = 10
-local VECTOR_NP = 11
-local VECTOR_SS = 12
-local VECTOR_GP = 13
 
 local REG32 = {
 	"EAX",
@@ -75,7 +68,6 @@ function Cpu80386.new(bus, config)
 	setmetatable(self, Cpu80386)
 	self.gdtr = { base = 0, limit = 0 }
 	self.idtr = { base = 0, limit = 0x03FF }
-	self.tr = { selector = 0, base = 0, limit = 0, present = false, busy = false }
 	self.cr0 = 0x0010
 	self.protectedMode = false
 	self.segCache = {}
@@ -121,7 +113,6 @@ function Cpu80386:reset()
 	}
 	self.gdtr = { base = 0, limit = 0 }
 	self.idtr = { base = 0, limit = 0x03FF }
-	self.tr = { selector = 0, base = 0, limit = 0, present = false, busy = false }
 	self.cr0 = 0x0010
 	self.protectedMode = false
 	self.segCache = {}
@@ -221,7 +212,6 @@ function Cpu80386:getStats()
 	stats.gdtLimit = self.gdtr.limit
 	stats.idtBase = self.idtr.base
 	stats.idtLimit = self.idtr.limit
-	stats.trSelector = self.tr and self.tr.selector or 0
 	stats.eip = self.eip
 	stats.esp = self:getReg32(4)
 	return stats
@@ -513,229 +503,6 @@ function Cpu80386:pop32()
 	return value
 end
 
-function Cpu80386:_currentPrivilegeLevel()
-	if not self.protectedMode then
-		return 0
-	end
-	return bit32.band(self.seg.CS or 0, 0x03)
-end
-
-function Cpu80386:_stackPointer()
-	return self:_stackDefault32() and self:getReg32(4) or self:getReg16(4)
-end
-
-function Cpu80386:_setStackPointer(value, use32Bit)
-	if use32Bit == nil then
-		use32Bit = self:_stackDefault32()
-	end
-	if use32Bit then
-		self:setReg32(4, value)
-	else
-		self:setReg16(4, value % 0x10000)
-	end
-end
-
-function Cpu80386:_makeException(vector, errorCode, message)
-	return {
-		__x86Exception = true,
-		vector = (tonumber(vector) or 0) % 0x100,
-		errorCode = errorCode ~= nil and (tonumber(errorCode) or 0) or nil,
-		message = tostring(message or ("x86 exception " .. tostring(vector))),
-	}
-end
-
-function Cpu80386:_raiseException(vector, errorCode, message)
-	error(self:_makeException(vector, errorCode, message), 0)
-end
-
-function Cpu80386:_segmentFaultVector(segment)
-	if segment == "SS" or segment == self.seg.SS then
-		return VECTOR_SS
-	end
-	return VECTOR_GP
-end
-
-function Cpu80386:_linearFromDescriptor(descriptor, selector, offset, faultVector)
-	if not descriptor then
-		self:_raiseException(faultVector or VECTOR_GP, selector or 0, "missing segment descriptor")
-	end
-	if descriptor.present == false then
-		self:_raiseException(VECTOR_NP, selector or 0, "segment not present")
-	end
-	local logical = tonumber(offset) or 0
-	if logical < 0 or logical > (descriptor.limit or 0xFFFFFFFF) then
-		self:_raiseException(faultVector or VECTOR_GP, selector or 0, "segment limit exceeded")
-	end
-	return (descriptor.base or 0) + logical
-end
-
-function Cpu80386:_readDescriptorMemory(selector, descriptor, offset, width, faultVector)
-	local linear = self:_linearFromDescriptor(descriptor, selector, offset, faultVector)
-	if width == 8 then
-		return self:readPhysical8(linear)
-	elseif width == 16 then
-		return self:readPhysical16(linear)
-	end
-	return self:readPhysical32(linear)
-end
-
-function Cpu80386:_writeDescriptorMemory(selector, descriptor, offset, width, value, faultVector)
-	local linear = self:_linearFromDescriptor(descriptor, selector, offset, faultVector)
-	if width == 8 then
-		self:writePhysical8(linear, value)
-	elseif width == 16 then
-		self:writePhysical16(linear, value)
-	else
-		self:writePhysical32(linear, value)
-	end
-end
-
-function Cpu80386:_pushToDescriptorStack(selector, descriptor, stackWidth32, valueWidth, value)
-	local stackMask = stackWidth32 and 0xFFFFFFFF or 0xFFFF
-	local sp = stackWidth32 and self:getReg32(4) or self:getReg16(4)
-	local nextSp = (sp - (valueWidth / 8)) % 0x100000000
-	if not stackWidth32 then
-		nextSp = nextSp % 0x10000
-	end
-	self:_writeDescriptorMemory(selector, descriptor, nextSp, valueWidth, value, VECTOR_SS)
-	return bit32.band(nextSp, stackMask)
-end
-
-function Cpu80386:_readTss32Field(offset, width)
-	if not self.tr or not self.tr.present then
-		self:_raiseException(VECTOR_TS, 0, "task register is not loaded")
-	end
-	if ((tonumber(offset) or 0) + (width / 8) - 1) > (self.tr.limit or 0) then
-		self:_raiseException(VECTOR_TS, self.tr.selector or 0, "tss limit exceeded")
-	end
-	local address = (self.tr.base or 0) + offset
-	if width == 16 then
-		return self:readPhysical16(address)
-	end
-	return self:readPhysical32(address)
-end
-
-function Cpu80386:_commitDescriptorLoad(name, selector, descriptor)
-	local code = ({ ES = 0, CS = 1, SS = 2, DS = 3 })[name]
-	Cpu8086.setSeg(self, code, selector)
-	self.segCache[name] = descriptor
-end
-
-function Cpu80386:_loadTaskRegister(selector)
-	local descriptor, err = self:_decodeDescriptor(selector)
-	if not descriptor then
-		self:_raiseException(VECTOR_TS, selector or 0, err or "invalid task register selector")
-	end
-	if descriptor.kind ~= "tss32" then
-		self:_raiseException(VECTOR_TS, selector or 0, "ltr requires a 32-bit tss descriptor")
-	end
-	if not descriptor.present then
-		self:_raiseException(VECTOR_NP, selector or 0, "tss descriptor is not present")
-	end
-	self.tr = {
-		selector = bit32.band(selector, 0xFFF8),
-		base = descriptor.base,
-		limit = descriptor.limit,
-		present = true,
-		busy = true,
-	}
-	if descriptor.address then
-		self:writePhysical8(descriptor.address + 5, bit32.bor(bit32.band(descriptor.access or 0, 0xF0), 0x0B))
-	end
-end
-
-function Cpu80386:_resolveCodeSegment(selector, descriptor, reason, requestedCPL)
-	local currentCPL = self:_currentPrivilegeLevel()
-	local rpl = bit32.band(selector or 0, 0x03)
-	local newCPL = requestedCPL
-
-	if not descriptor then
-		self:_raiseException(VECTOR_GP, selector or 0, "missing code descriptor")
-	end
-	if descriptor.present == false then
-		self:_raiseException(VECTOR_NP, selector or 0, "target code segment is not present")
-	end
-	if descriptor.system or not descriptor.executable then
-		self:_raiseException(VECTOR_GP, selector or 0, "control transfer target is not executable")
-	end
-
-	if reason == "interrupt" then
-		if descriptor.conforming then
-			if descriptor.dpl > currentCPL then
-				self:_raiseException(VECTOR_GP, selector or 0, "conforming interrupt target privilege violation")
-			end
-			newCPL = currentCPL
-		else
-			if descriptor.dpl > currentCPL then
-				self:_raiseException(VECTOR_GP, selector or 0, "interrupt target privilege violation")
-			end
-			newCPL = descriptor.dpl
-		end
-	elseif reason == "iret" or reason == "retf" then
-		local returnCPL = requestedCPL or rpl
-		if descriptor.conforming then
-			if descriptor.dpl > returnCPL then
-				self:_raiseException(VECTOR_GP, selector or 0, "invalid conforming return target")
-			end
-			newCPL = returnCPL
-		else
-			if descriptor.dpl ~= returnCPL then
-				self:_raiseException(VECTOR_GP, selector or 0, "invalid return privilege level")
-			end
-			newCPL = returnCPL
-		end
-	else
-		if descriptor.conforming then
-			if descriptor.dpl > currentCPL then
-				self:_raiseException(VECTOR_GP, selector or 0, "conforming code privilege violation")
-			end
-			newCPL = currentCPL
-		else
-			if descriptor.dpl ~= currentCPL or rpl > currentCPL then
-				self:_raiseException(VECTOR_GP, selector or 0, "non-conforming code privilege violation")
-			end
-			newCPL = descriptor.dpl
-		end
-	end
-
-	local loadedSelector = bit32.bor(bit32.band(selector or 0, 0xFFFC), bit32.band(newCPL or 0, 0x03))
-	return loadedSelector, newCPL
-end
-
-function Cpu80386:_loadDataSegmentDescriptor(selector, descriptor, name, desiredCPL)
-	local targetName = name or "DS"
-	local cpl = desiredCPL
-	if cpl == nil then
-		cpl = self:_currentPrivilegeLevel()
-	end
-	local rpl = bit32.band(selector or 0, 0x03)
-
-	if not descriptor then
-		self:_raiseException(self:_segmentFaultVector(targetName), selector or 0, "missing segment descriptor")
-	end
-	if descriptor.present == false then
-		self:_raiseException(targetName == "SS" and VECTOR_SS or VECTOR_NP, selector or 0, "segment not present")
-	end
-	if descriptor.system then
-		self:_raiseException(self:_segmentFaultVector(targetName), selector or 0, "system descriptor cannot be loaded here")
-	end
-
-	if targetName == "SS" then
-		if descriptor.executable or not descriptor.writable or descriptor.dpl ~= cpl or rpl ~= cpl then
-			self:_raiseException(VECTOR_SS, selector or 0, "invalid stack segment")
-		end
-		return bit32.bor(bit32.band(selector or 0, 0xFFFC), bit32.band(cpl, 0x03))
-	end
-
-	if descriptor.executable and not descriptor.readable then
-		self:_raiseException(VECTOR_GP, selector or 0, "execute-only segment cannot be used as data")
-	end
-	if not descriptor.executable and descriptor.dpl < math.max(cpl, rpl) then
-		self:_raiseException(VECTOR_GP, selector or 0, "data segment privilege violation")
-	end
-	return bit32.bor(bit32.band(selector or 0, 0xFFFC), bit32.band(rpl, 0x03))
-end
-
 function Cpu80386:_updateLogicFlags(width, value)
 	local mask = maskForWidth(width)
 	local masked = value % (mask + 1)
@@ -792,69 +559,25 @@ function Cpu80386:_decodeDescriptor(selector)
 	local b6 = self:readPhysical8(baseAddress + 6)
 	local b7 = self:readPhysical8(baseAddress + 7)
 
+	if bit32.band(b5, 0x80) == 0 then
+		return nil, "descriptor not present"
+	end
+
 	local limit = b0 + b1 * 0x100 + bit32.lshift(bit32.band(b6, 0x0F), 16)
 	if bit32.band(b6, 0x80) ~= 0 then
 		limit = limit * 0x1000 + 0x0FFF
 	end
 
 	local base = b2 + b3 * 0x100 + b4 * 0x10000 + b7 * 0x1000000
-	local access = b5
-	local present = bit32.band(access, 0x80) ~= 0
-	local dpl = bit32.band(bit32.rshift(access, 5), 0x03)
-	local system = bit32.band(access, 0x10) == 0
-	local descriptorType = bit32.band(access, 0x0F)
-	local descriptor = {
+	return {
 		selector = value,
-		address = baseAddress,
 		base = base,
 		limit = limit,
-		access = access,
+		access = b5,
 		flags = b6,
-		dpl = dpl,
-		system = system,
-		type = descriptorType,
 		default32 = bit32.band(b6, 0x40) ~= 0,
-		present = present,
-		rpl = bit32.band(value, 0x03),
+		present = true,
 	}
-
-	if not system then
-		descriptor.executable = bit32.band(descriptorType, 0x08) ~= 0
-		descriptor.conforming = descriptor.executable and bit32.band(descriptorType, 0x04) ~= 0
-		descriptor.readable = descriptor.executable and bit32.band(descriptorType, 0x02) ~= 0
-		descriptor.expandDown = (not descriptor.executable) and bit32.band(descriptorType, 0x04) ~= 0
-		descriptor.writable = (not descriptor.executable) and bit32.band(descriptorType, 0x02) ~= 0
-		descriptor.kind = descriptor.executable and "code" or "data"
-		return descriptor
-	end
-
-	if descriptorType == 0x09 or descriptorType == 0x0B then
-		descriptor.kind = "tss32"
-		descriptor.busy = descriptorType == 0x0B
-	elseif descriptorType == 0x04 or descriptorType == 0x0C then
-		descriptor.kind = "call_gate"
-		descriptor.gate32 = descriptorType == 0x0C
-		descriptor.selector = b2 + b3 * 0x100
-		descriptor.offset = b0 + b1 * 0x100 + b6 * 0x10000 + b7 * 0x1000000
-		descriptor.parameterCount = bit32.band(b4, 0x1F)
-	elseif descriptorType == 0x05 then
-		descriptor.kind = "task_gate"
-		descriptor.selector = b2 + b3 * 0x100
-	elseif descriptorType == 0x06 or descriptorType == 0x07 then
-		descriptor.kind = descriptorType == 0x06 and "interrupt_gate" or "trap_gate"
-		descriptor.gate32 = false
-		descriptor.selector = b2 + b3 * 0x100
-		descriptor.offset = b0 + b1 * 0x100
-	elseif descriptorType == 0x0E or descriptorType == 0x0F then
-		descriptor.kind = descriptorType == 0x0E and "interrupt_gate" or "trap_gate"
-		descriptor.gate32 = true
-		descriptor.selector = b2 + b3 * 0x100
-		descriptor.offset = b0 + b1 * 0x100 + b6 * 0x10000 + b7 * 0x1000000
-	else
-		descriptor.kind = "system"
-	end
-
-	return descriptor
 end
 
 function Cpu80386:_segmentCacheFor(segment)
@@ -889,11 +612,19 @@ function Cpu80386:linearAddress(segment, offset)
 	end
 
 	local descriptor = self:_segmentCacheFor(segment)
-	local selector = type(segment) == "string" and self.seg[segment] or segment
-	return self:_linearFromDescriptor(descriptor, selector, offset, self:_segmentFaultVector(segment))
+	if not descriptor then
+		error("segment translation failed for selector " .. tostring(segment))
+	end
+
+	local logical = tonumber(offset) or 0
+	if logical < 0 or logical > (descriptor.limit or 0xFFFFFFFF) then
+		error(string.format("segment limit exceeded selector=%s offset=%X", tostring(segment), logical))
+	end
+	return descriptor.base + logical
 end
 
 function Cpu80386:setSeg(code, value)
+	Cpu8086.setSeg(self, code, value)
 	local name = self:_segmentName(code)
 	if not name then
 		return
@@ -902,19 +633,17 @@ function Cpu80386:setSeg(code, value)
 	if self.protectedMode then
 		local descriptor, err = self:_decodeDescriptor(value)
 		if not descriptor then
-			self:_raiseException(self:_segmentFaultVector(name), value or 0, err or "invalid protected-mode selector")
+			error(err or "invalid protected-mode selector")
 		end
-		local loadedSelector = self:_loadDataSegmentDescriptor(value, descriptor, name)
-		self:_commitDescriptorLoad(name, loadedSelector, descriptor)
+		self.segCache[name] = descriptor
 	else
-		Cpu8086.setSeg(self, code, value)
 		self:_syncRealModeSegment(name)
 	end
 end
 
 function Cpu80386:_loadTableRegister(decoded, target)
 	if decoded.mod == 3 then
-		self:_raiseException(VECTOR_UD, 0, target:upper() .. " requires a memory operand")
+		error(target:upper() .. " requires a memory operand")
 	end
 	local segment, offset = self:_effectiveAddress(decoded)
 	local limit = self:readMem16(segment, offset)
@@ -929,7 +658,7 @@ end
 function Cpu80386:_decodeInterruptGate(vector)
 	local entryOffset = ((tonumber(vector) or 0) % 0x100) * 8
 	if (entryOffset + 7) > (self.idtr.limit or 0) then
-		return nil, "interrupt vector outside idt limit", VECTOR_GP
+		return nil, "interrupt vector outside idt limit"
 	end
 
 	local base = (self.idtr.base or 0) + entryOffset
@@ -939,246 +668,43 @@ function Cpu80386:_decodeInterruptGate(vector)
 	local offsetHi = self:readPhysical16(base + 6)
 	local present = bit32.band(typeAttr, 0x80) ~= 0
 	local gateType = bit32.band(typeAttr, 0x1F)
-	local dpl = bit32.band(bit32.rshift(typeAttr, 5), 0x03)
+	local isSupported = gateType == 0x06 or gateType == 0x07 or gateType == 0x0E or gateType == 0x0F
+	if not present then
+		return nil, "interrupt gate not present"
+	end
+	if not isSupported then
+		return nil, string.format("unsupported protected-mode gate type 0x%02X", gateType)
+	end
 
 	return {
-		vector = (tonumber(vector) or 0) % 0x100,
 		selector = selector,
 		offset = offsetLo + offsetHi * 0x10000,
-		dpl = dpl,
-		present = present,
-		type = gateType,
-		kind = (gateType == 0x06 or gateType == 0x0E) and "interrupt_gate"
-			or ((gateType == 0x07 or gateType == 0x0F) and "trap_gate")
-			or (gateType == 0x05 and "task_gate")
-			or "unsupported",
 		trapGate = gateType == 0x07 or gateType == 0x0F,
 		gate32 = gateType == 0x0E or gateType == 0x0F,
 	}
 end
 
-function Cpu80386:_readFarPointer(decoded, operandWidth)
-	if decoded.mod == 3 then
-		self:_raiseException(VECTOR_UD, 0, "far pointer operand must be in memory")
-	end
-	local segment, offset = self:_effectiveAddress(decoded)
-	local pointerOffset
-	local selectorOffset
-	if operandWidth == 32 then
-		pointerOffset = self:readMem32(segment, offset)
-		selectorOffset = offset + 4
-	else
-		pointerOffset = self:readMem16(segment, offset)
-		selectorOffset = offset + 2
-	end
-	return pointerOffset, self:readMem16(segment, selectorOffset)
-end
-
-function Cpu80386:_applyCodeTransfer(selector, descriptor, offset, reason, requestedCPL)
-	local loadedSelector, newCPL = self:_resolveCodeSegment(selector, descriptor, reason, requestedCPL)
-	self:_commitDescriptorLoad("CS", loadedSelector, descriptor)
-	self:_setInstructionPointer(offset)
-	return newCPL
-end
-
-function Cpu80386:_executeFarJump(selector, offset)
-	if not self.protectedMode then
-		Cpu8086.setSeg(self, 1, selector)
-		self:_syncRealModeSegment("CS")
-		self:_setInstructionPointer(offset)
-		return
-	end
-	local descriptor, err = self:_decodeDescriptor(selector)
-	if not descriptor then
-		self:_raiseException(VECTOR_GP, selector or 0, err or "invalid far jump target")
-	end
-	if descriptor.kind == "task_gate" or descriptor.kind == "tss32" then
-		self:_raiseException(VECTOR_TS, selector or 0, "hardware task switching is not implemented")
-	end
-	if descriptor.kind == "call_gate" then
-		self:_raiseException(VECTOR_GP, selector or 0, "far jumps through call gates are not supported")
-	end
-	self:_applyCodeTransfer(selector, descriptor, offset, "jump")
-end
-
-function Cpu80386:_executeFarCall(selector, offset, operandWidth)
-	if not self.protectedMode then
-		local returnIP = self:_currentIP()
-		if operandWidth == 32 then
-			self:push32(self.seg.CS)
-			self:push32(returnIP)
-		else
-			self:push16(self.seg.CS)
-			self:push16(returnIP % 0x10000)
-		end
-		Cpu8086.setSeg(self, 1, selector)
-		self:_syncRealModeSegment("CS")
-		self:_setInstructionPointer(offset)
-		return
-	end
-	local descriptor, err = self:_decodeDescriptor(selector)
-	if not descriptor then
-		self:_raiseException(VECTOR_GP, selector or 0, err or "invalid far call target")
-	end
-	if descriptor.kind == "task_gate" or descriptor.kind == "tss32" then
-		self:_raiseException(VECTOR_TS, selector or 0, "hardware task switching is not implemented")
-	end
-	if descriptor.kind == "call_gate" then
-		if not descriptor.present then
-			self:_raiseException(VECTOR_NP, selector or 0, "call gate not present")
-		end
-		if descriptor.parameterCount ~= 0 then
-			self:_raiseException(VECTOR_TS, selector or 0, "call gates with parameter copying are not implemented")
-		end
-		local targetDescriptor, targetErr = self:_decodeDescriptor(descriptor.selector)
-		if not targetDescriptor then
-			self:_raiseException(VECTOR_GP, descriptor.selector or 0, targetErr or "invalid call gate target")
-		end
-		offset = descriptor.offset
-		selector = descriptor.selector
-		descriptor = targetDescriptor
-	end
-
-	local returnIP = self:_currentIP()
-	if operandWidth == 32 then
-		self:push32(self.seg.CS)
-		self:push32(returnIP)
-	else
-		self:push16(self.seg.CS)
-		self:push16(returnIP % 0x10000)
-	end
-	self:_applyCodeTransfer(selector, descriptor, offset, "call")
-end
-
-function Cpu80386:_returnFar(operandWidth, stackAdjust, isInterruptReturn)
-	if not self.protectedMode then
-		local nextIP = operandWidth == 32 and self:pop32() or self:pop16()
-		local nextCS = (operandWidth == 32 and self:pop32() or self:pop16()) % 0x10000
-		if isInterruptReturn then
-			self.flags = (operandWidth == 32 and self:pop32() or self:pop16()) % 0x10000
-		end
-		Cpu8086.setSeg(self, 1, nextCS)
-		self:_syncRealModeSegment("CS")
-		self:_setInstructionPointer(nextIP)
-		if stackAdjust and stackAdjust ~= 0 then
-			self:_setStackPointer(self:_stackPointer() + stackAdjust, self:_stackDefault32())
-		end
-		return
-	end
-	local oldCPL = self:_currentPrivilegeLevel()
-	local nextIP = operandWidth == 32 and self:pop32() or self:pop16()
-	local nextCS = (operandWidth == 32 and self:pop32() or self:pop16()) % 0x10000
-	local nextFlags = nil
-	if isInterruptReturn then
-		nextFlags = operandWidth == 32 and self:pop32() or self:pop16()
-	end
-
-	local returnCPL = bit32.band(nextCS, 0x03)
-	local descriptor, err = self:_decodeDescriptor(nextCS)
-	if not descriptor then
-		self:_raiseException(VECTOR_GP, nextCS, err or "invalid far return target")
-	end
-
-	local samePrivilege = returnCPL == oldCPL
-	local restoredESP
-	local restoredSS
-	local ssDescriptor
-	if not samePrivilege then
-		restoredESP = operandWidth == 32 and self:pop32() or self:pop16()
-		restoredSS = (operandWidth == 32 and self:pop32() or self:pop16()) % 0x10000
-		ssDescriptor = self:_decodeDescriptor(restoredSS)
-		if not ssDescriptor then
-			self:_raiseException(VECTOR_SS, restoredSS, "invalid return stack segment")
-		end
-		restoredSS = self:_loadDataSegmentDescriptor(restoredSS, ssDescriptor, "SS", returnCPL)
-	end
-
-	self:_applyCodeTransfer(nextCS, descriptor, nextIP, isInterruptReturn and "iret" or "retf", returnCPL)
-	if isInterruptReturn then
-		self.flags = nextFlags % 0x10000
-	end
-	if not samePrivilege then
-		self:_commitDescriptorLoad("SS", restoredSS, ssDescriptor)
-		self:_setStackPointer(restoredESP, ssDescriptor.default32)
-	end
-	if stackAdjust and stackAdjust ~= 0 then
-		self:_setStackPointer(self:_stackPointer() + stackAdjust, self:_stackDefault32())
-	end
-end
-
-function Cpu80386:_invokeInterrupt(vector, hardware, errorCode, isFault)
+function Cpu80386:_invokeInterrupt(vector, hardware)
 	self.halted = false
 	if self.protectedMode then
-		local gate, err, faultVector = self:_decodeInterruptGate(vector)
+		local gate, err = self:_decodeInterruptGate(vector)
 		if not gate then
-			self:_raiseException(faultVector or VECTOR_GP, vector or 0, err or "invalid interrupt gate")
-		end
-		if gate.kind == "task_gate" then
-			self:_raiseException(VECTOR_TS, gate.selector or 0, "task gates are not implemented")
-		end
-		if gate.kind == "unsupported" then
-			self:_raiseException(VECTOR_GP, vector or 0, string.format("unsupported gate type 0x%02X", gate.type or 0))
-		end
-		if not gate.present then
-			self:_raiseException(VECTOR_NP, gate.selector or 0, "interrupt gate not present")
-		end
-		local cpl = self:_currentPrivilegeLevel()
-		if not hardware and not isFault and gate.dpl < cpl then
-			self:_raiseException(VECTOR_GP, vector or 0, "software interrupt privilege violation")
-		end
-
-		local targetDescriptor, targetErr = self:_decodeDescriptor(gate.selector)
-		if not targetDescriptor then
-			self:_raiseException(VECTOR_GP, gate.selector or 0, targetErr or "invalid interrupt target")
-		end
-		local loadedSelector, newCPL = self:_resolveCodeSegment(gate.selector, targetDescriptor, "interrupt")
-		local stackWidth32 = gate.gate32 or (self.segCache.SS and self.segCache.SS.default32) or false
-		local oldSS = self.seg.SS
-		local oldSP = self:_stackPointer()
-		local oldCS = self.seg.CS
-		local oldIP = self:_currentIP()
-		local stackSelector = self.seg.SS
-		local stackDescriptor = self.segCache.SS
-
-		if newCPL < cpl then
-			local tssEsp = self:_readTss32Field(4, 32)
-			local tssSS = self:_readTss32Field(8, 16)
-			local newSSDescriptor, stackErr = self:_decodeDescriptor(tssSS)
-			if not newSSDescriptor then
-				self:_raiseException(VECTOR_TS, tssSS, stackErr or "invalid ring transition stack segment")
-			end
-			local loadedSS = self:_loadDataSegmentDescriptor(tssSS, newSSDescriptor, "SS", newCPL)
-			self:_commitDescriptorLoad("SS", loadedSS, newSSDescriptor)
-			self:_setStackPointer(tssEsp, newSSDescriptor.default32)
-			stackWidth32 = gate.gate32 or newSSDescriptor.default32
-			stackSelector = loadedSS
-			stackDescriptor = newSSDescriptor
-			local switchedSP = self:_pushToDescriptorStack(stackSelector, stackDescriptor, stackWidth32, gate.gate32 and 32 or 16, oldSS)
-			self:_setStackPointer(switchedSP, stackWidth32)
-			switchedSP = self:_pushToDescriptorStack(stackSelector, stackDescriptor, stackWidth32, gate.gate32 and 32 or 16, oldSP)
-			self:_setStackPointer(switchedSP, stackWidth32)
+			error(string.format("protected-mode interrupt 0x%02X failed: %s", vector, tostring(err)))
 		end
 
 		if gate.gate32 then
 			self:push32(self.flags)
-			self:push32(oldCS)
-			self:push32(oldIP)
-			if errorCode ~= nil then
-				self:push32(errorCode)
-			end
+			self:push32(self.seg.CS)
+			self:push32(self:_currentIP())
 		else
 			self:push16(self.flags)
-			self:push16(oldCS)
-			self:push16(oldIP % 0x10000)
-			if errorCode ~= nil then
-				self:push16(errorCode % 0x10000)
-			end
+			self:push16(self.seg.CS)
+			self:push16(self:_currentIP() % 0x10000)
 		end
 		if not gate.trapGate then
 			self:setFlag(FLAG_IF, false)
 		end
-		self:setFlag(FLAG_TF, false)
-		self:_commitDescriptorLoad("CS", loadedSelector, targetDescriptor)
+		self:setSeg(1, gate.selector)
 		self:_setInstructionPointer(gate.offset)
 		self.stats.interrupts = self.stats.interrupts + 1
 		return true
@@ -1186,7 +712,7 @@ function Cpu80386:_invokeInterrupt(vector, hardware, errorCode, isFault)
 	return Cpu8086._invokeInterrupt(self, vector, hardware)
 end
 
-function Cpu80386:_stepInternal()
+function Cpu80386:step()
 	self.stats.cycles = self.stats.cycles + 1
 
 	if self:_serviceExternalInterrupt() then
@@ -1220,14 +746,7 @@ function Cpu80386:_stepInternal()
 	if opcode == 0x0F then
 		local extended = self:fetch8()
 		self._lastStep.opcode = bit32.bor(0x0F00, extended)
-		if extended == 0x00 then
-			local decoded = self:_decodeModRMForAddressSize(addressOverride)
-			if decoded.reg == 3 then
-				self:_loadTaskRegister(self:_readRM16(decoded))
-			else
-				self:_raiseException(VECTOR_UD, 0, string.format("unsupported 0F 00 group /%d", decoded.reg))
-			end
-		elseif extended == 0x01 then
+		if extended == 0x01 then
 			local decoded = self:_decodeModRMForAddressSize(addressOverride)
 			if decoded.reg == 2 then
 				self:_loadTableRegister(decoded, "gdtr")
@@ -1245,10 +764,10 @@ function Cpu80386:_stepInternal()
 					self:_syncRealModeCaches()
 				end
 			else
-				self:_raiseException(VECTOR_UD, 0, string.format("unsupported 0F 01 group /%d", decoded.reg))
+				error(string.format("unsupported 0F 01 group /%d", decoded.reg))
 			end
 		else
-			self:_raiseException(VECTOR_UD, 0, string.format("unsupported 0F opcode 0x%02X", extended))
+			error(string.format("unsupported 0F opcode 0x%02X", extended))
 		end
 		self.stats.instructions = self.stats.instructions + 1
 		return self._lastStep.opcode
@@ -1292,7 +811,7 @@ function Cpu80386:_stepInternal()
 	elseif opcode == 0x8E then
 		local decoded = self:_decodeModRMForAddressSize(addressOverride)
 		if decoded.reg == 1 then
-			self:_raiseException(VECTOR_UD, 0, "unsupported MOV CS, r/m16")
+			error("unsupported MOV CS, r/m16")
 		end
 		self:setSeg(decoded.reg, self:_readRM16(decoded))
 	elseif opcode == 0x8C then
@@ -1343,7 +862,7 @@ function Cpu80386:_stepInternal()
 		elseif decoded.reg == 7 then
 			self:_sub(width, left, imm)
 		else
-			self:_raiseException(VECTOR_UD, 0, "unsupported group 80/81 op")
+			error("unsupported group 80/81 op")
 		end
 	elseif opcode == 0x38 then
 		local decoded = self:_decodeModRMForAddressSize(addressOverride)
@@ -1377,14 +896,11 @@ function Cpu80386:_stepInternal()
 	elseif opcode == 0xE9 then
 		local rel = operandWidth == 32 and signExtend32(self:fetch32()) or signExtend16(self:fetch16())
 		self:_setInstructionPointer(self:_currentIP() + rel)
-	elseif opcode == 0x9A then
-		local offset = operandWidth == 32 and self:fetch32() or self:fetch16()
-		local selector = self:fetch16()
-		self:_executeFarCall(selector, offset, operandWidth)
 	elseif opcode == 0xEA then
-		local offset = operandWidth == 32 and self:fetch32() or self:fetch16()
-		local selector = self:fetch16()
-		self:_executeFarJump(selector, offset)
+		local offset = self:fetch16()
+		local segment = self:fetch16()
+		self:setSeg(1, segment)
+		self:_setInstructionPointer(offset)
 	elseif opcode == 0xEB then
 		local rel = signExtend8(self:fetch8())
 		self:_setInstructionPointer(self:_currentIP() + rel)
@@ -1418,20 +934,10 @@ function Cpu80386:_stepInternal()
 				self:push16(returnIP % 0x10000)
 			end
 			self:_setInstructionPointer(self:_readRMByWidth(decoded, operandWidth))
-		elseif decoded.reg == 3 then
-			local farOffset, farSelector = self:_readFarPointer(decoded, operandWidth)
-			self:_executeFarCall(farSelector, farOffset, operandWidth)
 		elseif decoded.reg == 4 then
 			self:_setInstructionPointer(self:_readRMByWidth(decoded, operandWidth))
-		elseif decoded.reg == 5 then
-			local farOffset, farSelector = self:_readFarPointer(decoded, operandWidth)
-			self:_executeFarJump(farSelector, farOffset)
 		else
-			self:_raiseException(
-				VECTOR_UD,
-				0,
-				string.format("unsupported FF group /%d at %04X:%04X", decoded.reg, self.seg.CS, startIP)
-			)
+			error(string.format("unsupported FF group /%d at %04X:%04X", decoded.reg, self.seg.CS, startIP))
 		end
 	elseif opcode == 0xC3 then
 		if operandWidth == 32 then
@@ -1440,15 +946,20 @@ function Cpu80386:_stepInternal()
 			self:_setInstructionPointer(self:pop16())
 		end
 	elseif opcode == 0xCB then
-		self:_returnFar(operandWidth, 0, false)
-	elseif opcode == 0xCA then
-		local adjust = self:fetch16()
-		self:_returnFar(operandWidth, adjust, false)
+		local nextIP = operandWidth == 32 and self:pop32() or self:pop16()
+		local nextCS = operandWidth == 32 and self:pop32() or self:pop16()
+		self:setSeg(1, nextCS % 0x10000)
+		self:_setInstructionPointer(nextIP)
 	elseif opcode == 0xCF then
-		self:_returnFar(operandWidth, 0, true)
+		local nextIP = operandWidth == 32 and self:pop32() or self:pop16()
+		local nextCS = operandWidth == 32 and self:pop32() or self:pop16()
+		local nextFlags = operandWidth == 32 and self:pop32() or self:pop16()
+		self:setSeg(1, nextCS % 0x10000)
+		self:_setInstructionPointer(nextIP)
+		self.flags = nextFlags % 0x10000
 	elseif opcode == 0xCD then
 		local vector = self:fetch8()
-		self:_invokeInterrupt(vector, false, nil, false)
+		self:_invokeInterrupt(vector, false)
 	elseif opcode == 0xE4 then
 		local port = self:fetch8()
 		self.stats.portReads = self.stats.portReads + 1
@@ -1482,44 +993,13 @@ function Cpu80386:_stepInternal()
 		self.stats.portWrites = self.stats.portWrites + 1
 		self:_portWriteByWidth(port, operandWidth, self:_getRegByWidth(0, operandWidth))
 	else
-		self:_raiseException(
-			VECTOR_UD,
-			0,
-			string.format("unsupported opcode 0x%02X at %04X:%08X", opcode, self.seg.CS, startIP)
-		)
+		self._lastError = string.format("unsupported opcode 0x%02X at %04X:%08X", opcode, self.seg.CS, startIP)
+		self.halted = true
+		error(self._lastError)
 	end
 
 	self.stats.instructions = self.stats.instructions + 1
 	return opcode
-end
-
-function Cpu80386:step()
-	local ok, result = xpcall(function()
-		return self:_stepInternal()
-	end, function(err)
-		return err
-	end)
-
-	if ok then
-		return result
-	end
-
-	if type(result) == "table" and result.__x86Exception then
-		local delivered, deliveryResult = xpcall(function()
-			return self:_invokeInterrupt(result.vector, false, result.errorCode, true)
-		end, function(err)
-			return err
-		end)
-		if delivered and deliveryResult then
-			self.stats.instructions = self.stats.instructions + 1
-			return string.format("EX_%02X", result.vector)
-		end
-		result = delivered and result.message or deliveryResult
-	end
-
-	self._lastError = type(result) == "table" and result.message or tostring(result)
-	self.halted = true
-	error(self._lastError)
 end
 
 return Cpu80386
