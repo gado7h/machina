@@ -1,12 +1,26 @@
+local STATUS_A_UIP = 0x80
+local STATUS_B_24H = 0x02
+local STATUS_B_BINARY = 0x04
+
+local REGISTER_SECONDS = 0x00
+local REGISTER_MINUTES = 0x02
+local REGISTER_HOURS = 0x04
+local REGISTER_WEEKDAY = 0x06
+local REGISTER_DAY = 0x07
+local REGISTER_MONTH = 0x08
+local REGISTER_YEAR = 0x09
+
+local REGISTER_STATUS_A = 0x0A
+local REGISTER_STATUS_B = 0x0B
+local REGISTER_STATUS_C = 0x0C
+local REGISTER_STATUS_D = 0x0D
+
 local CmosRtc = {}
 CmosRtc.__index = CmosRtc
 
-local STATUS_A_UIP = 0x80
-local STATUS_B_24H = 0x02
-
 local function toBCD(value)
-	local v = tonumber(value) or 0
-	return ((math.floor(v / 10) % 10) * 16) + (v % 10)
+	local numericValue = tonumber(value) or 0
+	return ((math.floor(numericValue / 10) % 10) * 16) + (numericValue % 10)
 end
 
 local function weekdayForOsDate(wday)
@@ -53,83 +67,102 @@ function CmosRtc:_timeTable()
 end
 
 function CmosRtc:_uipActive()
-	local fractional = os.clock() % 1
-	return fractional >= 0.998
+	return (os.clock() % 1) >= 0.998
+end
+
+function CmosRtc:_binaryMode()
+	return bit32.band(self._statusB, STATUS_B_BINARY) ~= 0
+end
+
+function CmosRtc:_encodeClockValue(value)
+	if self:_binaryMode() then
+		return value % 0x100
+	end
+	return toBCD(value)
 end
 
 function CmosRtc:_readClockRegister(index)
 	local now = self:_timeTable()
-	local binaryMode = bit32.band(self._statusB, 0x04) ~= 0
-	local function encode(value)
-		if binaryMode then
-			return value % 0x100
-		end
-		return toBCD(value)
+	if index == REGISTER_SECONDS then
+		return self:_encodeClockValue(now.sec)
 	end
+	if index == REGISTER_MINUTES then
+		return self:_encodeClockValue(now.min)
+	end
+	if index == REGISTER_HOURS then
+		return self:_encodeClockValue(now.hour)
+	end
+	if index == REGISTER_WEEKDAY then
+		return self:_encodeClockValue(weekdayForOsDate(now.wday))
+	end
+	if index == REGISTER_DAY then
+		return self:_encodeClockValue(now.day)
+	end
+	if index == REGISTER_MONTH then
+		return self:_encodeClockValue(now.month)
+	end
+	if index == REGISTER_YEAR then
+		return self:_encodeClockValue(now.year % 100)
+	end
+	return nil
+end
 
-	if index == 0x00 then
-		return encode(now.sec)
-	elseif index == 0x02 then
-		return encode(now.min)
-	elseif index == 0x04 then
-		return encode(now.hour)
-	elseif index == 0x06 then
-		return encode(weekdayForOsDate(now.wday))
-	elseif index == 0x07 then
-		return encode(now.day)
-	elseif index == 0x08 then
-		return encode(now.month)
-	elseif index == 0x09 then
-		return encode(now.year % 100)
+function CmosRtc:_readStatusRegister(index)
+	if index == REGISTER_STATUS_A then
+		local value = self._statusA
+		if self:_uipActive() then
+			return bit32.bor(value, STATUS_A_UIP)
+		end
+		return bit32.band(value, bit32.bnot(STATUS_A_UIP))
+	end
+	if index == REGISTER_STATUS_B then
+		return self._statusB
+	end
+	if index == REGISTER_STATUS_C then
+		local value = self._statusC
+		self._statusC = 0
+		return value
+	end
+	if index == REGISTER_STATUS_D then
+		return self._statusD
 	end
 	return nil
 end
 
 function CmosRtc:_readSelected()
 	self.stats.reads = self.stats.reads + 1
+
 	local clockValue = self:_readClockRegister(self._index)
 	if clockValue ~= nil then
 		return clockValue
 	end
 
-	if self._index == 0x0A then
-		local value = self._statusA
-		if self:_uipActive() then
-			value = bit32.bor(value, STATUS_A_UIP)
-		else
-			value = bit32.band(value, bit32.bnot(STATUS_A_UIP))
-		end
-		return value
-	elseif self._index == 0x0B then
-		return self._statusB
-	elseif self._index == 0x0C then
-		local value = self._statusC
-		self._statusC = 0
-		return value
-	elseif self._index == 0x0D then
-		return self._statusD
+	local statusValue = self:_readStatusRegister(self._index)
+	if statusValue ~= nil then
+		return statusValue
 	end
+
 	return 0
 end
 
 function CmosRtc:readRegister(index)
-	local previous = self._index
+	local previousIndex = self._index
 	self._index = bit32.band(tonumber(index) or 0, 0x7F)
 	local value = self:_readSelected()
-	self._index = previous
+	self._index = previousIndex
 	return value
 end
 
 function CmosRtc:_writeSelected(value)
 	self.stats.writes = self.stats.writes + 1
 	local v = bit32.band(tonumber(value) or 0, 0xFF)
-	if self._index == 0x0A then
+	if self._index == REGISTER_STATUS_A then
 		self._statusA = bit32.band(v, 0x7F)
-	elseif self._index == 0x0B then
+	elseif self._index == REGISTER_STATUS_B then
 		self._statusB = v
-	elseif self._index == 0x0C then
+	elseif self._index == REGISTER_STATUS_C then
 		self._statusC = 0
-	elseif self._index == 0x0D then
+	elseif self._index == REGISTER_STATUS_D then
 		self._statusD = bit32.bor(bit32.band(v, 0x7F), 0x80)
 	end
 end

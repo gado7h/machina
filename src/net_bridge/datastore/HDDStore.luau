@@ -3,12 +3,29 @@
 local DataStoreService = game:GetService("DataStoreService")
 local HttpService = game:GetService("HttpService")
 
+local DEFAULT_NAMESPACE = "MachinaHDD-v1"
+
 local HDDStore = {}
 HDDStore.__index = HDDStore
 
+local function buildPayload(hddImage)
+	return {
+		updatedAt = os.time(),
+		hdd = hddImage,
+	}
+end
+
+local function pcallResult(run)
+	local ok, result = pcall(run)
+	if not ok then
+		return nil, tostring(result)
+	end
+	return result
+end
+
 function HDDStore.new(namespace)
 	local self = setmetatable({}, HDDStore)
-	self.namespace = namespace or "MachinaHDD-v1"
+	self.namespace = namespace or DEFAULT_NAMESPACE
 	self.store = DataStoreService:GetDataStore(self.namespace)
 	return self
 end
@@ -19,32 +36,21 @@ end
 
 function HDDStore:saveSnapshot(player, hddImage)
 	local key = self:_keyForPlayer(player)
-	local payload = {
-		updatedAt = os.time(),
-		hdd = hddImage,
-	}
-
-	local ok, err = pcall(function()
+	local payload = buildPayload(hddImage)
+	local _, err = pcallResult(function()
 		self.store:SetAsync(key, payload)
 	end)
-	if not ok then
-		return false, tostring(err)
+	if err then
+		return false, err
 	end
-
 	return true
 end
 
 function HDDStore:loadSnapshot(player)
 	local key = self:_keyForPlayer(player)
-	local ok, result = pcall(function()
+	return pcallResult(function()
 		return self.store:GetAsync(key)
 	end)
-
-	if not ok then
-		return nil, tostring(result)
-	end
-
-	return result
 end
 
 function HDDStore:encodeSectorDump(sectors)
@@ -56,10 +62,10 @@ function HDDStore:decodeSectorDump(raw)
 		return {}
 	end
 
-	local ok, decoded = pcall(function()
+	local decoded = pcallResult(function()
 		return HttpService:JSONDecode(raw)
 	end)
-	if not ok then
+	if decoded == nil then
 		return {}
 	end
 

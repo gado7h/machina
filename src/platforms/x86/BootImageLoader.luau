@@ -1,19 +1,24 @@
-local BootImageCatalog = require(script.Parent.BootImageCatalog)
 local BiosRom = require(script.Parent.BiosRom)
-local RawImageCatalog = require(script.Parent.RawImageCatalog)
+local BootImageCatalog = require(script.Parent.BootImageCatalog)
+local ImageCatalogUtils = require(script.Parent.ImageCatalogUtils)
 local ImportedImageCatalog = require(script.Parent.ImportedImageCatalog)
+local RawImageCatalog = require(script.Parent.RawImageCatalog)
 
 local BootImageLoader = {}
 
-local function deepCopy(value)
-	if type(value) ~= "table" then
-		return value
-	end
-	local out = {}
-	for key, child in pairs(value) do
-		out[key] = deepCopy(child)
-	end
-	return out
+local DEFAULT_IMAGE_NAME = "ProtectedModeBringUp"
+local DEFAULT_SOURCE = "provider"
+
+local function normalizeLayout(layout, files)
+	local normalizedLayout = ImageCatalogUtils.deepCopy(layout or {})
+	normalizedLayout.kernelSectorStart = normalizedLayout.kernelSectorStart or 2
+	normalizedLayout.kernelSectorCount = normalizedLayout.kernelSectorCount or 1
+	normalizedLayout.fsSuperSector = normalizedLayout.fsSuperSector or 0
+	normalizedLayout.rootDirSector = normalizedLayout.rootDirSector or 0
+	normalizedLayout.rootDirSectorCount = normalizedLayout.rootDirSectorCount or 0
+	normalizedLayout.dataStartSector = normalizedLayout.dataStartSector or 0
+	normalizedLayout.fileCount = normalizedLayout.fileCount or #(files or {})
+	return normalizedLayout
 end
 
 local function normalizeImage(image, meta)
@@ -25,33 +30,63 @@ local function normalizeImage(image, meta)
 		local artifact = BiosRom.buildArtifact(meta.config)
 		romBytes = BiosRom.buildROMBytes(meta.config, artifact)
 	end
-	local normalizedRom = BootImageLoader._normalizeByteArray(romBytes)
-	local normalizedSectors = image.sectors and BootImageLoader._normalizeSectors(image.sectors)
-		or BootImageLoader._diskBytesToSectors(image.diskBytes, image.diskStartLba or 0)
 
+	local files = image.files or {}
 	local normalized = {
 		name = image.name,
-		romBytes = normalizedRom,
-		sectors = normalizedSectors,
-		layout = deepCopy(image.layout or {}),
-		files = image.files or {},
+		romBytes = BootImageLoader._normalizeByteArray(romBytes),
+		sectors = image.sectors and BootImageLoader._normalizeSectors(image.sectors)
+			or BootImageLoader._diskBytesToSectors(image.diskBytes, image.diskStartLba or 0),
+		layout = normalizeLayout(image.layout, files),
+		files = files,
 		symbols = image.symbols or {},
 	}
+
 	normalized.meta = {
 		source = meta.source,
 		provider = meta.provider,
 		name = meta.name or meta.provider,
 	}
 
-	normalized.layout.kernelSectorStart = normalized.layout.kernelSectorStart or 2
-	normalized.layout.kernelSectorCount = normalized.layout.kernelSectorCount or 1
-	normalized.layout.fsSuperSector = normalized.layout.fsSuperSector or 0
-	normalized.layout.rootDirSector = normalized.layout.rootDirSector or 0
-	normalized.layout.rootDirSectorCount = normalized.layout.rootDirSectorCount or 0
-	normalized.layout.dataStartSector = normalized.layout.dataStartSector or 0
-	normalized.layout.fileCount = normalized.layout.fileCount or #(normalized.files or {})
-
 	return normalized
+end
+
+local function resolveSource(imageConfig)
+	return tostring(
+		imageConfig.SOURCE
+			or (imageConfig.IMPORT_IMAGE and "imported")
+			or (imageConfig.RAW_IMAGE and "raw")
+			or DEFAULT_SOURCE
+	)
+end
+
+local function resolveEntry(catalog, name, errorPrefix)
+	local entry = catalog[name]
+	assert(entry, errorPrefix .. name)
+	return entry
+end
+
+local function providerImage(provider, config)
+	if type(provider) == "function" then
+		return provider(config)
+	end
+	if type(provider) == "table" and type(provider.build) == "function" then
+		return provider.build(config)
+	end
+	if type(provider) == "table" then
+		return provider
+	end
+	error("invalid external x86 image provider")
+end
+
+local function rawImage(rawEntry)
+	if type(rawEntry) == "function" then
+		return rawEntry()
+	end
+	if type(rawEntry) == "table" then
+		return rawEntry
+	end
+	error("invalid raw x86 image entry")
 end
 
 function BootImageLoader._normalizeByteArray(value)
@@ -104,43 +139,15 @@ function BootImageLoader._diskBytesToSectors(diskBytes, startLba)
 	return sectors
 end
 
-local function providerImage(provider, config)
-	if type(provider) == "function" then
-		return provider(config)
-	end
-	if type(provider) == "table" and type(provider.build) == "function" then
-		return provider.build(config)
-	end
-	if type(provider) == "table" then
-		return provider
-	end
-	error("invalid external x86 image provider")
-end
-
-local function rawImage(rawEntry, _config)
-	if type(rawEntry) == "function" then
-		return rawEntry()
-	end
-	if type(rawEntry) == "table" then
-		return rawEntry
-	end
-	error("invalid raw x86 image entry")
-end
-
 function BootImageLoader.load(config)
 	local x86 = config.X86 or {}
 	local imageConfig = x86.IMAGE or {}
-	local source = tostring(
-		imageConfig.SOURCE
-			or (imageConfig.IMPORT_IMAGE and "imported")
-			or (imageConfig.RAW_IMAGE and "raw")
-			or "provider"
-	)
+	local source = resolveSource(imageConfig)
+
 	if source == "imported" then
-		local importName = tostring(imageConfig.IMPORT_IMAGE or imageConfig.NAME or "ProtectedModeBringUp")
-		local importedEntry = ImportedImageCatalog[importName]
-		assert(importedEntry, "unknown x86 imported image entry: " .. importName)
-		local image = rawImage(importedEntry, config)
+		local importName = tostring(imageConfig.IMPORT_IMAGE or imageConfig.NAME or DEFAULT_IMAGE_NAME)
+		local entry = resolveEntry(ImportedImageCatalog, importName, "unknown x86 imported image entry: ")
+		local image = rawImage(entry)
 		return normalizeImage(image, {
 			config = config,
 			source = "imported",
@@ -148,11 +155,11 @@ function BootImageLoader.load(config)
 			name = image and image.name or importName,
 		})
 	end
+
 	if source == "raw" then
-		local rawName = tostring(imageConfig.RAW_IMAGE or imageConfig.NAME or "ProtectedModeBringUp")
-		local rawEntry = RawImageCatalog[rawName]
-		assert(rawEntry, "unknown x86 raw image entry: " .. rawName)
-		local image = rawImage(rawEntry, config)
+		local rawName = tostring(imageConfig.RAW_IMAGE or imageConfig.NAME or DEFAULT_IMAGE_NAME)
+		local entry = resolveEntry(RawImageCatalog, rawName, "unknown x86 raw image entry: ")
+		local image = rawImage(entry)
 		return normalizeImage(image, {
 			config = config,
 			source = "raw",
@@ -161,9 +168,8 @@ function BootImageLoader.load(config)
 		})
 	end
 
-	local providerName = tostring(imageConfig.PROVIDER or imageConfig.NAME or "ProtectedModeBringUp")
-	local provider = BootImageCatalog[providerName]
-	assert(provider, "unknown x86 external image provider: " .. providerName)
+	local providerName = tostring(imageConfig.PROVIDER or imageConfig.NAME or DEFAULT_IMAGE_NAME)
+	local provider = resolveEntry(BootImageCatalog, providerName, "unknown x86 external image provider: ")
 	local image = providerImage(provider, config)
 	return normalizeImage(image, {
 		config = config,

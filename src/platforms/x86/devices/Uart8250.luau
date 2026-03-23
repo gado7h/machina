@@ -15,6 +15,58 @@ local LSR_DATA_READY = 0x01
 local LSR_THR_EMPTY = 0x20
 local LSR_TX_EMPTY = 0x40
 
+local TX_LOG_LIMIT = 4096
+
+local function queueLength(queue, head)
+	return math.max(0, #queue - head + 1)
+end
+
+local function compactQueue(self, fieldName, headName)
+	local queue = self[fieldName]
+	local head = self[headName]
+	if head <= 32 or head <= math.floor(#queue / 2) then
+		return
+	end
+	local compacted = {}
+	for index = head, #queue do
+		compacted[#compacted + 1] = queue[index]
+	end
+	self[fieldName] = compacted
+	self[headName] = 1
+end
+
+local function pushQueue(self, fieldName, headName, value)
+	local queue = self[fieldName]
+	queue[#queue + 1] = value
+	compactQueue(self, fieldName, headName)
+end
+
+local function popQueue(self, fieldName, headName)
+	local queue = self[fieldName]
+	local head = self[headName]
+	if head > #queue then
+		return nil
+	end
+	local value = queue[head]
+	queue[head] = nil
+	self[headName] = head + 1
+	compactQueue(self, fieldName, headName)
+	return value
+end
+
+local function clearQueue(self, fieldName, headName)
+	self[fieldName] = {}
+	self[headName] = 1
+end
+
+local function sliceQueue(queue, startIndex)
+	local out = {}
+	for index = startIndex, #queue do
+		out[#out + 1] = queue[index]
+	end
+	return out
+end
+
 function Uart8250.new(config)
 	local self = setmetatable({}, Uart8250)
 	self.config = config
@@ -32,7 +84,9 @@ function Uart8250.new(config)
 	self._msr = 0xB0
 	self._scr = 0x00
 	self._rxFifo = {}
+	self._rxHead = 1
 	self._txLog = {}
+	self._txLogStart = 1
 	self._irqPending = false
 
 	self.stats = {
@@ -89,9 +143,13 @@ function Uart8250:_dlabEnabled()
 	return bit32.band(self._lcr, LCR_DLAB) ~= 0
 end
 
+function Uart8250:_rxCount()
+	return queueLength(self._rxFifo, self._rxHead)
+end
+
 function Uart8250:_updateIRQ()
 	local reason = nil
-	if #self._rxFifo > 0 and bit32.band(self._ier, IER_RX_AVAILABLE) ~= 0 then
+	if self:_rxCount() > 0 and bit32.band(self._ier, IER_RX_AVAILABLE) ~= 0 then
 		reason = IIR_RX_AVAILABLE
 	elseif bit32.band(self._ier, IER_TX_EMPTY) ~= 0 then
 		reason = IIR_TX_EMPTY
@@ -114,13 +172,23 @@ function Uart8250:_readData()
 	if self:_dlabEnabled() then
 		return self._divisor % 0x100
 	end
-	local value = table.remove(self._rxFifo, 1) or 0
-	if #self._rxFifo == 0 then
+
+	local value = popQueue(self, "_rxFifo", "_rxHead") or 0
+	if self:_rxCount() == 0 then
 		self._lsr = bit32.band(self._lsr, bit32.bnot(LSR_DATA_READY))
 	end
 	self._irqPending = false
 	self:_updateIRQ()
 	return value
+end
+
+function Uart8250:_appendTxLog(value)
+	pushQueue(self, "_txLog", "_txLogStart", value)
+	if queueLength(self._txLog, self._txLogStart) > TX_LOG_LIMIT then
+		self._txLog[self._txLogStart] = nil
+		self._txLogStart = self._txLogStart + 1
+		compactQueue(self, "_txLog", "_txLogStart")
+	end
 end
 
 function Uart8250:_writeData(v)
@@ -134,10 +202,7 @@ function Uart8250:_writeData(v)
 		return
 	end
 	self.stats.txBytes = self.stats.txBytes + 1
-	self._txLog[#self._txLog + 1] = value
-	if #self._txLog > 4096 then
-		table.remove(self._txLog, 1)
-	end
+	self:_appendTxLog(value)
 	self._lsr = bit32.bor(self._lsr, LSR_THR_EMPTY, LSR_TX_EMPTY)
 	self._irqPending = false
 	self:_updateIRQ()
@@ -174,7 +239,7 @@ function Uart8250:_writeFCR(v)
 	local value = bit32.band(tonumber(v) or 0, 0xFF)
 	self._fcr = value
 	if bit32.band(value, 0x02) ~= 0 or bit32.band(value, 0x04) ~= 0 then
-		self._rxFifo = {}
+		clearQueue(self, "_rxFifo", "_rxHead")
 		self._lsr = bit32.band(self._lsr, bit32.bnot(LSR_DATA_READY))
 	end
 	self._irqPending = false
@@ -187,29 +252,30 @@ end
 
 function Uart8250:pushInputByte(value)
 	local byteValue = bit32.band(tonumber(value) or 0, 0xFF)
-	self._rxFifo[#self._rxFifo + 1] = byteValue
+	pushQueue(self, "_rxFifo", "_rxHead", byteValue)
 	self._lsr = bit32.bor(self._lsr, LSR_DATA_READY)
 	self.stats.rxBytes = self.stats.rxBytes + 1
 	self:_updateIRQ()
 end
 
 function Uart8250:pushInput(text)
-	for index = 1, #tostring(text) do
-		self:pushInputByte(string.byte(text, index))
+	local normalized = tostring(text)
+	for index = 1, #normalized do
+		self:pushInputByte(string.byte(normalized, index))
 	end
 end
 
 function Uart8250:readOutput()
 	local chars = {}
-	for index = 1, #self._txLog do
-		chars[index] = string.char(self._txLog[index])
+	for index, byteValue in ipairs(sliceQueue(self._txLog, self._txLogStart)) do
+		chars[index] = string.char(byteValue)
 	end
 	return table.concat(chars)
 end
 
 function Uart8250:drainOutputBytes()
-	local out = self._txLog
-	self._txLog = {}
+	local out = sliceQueue(self._txLog, self._txLogStart)
+	clearQueue(self, "_txLog", "_txLogStart")
 	return out
 end
 

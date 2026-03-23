@@ -13,6 +13,9 @@ local COMMAND_IRQ1_ENABLE = 0x01
 local COMMAND_SYSTEM_FLAG = 0x04
 local COMMAND_DISABLE_KEYBOARD = 0x10
 
+local OUTPUT_BUFFER_LIMIT = 64
+local ASCII_BUFFER_LIMIT = 128
+
 local SCAN_MAKE = {
 	A = 0x1E,
 	B = 0x30,
@@ -212,12 +215,61 @@ local function cloneSequence(entry)
 	return { entry }
 end
 
+local function queueLength(queue, head)
+	return math.max(0, #queue - head + 1)
+end
+
+local function compactQueue(self, fieldName, headName)
+	local queue = self[fieldName]
+	local head = self[headName]
+	if head <= 32 or head <= math.floor(#queue / 2) then
+		return
+	end
+	local compacted = {}
+	for index = head, #queue do
+		compacted[#compacted + 1] = queue[index]
+	end
+	self[fieldName] = compacted
+	self[headName] = 1
+end
+
+local function pushQueue(self, fieldName, headName, value)
+	local queue = self[fieldName]
+	queue[#queue + 1] = value
+	compactQueue(self, fieldName, headName)
+end
+
+local function popQueue(self, fieldName, headName)
+	local queue = self[fieldName]
+	local head = self[headName]
+	if head > #queue then
+		return nil
+	end
+	local value = queue[head]
+	queue[head] = nil
+	self[headName] = head + 1
+	compactQueue(self, fieldName, headName)
+	return value
+end
+
+local function peekQueue(self, fieldName, headName)
+	local queue = self[fieldName]
+	return queue[self[headName]]
+end
+
+local function clearQueue(self, fieldName, headName)
+	self[fieldName] = {}
+	self[headName] = 1
+end
+
 function I8042Controller.new(config, bus)
 	local self = setmetatable({}, I8042Controller)
 	self.config = config
 	self.bus = bus
 	self._buffer = {}
+	self._bufferHead = 1
 	self._ascii = {}
+	self._asciiHead = 1
 	self._shift = false
 	self._ctrl = false
 	self._alt = false
@@ -250,17 +302,17 @@ function I8042Controller:_raiseIRQ()
 end
 
 function I8042Controller:_pushOutputByte(value)
-	if #self._buffer >= 64 then
+	if queueLength(self._buffer, self._bufferHead) >= OUTPUT_BUFFER_LIMIT then
 		self.stats.bufferOverruns = self.stats.bufferOverruns + 1
 		return
 	end
-	self._buffer[#self._buffer + 1] = bit32.band(tonumber(value) or 0, 0xFF)
+	pushQueue(self, "_buffer", "_bufferHead", bit32.band(tonumber(value) or 0, 0xFF))
 	self._status = bit32.bor(self._status, STATUS_OUTPUT_FULL)
 	self:_raiseIRQ()
 end
 
 function I8042Controller:_clearOutputStatus()
-	if #self._buffer == 0 then
+	if queueLength(self._buffer, self._bufferHead) == 0 then
 		self._status = bit32.band(self._status, bit32.bnot(STATUS_OUTPUT_FULL))
 	end
 end
@@ -283,15 +335,15 @@ function I8042Controller:_translateASCII(scanCode)
 
 	if self._ctrl and ascii and #ascii == 1 then
 		local upperAscii = string.upper(ascii)
-		local byte = string.byte(upperAscii)
-		local code = byte - 64
-		if code > 0 and code < 32 then
-			ascii = string.char(code)
+		local byteValue = string.byte(upperAscii)
+		local controlCode = byteValue - 64
+		if controlCode > 0 and controlCode < 32 then
+			ascii = string.char(controlCode)
 		end
 	end
 
-	if ascii and #self._ascii < 128 then
-		self._ascii[#self._ascii + 1] = ascii
+	if ascii and queueLength(self._ascii, self._asciiHead) < ASCII_BUFFER_LIMIT then
+		pushQueue(self, "_ascii", "_asciiHead", ascii)
 	end
 end
 
@@ -305,14 +357,14 @@ function I8042Controller:_queueScanSequence(sequence, isBreak)
 	end
 end
 
-function I8042Controller:_setModifierState(kc, isDown)
-	if kc == "LeftShift" or kc == "RightShift" then
+function I8042Controller:_setModifierState(keyCode, isDown)
+	if keyCode == "LeftShift" or keyCode == "RightShift" then
 		self._shift = isDown
-	elseif kc == "LeftControl" or kc == "RightControl" then
+	elseif keyCode == "LeftControl" or keyCode == "RightControl" then
 		self._ctrl = isDown
-	elseif kc == "LeftAlt" or kc == "RightAlt" then
+	elseif keyCode == "LeftAlt" or keyCode == "RightAlt" then
 		self._alt = isDown
-	elseif kc == "CapsLock" and isDown then
+	elseif keyCode == "CapsLock" and isDown then
 		self._capsLock = not self._capsLock
 	end
 end
@@ -351,13 +403,18 @@ function I8042Controller:keyUp(key)
 end
 
 function I8042Controller:_readData()
-	local value = table.remove(self._buffer, 1) or 0
+	local value = popQueue(self, "_buffer", "_bufferHead") or 0
 	self:_clearOutputStatus()
 	return value
 end
 
 function I8042Controller:_readStatus()
 	return self._status
+end
+
+function I8042Controller:_resetBuffers()
+	clearQueue(self, "_buffer", "_bufferHead")
+	clearQueue(self, "_ascii", "_asciiHead")
 end
 
 function I8042Controller:_writeI8042ControllerCommand(value)
@@ -382,8 +439,7 @@ function I8042Controller:_writeI8042ControllerCommand(value)
 		self._scanningEnabled = false
 		self:_pushOutputByte(KBD_ACK)
 	elseif v == 0xFF then
-		self._buffer = {}
-		self._ascii = {}
+		self:_resetBuffers()
 		self._scanningEnabled = true
 		self:_pushOutputByte(KBD_ACK)
 		self:_pushOutputByte(KBD_SELF_TEST_PASSED)
@@ -427,11 +483,11 @@ function I8042Controller:_writeCtrl(value)
 end
 
 function I8042Controller:readChar()
-	return table.remove(self._ascii, 1)
+	return popQueue(self, "_ascii", "_asciiHead")
 end
 
 function I8042Controller:peekChar()
-	return self._ascii[1]
+	return peekQueue(self, "_ascii", "_asciiHead")
 end
 
 function I8042Controller:pollLine(currentLine, echo, gpu)
@@ -442,14 +498,16 @@ function I8042Controller:pollLine(currentLine, echo, gpu)
 
 	if ch == "\n" or ch == "\r" then
 		local line = table.concat(currentLine)
-		for i = #currentLine, 1, -1 do
-			currentLine[i] = nil
+		for index = #currentLine, 1, -1 do
+			currentLine[index] = nil
 		end
 		if echo and gpu and gpu.biosTeletype then
 			gpu:biosTeletype(10)
 		end
 		return line
-	elseif ch == "\b" then
+	end
+
+	if ch == "\b" then
 		if #currentLine > 0 then
 			table.remove(currentLine)
 			if echo and gpu and gpu.biosTeletype then
@@ -462,6 +520,7 @@ function I8042Controller:pollLine(currentLine, echo, gpu)
 			gpu:biosTeletype(string.byte(ch))
 		end
 	end
+
 	return nil
 end
 
