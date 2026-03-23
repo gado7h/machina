@@ -1,6 +1,13 @@
 local PcSystem = {}
 PcSystem.__index = PcSystem
 
+local DEFAULT_PROFILE = "x86-bios"
+local RUN_CYCLES_PER_TICK = 256
+local BOOT_CYCLES_PER_TICK = 768
+local DEFAULT_REFRESH_HZ = 60
+local CURSOR_BLINK_PERIOD = 0.5
+local FAULT_TEXT_ATTR = 0x0C
+
 local function wrapText(text, width)
 	local out = {}
 	local line = ""
@@ -49,7 +56,7 @@ local function copyConfig(config)
 end
 
 local function activeProfile(config)
-	return (config.EMULATION and config.EMULATION.PROFILE) or "x86-bios"
+	return (config.EMULATION and config.EMULATION.PROFILE) or DEFAULT_PROFILE
 end
 
 local function buildBoardConfig(config)
@@ -68,6 +75,30 @@ local function buildBoardConfig(config)
 	return board
 end
 
+local function getX86Config(self)
+	return self.config.X86 or {}
+end
+
+local function getTickRate(boardConfig)
+	return math.max(1, boardConfig.DISPLAY_REFRESH_HZ or DEFAULT_REFRESH_HZ)
+end
+
+local function getTickDuration(boardConfig)
+	return 1 / getTickRate(boardConfig)
+end
+
+local function getTextColumns(self)
+	return self.boardConfig.TEXT_COLS or self.config.TEXT_COLS or 80
+end
+
+local function getHardwareStats(device)
+	return (device and type(device.getStats) == "function" and device:getStats()) or {}
+end
+
+local function getOptionalStats(device)
+	return (device and device.getStats and device:getStats()) or {}
+end
+
 function PcSystem.new(config)
 	local self = setmetatable({}, PcSystem)
 	self.config = config
@@ -83,6 +114,13 @@ function PcSystem.new(config)
 	self._cursorTimer = 0
 	self._bootRecord = nil
 	return self
+end
+
+function PcSystem:_initializeBootRecord()
+	self._bootRecord = {
+		startedAt = self._uptimeStart,
+		stages = {},
+	}
 end
 
 function PcSystem:_buildHardware()
@@ -130,106 +168,110 @@ function PcSystem:_buildRuntime()
 	self.runtime:startBoot()
 end
 
-function PcSystem:powerOn()
-	if self._powered then
+function PcSystem:_recordRuntimeInitFault(err)
+	self:_setBootStage("FAULT", tostring(err))
+	if self.gpu then
+		self.gpu:hostClear(FAULT_TEXT_ATTR)
+		self.gpu:hostWriteLine("runtime init failed", FAULT_TEXT_ATTR)
+		self.gpu:hostWriteLine(tostring(err), FAULT_TEXT_ATTR)
+	end
+end
+
+function PcSystem:_getCyclesPerTick()
+	local x86 = getX86Config(self)
+	if self._bootStage == "RUNNING" then
+		return x86.RUN_CYCLES_PER_TICK or RUN_CYCLES_PER_TICK
+	else
+		return x86.BOOT_CYCLES_PER_TICK or BOOT_CYCLES_PER_TICK
+	end
+end
+
+function PcSystem:_getCpuFaultLocation(cpuStats)
+	if not cpuStats then
+		return nil
+	end
+
+	return string.format("pc=%05X cs=%04X ip=%04X", cpuStats.pc or 0, cpuStats.cs or 0, cpuStats.ip or 0)
+end
+
+function PcSystem:_writeCpuFaultBytes(cpuStats)
+	if
+		not (
+			self.cpu
+			and type(self.cpu.linearAddress) == "function"
+			and type(self.cpu.readPhysical8) == "function"
+		)
+	then
 		return
 	end
-	self._powered = true
-	self._uptimeStart = os.clock()
-	self._bootStage = "OFF"
-	self._bootRecord = {
-		startedAt = self._uptimeStart,
-		stages = {},
-	}
 
-	self:_buildHardware()
-	local ok, err = pcall(function()
-		self:_buildRuntime()
-	end)
-	if not ok then
-		self:_setBootStage("FAULT", tostring(err))
-		if self.gpu then
-			self.gpu:hostClear(0x0C)
-			self.gpu:hostWriteLine("runtime init failed", 0x0C)
-			self.gpu:hostWriteLine(tostring(err), 0x0C)
-		end
+	local startLinear = self.cpu:linearAddress(cpuStats.lastCS or 0, cpuStats.lastIP or 0)
+	local bytes = {}
+	for offset = 0, 5 do
+		bytes[#bytes + 1] = string.format("%02X", self.cpu:readPhysical8(startLinear + offset))
 	end
-	if self._bootStage ~= "FAULT" and self._powered then
-		self:_startHeartbeat()
-	elseif self.gpu then
-		self:presentFrame()
+	self.gpu:hostWriteLine("bytes=" .. table.concat(bytes, " "), FAULT_TEXT_ATTR)
+end
+
+function PcSystem:_reportCpuFault(result)
+	self._bootStage = "FAULT"
+	if not self.gpu then
+		self._powered = false
+		return
+	end
+
+	local cpuStats = self.cpu and type(self.cpu.getStats) == "function" and self.cpu:getStats() or nil
+	local location = self:_getCpuFaultLocation(cpuStats)
+
+	self.gpu:hostClear(FAULT_TEXT_ATTR)
+	self.gpu:hostWriteLine("Emulator fault", FAULT_TEXT_ATTR)
+	for _, line in ipairs(wrapText(tostring(result), math.max(16, getTextColumns(self) - 2))) do
+		self.gpu:hostWriteLine(line, FAULT_TEXT_ATTR)
+	end
+	if location then
+		self.gpu:hostWriteLine(location, FAULT_TEXT_ATTR)
+	end
+	if cpuStats and cpuStats.lastOpcode ~= nil then
+		self.gpu:hostWriteLine(
+			string.format("last=%02X start=%04X:%04X", cpuStats.lastOpcode, cpuStats.lastCS or 0, cpuStats.lastIP or 0),
+			FAULT_TEXT_ATTR
+		)
+		self:_writeCpuFaultBytes(cpuStats)
+	end
+
+	self._powered = false
+end
+
+function PcSystem:_tickRuntime(dt)
+	if self.runtime and type(self.runtime.tick) == "function" then
+		self.runtime:tick(dt)
+	end
+end
+
+function PcSystem:_toggleCursor(dt)
+	self._cursorTimer = self._cursorTimer + dt
+	if self._cursorTimer >= CURSOR_BLINK_PERIOD then
+		self._cursorTimer = 0
+		self.gpu:toggleCursor()
 	end
 end
 
 function PcSystem:_stepCPU(dt)
-	local x86 = self.config.X86 or {}
-	local cyclesPerTick
-	if self._bootStage == "RUNNING" then
-		cyclesPerTick = x86.RUN_CYCLES_PER_TICK or 256
-	else
-		cyclesPerTick = x86.BOOT_CYCLES_PER_TICK or 768
-	end
-
-	for _ = 1, cyclesPerTick do
+	for _ = 1, self:_getCyclesPerTick() do
 		local ok, result = pcall(function()
 			return self.cpu:step()
 		end)
 		if not ok then
-			self._bootStage = "FAULT"
-			if self.gpu then
-				local textCols = (self.boardConfig.TEXT_COLS or self.config.TEXT_COLS or 80)
-				local cpuStats = self.cpu and type(self.cpu.getStats) == "function" and self.cpu:getStats() or nil
-				local location = cpuStats
-						and string.format(
-							"pc=%05X cs=%04X ip=%04X",
-							cpuStats.pc or 0,
-							cpuStats.cs or 0,
-							cpuStats.ip or 0
-						)
-					or nil
-				self.gpu:hostClear(0x0C)
-				self.gpu:hostWriteLine("Emulator fault", 0x0C)
-				for _, line in ipairs(wrapText(tostring(result), math.max(16, textCols - 2))) do
-					self.gpu:hostWriteLine(line, 0x0C)
-				end
-				if location then
-					self.gpu:hostWriteLine(location, 0x0C)
-				end
-				if cpuStats and cpuStats.lastOpcode ~= nil then
-					self.gpu:hostWriteLine(
-						string.format(
-							"last=%02X start=%04X:%04X",
-							cpuStats.lastOpcode,
-							cpuStats.lastCS or 0,
-							cpuStats.lastIP or 0
-						),
-						0x0C
-					)
-					if
-						self.cpu
-						and type(self.cpu.linearAddress) == "function"
-						and type(self.cpu.readPhysical8) == "function"
-					then
-						local startLinear = self.cpu:linearAddress(cpuStats.lastCS or 0, cpuStats.lastIP or 0)
-						local bytes = {}
-						for offset = 0, 5 do
-							bytes[#bytes + 1] = string.format("%02X", self.cpu:readPhysical8(startLinear + offset))
-						end
-						self.gpu:hostWriteLine("bytes=" .. table.concat(bytes, " "), 0x0C)
-					end
-				end
-			end
-			self._powered = false
+			self:_reportCpuFault(result)
 			return
 		end
+
 		if result == "HLT" then
 			break
 		end
 	end
 
-	if self.runtime and type(self.runtime.tick) == "function" then
-		self.runtime:tick(dt)
-	end
+	self:_tickRuntime(dt)
 end
 
 function PcSystem:_startHeartbeat()
@@ -243,28 +285,26 @@ function PcSystem:_startHeartbeat()
 		end
 
 		local now = os.clock()
-		local tickHz = math.max(1, self.boardConfig.DISPLAY_REFRESH_HZ or 60)
-		local dt = 1 / tickHz
+		local dt = getTickDuration(self.boardConfig)
 		self._lastHeartbeatAt = now
 		self.bus:processDMA(dt)
 		self:_stepCPU(dt)
-
-		self._cursorTimer = self._cursorTimer + dt
-		if self._cursorTimer >= 0.5 then
-			self._cursorTimer = 0
-			self.gpu:toggleCursor()
-		end
-
+		self:_toggleCursor(dt)
 		self:presentFrame()
 		task.delay(dt, tick)
 	end
 
-	local startHz = math.max(1, self.boardConfig.DISPLAY_REFRESH_HZ or 60)
-	task.delay(1 / startHz, tick)
+	task.delay(getTickDuration(self.boardConfig), tick)
 end
 
 function PcSystem:setFramePresenter(presentFrame)
 	self._presentFrame = presentFrame
+end
+
+function PcSystem:presentFrame()
+	if self.gpu then
+		self.gpu:present(self._presentFrame)
+	end
 end
 
 function PcSystem:keyDown(key)
@@ -276,12 +316,6 @@ end
 function PcSystem:keyUp(key)
 	if self.keyboard then
 		self.keyboard:keyUp(key)
-	end
-end
-
-function PcSystem:presentFrame()
-	if self.gpu then
-		self.gpu:present(self._presentFrame)
 	end
 end
 
@@ -301,6 +335,31 @@ function PcSystem:_powerDown(clearScreen)
 	if clearScreen and self.gpu then
 		self.gpu:clearHostOverlay()
 		self.gpu:biosSetVideoMode(0x03)
+		self:presentFrame()
+	end
+end
+
+function PcSystem:powerOn()
+	if self._powered then
+		return
+	end
+
+	self._powered = true
+	self._uptimeStart = os.clock()
+	self._bootStage = "OFF"
+	self:_initializeBootRecord()
+
+	self:_buildHardware()
+	local ok, err = pcall(function()
+		self:_buildRuntime()
+	end)
+	if not ok then
+		self:_recordRuntimeInitFault(err)
+	end
+
+	if self._bootStage ~= "FAULT" and self._powered then
+		self:_startHeartbeat()
+	elseif self.gpu then
 		self:presentFrame()
 	end
 end
@@ -340,15 +399,15 @@ function PcSystem:getBootRecord()
 end
 
 function PcSystem:getStats()
-	local cpuStats = self.cpu and self.cpu:getStats() or {}
-	local ramStats = self.ram and self.ram:getStats() or {}
-	local hddStats = self.hdd and self.hdd:getStats() or {}
-	local gpuStats = self.gpu and self.gpu:getStats() or {}
-	local busStats = self.bus and self.bus:getStats() or {}
+	local cpuStats = getHardwareStats(self.cpu)
+	local ramStats = getHardwareStats(self.ram)
+	local hddStats = getHardwareStats(self.hdd)
+	local gpuStats = getHardwareStats(self.gpu)
+	local busStats = getHardwareStats(self.bus)
 	local picStats = (self.bus and self.bus.pic and self.bus.pic.getStats and self.bus.pic:getStats()) or {}
 	local timerStats = (self.bus and self.bus.timer and self.bus.timer.getStats and self.bus.timer:getStats()) or {}
-	local serialStats = self.serial and self.serial.getStats and self.serial:getStats() or {}
-	local rtcStats = self.rtc and self.rtc.getStats and self.rtc:getStats() or {}
+	local serialStats = getOptionalStats(self.serial)
+	local rtcStats = getOptionalStats(self.rtc)
 
 	return {
 		powered = self._powered,
