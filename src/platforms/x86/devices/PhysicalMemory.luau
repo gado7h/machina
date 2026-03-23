@@ -1,10 +1,12 @@
 -- PhysicalMemory module
 
+local DEFAULT_PAGE_SIZE = 4096
+
 local PhysicalMemory = {}
 PhysicalMemory.__index = PhysicalMemory
 
 local function pageSizeFor(config)
-	return config.PAGE_SIZE or 4096
+	return config.PAGE_SIZE or DEFAULT_PAGE_SIZE
 end
 
 local function markDirtyRange(self, offset, length)
@@ -23,10 +25,8 @@ function PhysicalMemory.new(config)
 	local self = setmetatable({}, PhysicalMemory)
 	self.config = config
 	self.size = config.RAM_SIZE or config.LOW_RAM_SIZE or 0
-	self._mem = {} -- sparse: addr â†’ byte value
-	self._dirty = {} -- page_index â†’ true/false
-
-	-- ECC simulation counters
+	self._mem = {}
+	self._dirty = {}
 	self.stats = { reads = 0, writes = 0, eccCorrections = 0 }
 	return self
 end
@@ -44,48 +44,49 @@ end
 
 function PhysicalMemory:readRegion(offset, length)
 	local out = {}
-	for i = 0, length - 1 do
-		table.insert(out, self._mem[offset + i] or 0)
+	for index = 1, length do
+		out[index] = self._mem[offset + index - 1] or 0
 	end
 	return out
 end
 
 function PhysicalMemory:writeRegion(offset, bytes)
 	local length = #bytes
-	for i, b in ipairs(bytes) do
-		self._mem[offset + i - 1] = b % 256
+	for index, byteValue in ipairs(bytes) do
+		self._mem[offset + index - 1] = byteValue % 256
 	end
 	self.stats.writes = self.stats.writes + length
 	markDirtyRange(self, offset, length)
 end
 
 function PhysicalMemory:clear(offset, length)
-	for i = 0, length - 1 do
-		self._mem[offset + i] = 0
+	for index = 0, length - 1 do
+		self._mem[offset + index] = 0
 	end
 	self.stats.writes = self.stats.writes + length
 	markDirtyRange(self, offset, length)
 end
 
 function PhysicalMemory:getUsedBytes()
-	local n = 0
+	local count = 0
 	for _ in pairs(self._mem) do
-		n = n + 1
+		count = count + 1
 	end
-	return n
+	return count
 end
 
 function PhysicalMemory:getDirtyPageCount()
-	local n = 0
+	local count = 0
 	for _ in pairs(self._dirty) do
-		n = n + 1
+		count = count + 1
 	end
-	return n
+	return count
 end
 
 function PhysicalMemory:clearDirty()
 	self._dirty = {}
 end
+
 function PhysicalMemory:getStats()
 	return self.stats
 end

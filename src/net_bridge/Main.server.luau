@@ -2,22 +2,26 @@
 
 local Players = game:GetService("Players")
 
-local NetworkService = require(script.Parent.network.NetworkService)
 local HDDStore = require(script.Parent.datastore.HDDStore)
+local NetworkService = require(script.Parent.network.NetworkService)
+
+local HDD_NAMESPACE = "MachinaHDD-v2"
 
 local network = NetworkService.new()
-network:start()
+local hddStore = HDDStore.new(HDD_NAMESPACE)
 
-local hddStore = HDDStore.new("MachinaHDD-v2")
+local function bindRemote(remote, handler)
+	remote.OnServerInvoke = handler
+end
 
-network.remotes.SaveHDD.OnServerInvoke = function(player, hddSnapshot)
+local function saveHDD(_player, hddSnapshot)
 	if type(hddSnapshot) ~= "table" then
 		return false, "invalid snapshot"
 	end
-	return hddStore:saveSnapshot(player, hddSnapshot)
+	return hddStore:saveSnapshot(_player, hddSnapshot)
 end
 
-network.remotes.LoadHDD.OnServerInvoke = function(player)
+local function loadHDD(player)
 	local snapshot, err = hddStore:loadSnapshot(player)
 	if not snapshot then
 		return nil, err
@@ -25,12 +29,18 @@ network.remotes.LoadHDD.OnServerInvoke = function(player)
 	return snapshot
 end
 
-network.remotes.SyncMachineState.OnServerInvoke = function(_, state)
+local function syncMachineState(_, state)
 	if type(state) ~= "table" then
 		return false, "invalid state"
 	end
 	return true
 end
+
+network:start()
+
+bindRemote(network.remotes.SaveHDD, saveHDD)
+bindRemote(network.remotes.LoadHDD, loadHDD)
+bindRemote(network.remotes.SyncMachineState, syncMachineState)
 
 Players.PlayerRemoving:Connect(function(_)
 	-- Hook point for deferred autosave orchestration

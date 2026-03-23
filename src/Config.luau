@@ -1,14 +1,44 @@
---Central configuration for the Machina x86 PC emulator.
---PcSystem reads this directly. buildBoardConfig() merges Config.X86 fields
---on top of the defaults below, so X86 values always take precedence.
+-- Central configuration for the Machina x86 PC emulator.
+-- PcSystem reads this directly. buildBoardConfig() merges Config.X86 fields
+-- on top of the defaults below, so X86 values always take precedence.
 
 local Config = {}
+
+local DISPLAY_REFRESH_HZ = 60
+local DISK_MODEL = "Machina Virtual ATA"
+local PAGE_SIZE = 4096
+
+local MEMORY_LAYOUT = {
+	ROM_BASE = 0x000F0000,
+	ROM_SIZE = 0x00010000,
+	RAM_BASE = 0x00000000,
+	RAM_SIZE = 0x000A0000,
+	VRAM_BASE = 0x000A0000,
+	VRAM_SIZE = 0x00020000,
+}
+
+local DEFAULT_PIC_VECTORS = {
+	master = 0x20,
+	slave = 0x28,
+}
+
+local BIOS_PIC_VECTORS = {
+	master = 0x08,
+	slave = 0x70,
+}
+
+local VIDEO_LAYOUT = {
+	VIDEO_BASE = MEMORY_LAYOUT.VRAM_BASE,
+	VIDEO_SIZE = MEMORY_LAYOUT.VRAM_SIZE,
+	TEXT_BUFFER_BASE = 0x000B8000,
+	TEXT_BUFFER_SIZE = 0x00008000,
+}
 
 Config.EMULATION = {
 	PROFILE = "x86-bios",
 }
 
-Config.DISPLAY_REFRESH_HZ = 60
+Config.DISPLAY_REFRESH_HZ = DISPLAY_REFRESH_HZ
 
 Config.SCREEN_W = 640
 Config.SCREEN_H = 400
@@ -23,29 +53,27 @@ Config.PAD_X = 0
 Config.PAD_Y = 0
 Config.FONT_SMOOTHING = false
 
---Storage
+-- Storage
 Config.DISK_BLOCKS = 204800
-Config.DISK_MODEL = "Machina Virtual ATA"
+Config.DISK_MODEL = DISK_MODEL
 
---Memory layout defaults
---These are fallbacks only. Config.X86 overrides all of them at runtime
---via buildBoardConfig(), so edit Config.X86 for actual values.
-Config.PAGE_SIZE = 4096
+-- Memory layout defaults
+-- These are fallbacks only. Config.X86 overrides all of them at runtime
+-- via buildBoardConfig(), so edit Config.X86 for actual values.
+Config.PAGE_SIZE = PAGE_SIZE
 
-Config.ROM_BASE = 0x000F0000
-Config.ROM_SIZE = 0x00010000
+Config.ROM_BASE = MEMORY_LAYOUT.ROM_BASE
+Config.ROM_SIZE = MEMORY_LAYOUT.ROM_SIZE
+Config.RAM_BASE = MEMORY_LAYOUT.RAM_BASE
+Config.RAM_SIZE = MEMORY_LAYOUT.RAM_SIZE
+Config.VRAM_BASE = MEMORY_LAYOUT.VRAM_BASE
+Config.VRAM_SIZE = MEMORY_LAYOUT.VRAM_SIZE
 
-Config.RAM_BASE = 0x00000000
-Config.RAM_SIZE = 0x000A0000
-
-Config.VRAM_BASE = 0x000A0000
-Config.VRAM_SIZE = 0x00020000
-
---Interrupt controller
---Defaults before the BIOS programs the PIC. X86 overrides these to the
---real BIOS values (master 0x08 / slave 0x70).
-Config.PIC_VECTOR_BASE_MASTER = 0x20
-Config.PIC_VECTOR_BASE_SLAVE = 0x28
+-- Interrupt controller
+-- Defaults before the BIOS programs the PIC. X86 overrides these to the
+-- real BIOS values (master 0x08 / slave 0x70).
+Config.PIC_VECTOR_BASE_MASTER = DEFAULT_PIC_VECTORS.master
+Config.PIC_VECTOR_BASE_SLAVE = DEFAULT_PIC_VECTORS.slave
 
 Config.IRQ = {
 	TIMER = 0,
@@ -60,7 +88,7 @@ Config.TIMER = {
 	DEFAULT_DIVISOR = 65536,
 }
 
---I/O port
+-- I/O port
 Config.PORT = {
 	PIC_MASTER_CMD = 0x0020,
 	PIC_MASTER_DATA = 0x0021,
@@ -98,22 +126,22 @@ Config.PORT = {
 	IDE_PRIMARY_CTRL = 0x03F6,
 }
 
---x86 BIOS subsystem
+-- x86 BIOS subsystem
 Config.X86 = {
-	HEARTBEAT_HZ = Config.DISPLAY_REFRESH_HZ,
+	HEARTBEAT_HZ = DISPLAY_REFRESH_HZ,
 	BOOT_CYCLES_PER_TICK = 1536,
 	RUN_CYCLES_PER_TICK = 1024,
 
-	ROM_BASE = 0x000F0000,
-	ROM_SIZE = 0x00010000,
+	ROM_BASE = MEMORY_LAYOUT.ROM_BASE,
+	ROM_SIZE = MEMORY_LAYOUT.ROM_SIZE,
 
-	LOW_RAM_BASE = 0x00000000,
-	LOW_RAM_SIZE = 0x000A0000,
+	LOW_RAM_BASE = MEMORY_LAYOUT.RAM_BASE,
+	LOW_RAM_SIZE = MEMORY_LAYOUT.RAM_SIZE,
 
-	VIDEO_BASE = 0x000A0000,
-	VIDEO_SIZE = 0x00020000,
-	TEXT_BUFFER_BASE = 0x000B8000,
-	TEXT_BUFFER_SIZE = 0x00008000,
+	VIDEO_BASE = VIDEO_LAYOUT.VIDEO_BASE,
+	VIDEO_SIZE = VIDEO_LAYOUT.VIDEO_SIZE,
+	TEXT_BUFFER_BASE = VIDEO_LAYOUT.TEXT_BUFFER_BASE,
+	TEXT_BUFFER_SIZE = VIDEO_LAYOUT.TEXT_BUFFER_SIZE,
 
 	RESET_VECTOR_SEG = 0xF000,
 	RESET_VECTOR_OFF = 0xFFF0,
@@ -128,8 +156,8 @@ Config.X86 = {
 	SECTORS_PER_TRACK = 18,
 	HEADS = 1,
 
-	PIC_VECTOR_BASE_MASTER = 0x08,
-	PIC_VECTOR_BASE_SLAVE = 0x70,
+	PIC_VECTOR_BASE_MASTER = BIOS_PIC_VECTORS.master,
+	PIC_VECTOR_BASE_SLAVE = BIOS_PIC_VECTORS.slave,
 
 	IMAGE = {
 		SOURCE = "imported",

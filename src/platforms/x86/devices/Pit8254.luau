@@ -1,3 +1,5 @@
+local CHANNEL_OFFSETS = { 0, 1, 2 }
+
 local Pit8254 = {}
 Pit8254.__index = Pit8254
 
@@ -28,17 +30,16 @@ function Pit8254.new(config)
 	local self = setmetatable({}, Pit8254)
 	self.config = config
 
-	local timerCfg = config.TIMER or {}
-	self._baseHz = timerCfg.BASE_HZ or 1193182
+	local timerConfig = config.TIMER or {}
+	self._baseHz = timerConfig.BASE_HZ or 1193182
 	self._channels = {
-		[0] = newChannel(timerCfg.DEFAULT_DIVISOR or 0),
+		[0] = newChannel(timerConfig.DEFAULT_DIVISOR or 0),
 		[1] = newChannel(0),
 		[2] = newChannel(0),
 	}
 	self._subTicks = 0
 	self._enabled = true
 	self._irqEnabled = true
-
 	self.stats = {
 		ticks = 0,
 		irqs = 0,
@@ -46,23 +47,19 @@ function Pit8254.new(config)
 	return self
 end
 
+function Pit8254:_registerChannelPort(bus, basePort, index)
+	bus:registerPort(basePort + CHANNEL_OFFSETS[index + 1], function()
+		return self:_readChannel(index)
+	end, function(v)
+		self:_writeChannel(index, v)
+	end, "PIT CH" .. tostring(index))
+end
+
 function Pit8254:attachBus(bus)
 	self._bus = bus
-	bus:registerPort(self.config.PORT.PIT_CHAN0, function()
-		return self:_readChannel(0)
-	end, function(v)
-		self:_writeChannel(0, v)
-	end, "PIT CH0")
-	bus:registerPort(self.config.PORT.PIT_CHAN0 + 1, function()
-		return self:_readChannel(1)
-	end, function(v)
-		self:_writeChannel(1, v)
-	end, "PIT CH1")
-	bus:registerPort(self.config.PORT.PIT_CHAN0 + 2, function()
-		return self:_readChannel(2)
-	end, function(v)
-		self:_writeChannel(2, v)
-	end, "PIT CH2")
+	for _, index in ipairs({ 0, 1, 2 }) do
+		self:_registerChannelPort(bus, self.config.PORT.PIT_CHAN0, index)
+	end
 	bus:registerPort(self.config.PORT.PIT_CMD, function()
 		return 0
 	end, function(v)
@@ -95,16 +92,19 @@ function Pit8254:_readLatchedByte(channel, value)
 	if channel.accessMode == 2 then
 		return math.floor(value / 0x100) % 0x100
 	end
+
 	local byteValue
 	if channel.readFlipFlop == 0 then
 		byteValue = value % 0x100
 	else
 		byteValue = math.floor(value / 0x100) % 0x100
 	end
+
 	channel.readFlipFlop = 1 - channel.readFlipFlop
 	if channel.readFlipFlop == 0 then
 		channel.latchValue = nil
 	end
+
 	return byteValue
 end
 
@@ -113,6 +113,7 @@ function Pit8254:_readChannel(index)
 	if not channel then
 		return 0
 	end
+
 	local value = channel.latchValue
 	if value == nil then
 		value = self:_currentCount(channel)
@@ -133,6 +134,7 @@ function Pit8254:_writeChannel(index, value)
 	if not channel then
 		return
 	end
+
 	local byteValue = bit32.band(tonumber(value) or 0, 0xFF)
 	if channel.accessMode == 1 then
 		self:_commitReload(channel, byteValue)
@@ -142,6 +144,7 @@ function Pit8254:_writeChannel(index, value)
 		self:_commitReload(channel, bit32.lshift(byteValue, 8))
 		return
 	end
+
 	if channel.writeFlipFlop == 0 then
 		channel.writeLatch = byteValue
 		channel.writeFlipFlop = 1
@@ -158,10 +161,12 @@ function Pit8254:_writeCommand(value)
 	if select == 3 then
 		return
 	end
+
 	local channel = self._channels[select]
 	if not channel then
 		return
 	end
+
 	local accessMode = bit32.band(bit32.rshift(v, 4), 0x03)
 	local mode = bit32.band(bit32.rshift(v, 1), 0x07)
 	if mode == 6 then
@@ -169,10 +174,12 @@ function Pit8254:_writeCommand(value)
 	elseif mode == 7 then
 		mode = 3
 	end
+
 	if accessMode == 0 then
 		self:_latchCount(channel)
 		return
 	end
+
 	channel.accessMode = accessMode
 	channel.mode = mode
 	channel.bcd = bit32.band(v, 0x01) ~= 0
@@ -229,6 +236,7 @@ function Pit8254:tick(dt)
 	if not self._enabled then
 		return
 	end
+
 	dt = tonumber(dt) or 0
 	if dt <= 0 then
 		return
@@ -239,6 +247,7 @@ function Pit8254:tick(dt)
 	if elapsedTicks <= 0 then
 		return
 	end
+
 	self._subTicks = self._subTicks - elapsedTicks
 	self:_tickChannel0(elapsedTicks)
 end
@@ -247,11 +256,14 @@ function Pit8254:memRead(offset)
 	offset = tonumber(offset) or -1
 	if offset == 0x00 then
 		return self:_readChannel(0)
-	elseif offset == 0x01 then
+	end
+	if offset == 0x01 then
 		return self:_readChannel(1)
-	elseif offset == 0x02 then
+	end
+	if offset == 0x02 then
 		return self:_readChannel(2)
-	elseif offset == 0x03 then
+	end
+	if offset == 0x03 then
 		return 0
 	end
 	return 0
