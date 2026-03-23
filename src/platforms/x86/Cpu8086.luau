@@ -7,6 +7,9 @@ local FLAG_SF = 0x0080
 local FLAG_IF = 0x0200
 local FLAG_OF = 0x0800
 
+local REG16_NAMES = { "AX", "CX", "DX", "BX", "SP", "BP", "SI", "DI" }
+local SEGMENT_NAMES = { "ES", "CS", "SS", "DS" }
+
 local function signExtend8(value)
 	value = value % 0x100
 	if value >= 0x80 then
@@ -136,37 +139,18 @@ function Cpu8086:setFlag(mask, enabled)
 end
 
 function Cpu8086:getReg16(code)
-	return ({
-		self.reg16.AX,
-		self.reg16.CX,
-		self.reg16.DX,
-		self.reg16.BX,
-		self.reg16.SP,
-		self.reg16.BP,
-		self.reg16.SI,
-		self.reg16.DI,
-	})[code + 1] or 0
+	local name = REG16_NAMES[(tonumber(code) or 0) + 1]
+	return (name and self.reg16[name]) or 0
 end
 
 function Cpu8086:setReg16(code, value)
-	local v = (tonumber(value) or 0) % 0x10000
-	if code == 0 then
-		self.reg16.AX = v
-	elseif code == 1 then
-		self.reg16.CX = v
-	elseif code == 2 then
-		self.reg16.DX = v
-	elseif code == 3 then
-		self.reg16.BX = v
-	elseif code == 4 then
-		self.reg16.SP = v
-	elseif code == 5 then
-		self.reg16.BP = v
-	elseif code == 6 then
-		self.reg16.SI = v
-	elseif code == 7 then
-		self.reg16.DI = v
+	local name = REG16_NAMES[(tonumber(code) or 0) + 1]
+	if not name then
+		return
 	end
+
+	local v = (tonumber(value) or 0) % 0x10000
+	self.reg16[name] = v
 end
 
 function Cpu8086:getReg8(code)
@@ -190,20 +174,18 @@ function Cpu8086:setReg8(code, value)
 end
 
 function Cpu8086:getSeg(code)
-	return ({ self.seg.ES, self.seg.CS, self.seg.SS, self.seg.DS })[code + 1] or 0
+	local name = SEGMENT_NAMES[(tonumber(code) or 0) + 1]
+	return (name and self.seg[name]) or 0
 end
 
 function Cpu8086:setSeg(code, value)
-	local v = (tonumber(value) or 0) % 0x10000
-	if code == 0 then
-		self.seg.ES = v
-	elseif code == 1 then
-		self.seg.CS = v
-	elseif code == 2 then
-		self.seg.SS = v
-	elseif code == 3 then
-		self.seg.DS = v
+	local name = SEGMENT_NAMES[(tonumber(code) or 0) + 1]
+	if not name then
+		return
 	end
+
+	local v = (tonumber(value) or 0) % 0x10000
+	self.seg[name] = v
 end
 
 function Cpu8086:linearAddress(segment, offset)

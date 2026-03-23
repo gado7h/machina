@@ -18,6 +18,7 @@ function SystemBus.new(config)
 	self._dmaQueue = {} -- pending DMA transfers
 	self._logs = {}
 	self._fault = nil
+	self._lastMemMapping = nil
 	self._defaultDt = defaultTickDt(config)
 
 	-- Statistics
@@ -80,15 +81,24 @@ function SystemBus:mapMemory(base, size, device, tag, opts)
 	table.sort(self._memmap, function(a, b)
 		return a.base < b.base
 	end)
+	self._lastMemMapping = nil
 	self:_log("BUS", string.format("Mapped [%08X-%08X] -> %s", base, base + size - 1, tag or "?"))
 end
 
 local function findMapping(self, addr)
+	local cached = self._lastMemMapping
+	if cached and addr >= cached.base and addr < cached.base + cached.size then
+		return cached
+	end
+
 	for _, m in ipairs(self._memmap) do
 		if addr >= m.base and addr < m.base + m.size then
+			self._lastMemMapping = m
 			return m
 		end
 	end
+
+	self._lastMemMapping = nil
 	return nil
 end
 

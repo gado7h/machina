@@ -446,185 +446,10 @@ local function absoluteCellToVisible(self, absoluteCell)
 	return visibleCell % self.config.TEXT_COLS, math.floor(visibleCell / self.config.TEXT_COLS)
 end
 
-function VgaAdapter:attachBus(bus)
-	bus:registerPort(self.config.PORT.VGA_MISC_WRITE, function()
-		return self._miscOutput
-	end, function(v)
-		self._miscOutput = bit32.band(tonumber(v) or 0, 0xFF)
-	end, "VGA Misc")
-	bus:registerPort(self.config.PORT.VGA_CRTC_INDEX, function()
-		return self._crtcIndex
-	end, function(v)
-		self._crtcIndex = bit32.band(tonumber(v) or 0, 0x1F)
-	end, "VGA CRTC Index")
-	bus:registerPort(self.config.PORT.VGA_CRTC_DATA, function()
-		return self._crtc[self._crtcIndex] or 0
-	end, function(v)
-		local value = bit32.band(tonumber(v) or 0, 0xFF)
-		self._crtc[self._crtcIndex] = value
-		if self._crtcIndex == 0x0C or self._crtcIndex == 0x0D then
-			markAllCellsDirty(self)
-			self._dirty = true
-			applyCursorRegisters(self)
-		elseif self._crtcIndex == 0x0E or self._crtcIndex == 0x0F then
-			markCellDirty(self, self._cursorCol, self._cursorRow)
-			applyCursorRegisters(self)
-			markCellDirty(self, self._cursorCol, self._cursorRow)
-			self._dirty = true
-		end
-	end, "VGA CRTC Data")
-end
-
---  Bus / VRAM interface
-
-function VgaAdapter:memRead(offset)
-	return self._vram[offset] or 0
-end
-
-function VgaAdapter:memWrite(offset, value)
-	self._vram[offset] = value % 256
-	self._dirty = true
-
-	if self.mode == "TEXT" then
-		local cellIdx = math.floor(offset / 2)
-		if self._textBuf[cellIdx] then
-			if offset % 2 == 0 then
-				self._textBuf[cellIdx].char = value % 256
-			else
-				self._textBuf[cellIdx].attr = value % 256
-			end
-			local visibleCol, visibleRow = absoluteCellToVisible(self, cellIdx)
-			if visibleCol ~= nil and visibleRow ~= nil then
-				markCellDirty(self, visibleCol, visibleRow)
-			end
-		end
-	else
-		-- Pixel mode: 4 bytes per pixel (A R G B at offsets 0 1 2 3)
-		local pixIdx = math.floor(offset / 4)
-		local comp = offset % 4
-		local cur = self._framebuf[pixIdx] or 0xFF000000
-		if comp == 0 then
-			self._framebuf[pixIdx] = bit32.bor(bit32.band(cur, 0x00FFFFFF), value * 16777216)
-		elseif comp == 1 then
-			self._framebuf[pixIdx] = bit32.bor(bit32.band(cur, 0xFF00FFFF), value * 65536)
-		elseif comp == 2 then
-			self._framebuf[pixIdx] = bit32.bor(bit32.band(cur, 0xFFFF00FF), value * 256)
-		else
-			self._framebuf[pixIdx] = bit32.bor(bit32.band(cur, 0xFFFFFF00), value)
-		end
-	end
-end
-
---  High-level text API  (called by BIOS / kernel / shell)
-
-function VgaAdapter:setMode(mode)
-	self.mode = mode
-	self._dirty = true
-	if mode == "TEXT" then
-		self:clearScreen()
-	end
-end
-
-function VgaAdapter:clearScreen(attr)
-	attr = attr or 0x07
-	for i = 0, self._textCellCount - 1 do
-		self._textBuf[i] = { char = 32, attr = attr }
-		syncCellToVRAM(self, i)
-	end
-	self._cursorRow = 0
-	self._cursorCol = 0
-	self._crtc[0x0C] = 0
-	self._crtc[0x0D] = 0
-	updateCursorRegisters(self)
-	self._lastCursor.col = 0
-	self._lastCursor.row = 0
-	markAllCellsDirty(self)
-	self._dirty = true
-end
-
-function VgaAdapter:putChar(col, row, ch, attr)
-	if col < 0 or col >= self.config.TEXT_COLS then
-		return
-	end
-	if row < 0 or row >= self.config.TEXT_ROWS then
-		return
-	end
-	local idx = (textStartCell(self) + (row * self.config.TEXT_COLS) + col) % math.max(1, self._textCellCount)
-	local newChar = (type(ch) == "string") and string.byte(ch, 1) or ch
-	local newAttr = attr or 0x07
-	local cur = self._textBuf[idx]
-	if cur and cur.char == newChar and cur.attr == newAttr then
-		return
-	end
-	self._textBuf[idx] = {
-		char = newChar,
-		attr = newAttr,
-	}
-	syncCellToVRAM(self, idx)
-	markCellDirty(self, col, row)
-	self._dirty = true
-	self.stats.textWrites = self.stats.textWrites + 1
-end
-
 function VgaAdapter:writeString(col, row, str, attr)
 	for i = 1, #str do
 		self:putChar(col + i - 1, row, string.byte(str, i), attr)
 	end
-end
-
-function VgaAdapter:print(str, attr)
-	attr = attr or 0x07
-	for i = 1, #str do
-		local c = string.byte(str, i)
-		if c == 10 then
-			self._cursorCol = 0
-			self._cursorRow = self._cursorRow + 1
-		elseif c == 13 then
-			self._cursorCol = 0
-		elseif c == 8 then
-			if self._cursorCol > 0 then
-				self._cursorCol = self._cursorCol - 1
-				self:putChar(self._cursorCol, self._cursorRow, 32, attr)
-			end
-		else
-			self:putChar(self._cursorCol, self._cursorRow, c, attr)
-			self._cursorCol = self._cursorCol + 1
-			if self._cursorCol >= self.config.TEXT_COLS then
-				self._cursorCol = 0
-				self._cursorRow = self._cursorRow + 1
-			end
-		end
-		if self._cursorRow >= self.config.TEXT_ROWS then
-			self:_scrollUp()
-			self._cursorRow = self.config.TEXT_ROWS - 1
-		end
-	end
-	updateCursorRegisters(self)
-	self._dirty = true
-end
-
-function VgaAdapter:println(str, attr)
-	self:print(str .. "\n", attr)
-end
-
-function VgaAdapter:_scrollUp()
-	local cols = self.config.TEXT_COLS
-	local rows = self.config.TEXT_ROWS
-	local startCell = textStartCell(self)
-	for row = 0, rows - 2 do
-		for col = 0, cols - 1 do
-			local dstIdx = (startCell + row * cols + col) % math.max(1, self._textCellCount)
-			local srcIdx = (startCell + (row + 1) * cols + col) % math.max(1, self._textCellCount)
-			self._textBuf[dstIdx] = table.clone(self._textBuf[srcIdx] or { char = 32, attr = 0x07 })
-			syncCellToVRAM(self, dstIdx)
-		end
-	end
-	for col = 0, cols - 1 do
-		local idx = (startCell + (rows - 1) * cols + col) % math.max(1, self._textCellCount)
-		self._textBuf[idx] = { char = 32, attr = 0x07 }
-		syncCellToVRAM(self, idx)
-	end
-	markAllCellsDirty(self)
 end
 
 function VgaAdapter:moveCursor(col, row)
@@ -638,13 +463,6 @@ end
 
 function VgaAdapter:getCursor()
 	return self._cursorCol, self._cursorRow
-end
-
-function VgaAdapter:toggleCursor()
-	markCellDirty(self, self._lastCursor.col, self._lastCursor.row)
-	markCellDirty(self, self._cursorCol, self._cursorRow)
-	self._cursorVisible = not self._cursorVisible
-	self._dirty = true
 end
 
 function VgaAdapter:_setPixelRaw(x, y, argb)
@@ -901,31 +719,6 @@ function VgaAdapter:_packPixelBuffer()
 	end
 
 	return pb
-end
-
-function VgaAdapter:present(presentFn)
-	if not self._dirty then
-		return
-	end
-
-	local now = os.clock()
-	if self._nextFrameTime ~= 0 and now < self._nextFrameTime then
-		return
-	end
-
-	if self.mode == "TEXT" then
-		self:_renderText()
-	end
-
-	self.stats.flushes = self.stats.flushes + 1
-
-	local pixelBuffer = self:_packPixelBuffer()
-	if presentFn then
-		presentFn(pixelBuffer, self.W, self.H)
-	end
-
-	self._dirty = false
-	self._nextFrameTime = now + self._frameInterval
 end
 
 function VgaAdapter:getFrame()
