@@ -1,28 +1,18 @@
 local BootImageCatalog = require(script.Parent.BootImageCatalog)
 local BiosInterrupts = require(script.Parent.BiosInterrupts)
+local DiagnosticsState = require(script.Parent.HardwareDiagnosticsState)
 local ProtectedModeSelfTest = require(script.Parent.ProtectedModeSelfTest)
 
 local HardwareDiagnostics = {}
 
-local function deepCopy(value)
-	if type(value) ~= "table" then
-		return value
-	end
-	local out = {}
-	for key, child in pairs(value) do
-		out[key] = deepCopy(child)
-	end
-	return out
-end
-
-local function restoreTable(target, snapshot)
-	for key in pairs(target) do
-		target[key] = nil
-	end
-	for key, value in pairs(snapshot) do
-		target[key] = deepCopy(value)
-	end
-end
+local deepCopy = DiagnosticsState.deepCopy
+local copyStats = DiagnosticsState.copyStats
+local restoreStats = DiagnosticsState.restoreStats
+local snapshotPIC = DiagnosticsState.snapshotPIC
+local restorePIC = DiagnosticsState.restorePIC
+local snapshotMachine = DiagnosticsState.snapshotMachine
+local restoreMachine = DiagnosticsState.restoreMachine
+local readTextScreen = DiagnosticsState.readTextScreen
 
 local function wrapTest(name, run)
 	local ok, passed, detail = pcall(run)
@@ -40,16 +30,6 @@ local function wrapTest(name, run)
 	}
 end
 
-local function copyStats(device)
-	return deepCopy(device and device.stats or {})
-end
-
-local function restoreStats(device, snapshot)
-	if device and device.stats and snapshot then
-		restoreTable(device.stats, snapshot)
-	end
-end
-
 local function formatHex(value, width)
 	local digits = width or 2
 	return string.format("0x%0" .. tostring(digits) .. "X", (tonumber(value) or 0) % (2 ^ (digits * 4)))
@@ -61,23 +41,6 @@ local function decodeRTCValue(value, binaryMode)
 		return byteValue
 	end
 	return ((math.floor(byteValue / 16) % 16) * 10) + (byteValue % 16)
-end
-
-local function snapshotPIC(pic)
-	if not pic then
-		return nil
-	end
-	return {
-		master = deepCopy(pic.master),
-		slave = deepCopy(pic.slave),
-		stats = copyStats(pic),
-	}
-end
-
-local function restorePIC(pic, snapshot)
-	pic.master = deepCopy(snapshot.master)
-	pic.slave = deepCopy(snapshot.slave)
-	restoreStats(pic, snapshot.stats)
 end
 
 local function testPIC(machine, config)
@@ -594,316 +557,6 @@ local function testProtectedMode(machine, config)
 	return ProtectedModeSelfTest.run(machine, config)
 end
 
-local function assignFields(target, snapshot)
-	if not target or not snapshot then
-		return
-	end
-	for key, value in pairs(snapshot) do
-		target[key] = deepCopy(value)
-	end
-end
-
-local function snapshotTimer(timer)
-	if not timer then
-		return nil
-	end
-	return {
-		_baseHz = timer._baseHz,
-		_channels = deepCopy(timer._channels),
-		_subTicks = timer._subTicks,
-		_enabled = timer._enabled,
-		_irqEnabled = timer._irqEnabled,
-		stats = copyStats(timer),
-	}
-end
-
-local function restoreTimer(timer, snapshot)
-	if not timer or not snapshot then
-		return
-	end
-	timer._baseHz = snapshot._baseHz
-	timer._channels = deepCopy(snapshot._channels)
-	timer._subTicks = snapshot._subTicks
-	timer._enabled = snapshot._enabled
-	timer._irqEnabled = snapshot._irqEnabled
-	restoreStats(timer, snapshot.stats)
-end
-
-local function snapshotCpu(cpu)
-	if not cpu then
-		return nil
-	end
-	return {
-		reg16 = deepCopy(cpu.reg16),
-		reg32 = deepCopy(cpu.reg32),
-		seg = deepCopy(cpu.seg),
-		ip = cpu.ip,
-		eip = cpu.eip,
-		flags = cpu.flags,
-		halted = cpu.halted,
-		gdtr = deepCopy(cpu.gdtr),
-		idtr = deepCopy(cpu.idtr),
-		cr0 = cpu.cr0,
-		protectedMode = cpu.protectedMode,
-		segCache = deepCopy(cpu.segCache),
-		lastError = cpu._lastError,
-		lastStep = deepCopy(cpu._lastStep),
-		stats = deepCopy(cpu.stats),
-		bios = cpu._bios,
-	}
-end
-
-local function restoreCpu(cpu, snapshot)
-	if not cpu or not snapshot then
-		return
-	end
-	assignFields(cpu.reg16, snapshot.reg16)
-	assignFields(cpu.reg32, snapshot.reg32)
-	assignFields(cpu.seg, snapshot.seg)
-	cpu.ip = snapshot.ip
-	cpu.eip = snapshot.eip
-	cpu.flags = snapshot.flags
-	cpu.halted = snapshot.halted
-	assignFields(cpu.gdtr, snapshot.gdtr)
-	assignFields(cpu.idtr, snapshot.idtr)
-	cpu.cr0 = snapshot.cr0
-	cpu.protectedMode = snapshot.protectedMode
-	assignFields(cpu.segCache, snapshot.segCache)
-	cpu._lastError = snapshot.lastError
-	assignFields(cpu._lastStep, snapshot.lastStep)
-	assignFields(cpu.stats, snapshot.stats)
-	cpu:attachBIOS(snapshot.bios)
-end
-
-local function snapshotVga(gpu)
-	if not gpu then
-		return nil
-	end
-	return {
-		_biosMode = gpu._biosMode,
-		_nextFrameTime = gpu._nextFrameTime,
-		_frameInterval = gpu._frameInterval,
-		_apertureBase = gpu._apertureBase,
-		_apertureSize = gpu._apertureSize,
-		_textBaseOffset = gpu._textBaseOffset,
-		_textByteCount = gpu._textByteCount,
-		_textCellCount = gpu._textCellCount,
-		_planeSize = gpu._planeSize,
-		_crtcIndex = gpu._crtcIndex,
-		_crtc = deepCopy(gpu._crtc),
-		_miscOutput = gpu._miscOutput,
-		_status1 = gpu._status1,
-		_featureControl = gpu._featureControl,
-		_attrFlipFlop = gpu._attrFlipFlop,
-		_attrIndex = gpu._attrIndex,
-		_seqIndex = gpu._seqIndex,
-		_gcIndex = gpu._gcIndex,
-		_dacMask = gpu._dacMask,
-		_dacReadIndex = gpu._dacReadIndex,
-		_dacWriteIndex = gpu._dacWriteIndex,
-		_dacReadComponent = gpu._dacReadComponent,
-		_dacWriteComponent = gpu._dacWriteComponent,
-		_sequencer = deepCopy(gpu._sequencer),
-		_graphics = deepCopy(gpu._graphics),
-		_attribute = deepCopy(gpu._attribute),
-		_dac = deepCopy(gpu._dac),
-		_textBuf = deepCopy(gpu._textBuf),
-		_vram = deepCopy(gpu._vram),
-		_cursorRow = gpu._cursorRow,
-		_cursorCol = gpu._cursorCol,
-		_cursorVisible = gpu._cursorVisible,
-		_lastCursor = deepCopy(gpu._lastCursor),
-		_dirtyCells = deepCopy(gpu._dirtyCells),
-		_dirtyCellList = deepCopy(gpu._dirtyCellList),
-		_hostOverlay = deepCopy(gpu._hostOverlay),
-		_latch = deepCopy(gpu._latch),
-		_fontHeight = gpu._fontHeight,
-		_timing = deepCopy(gpu._timing),
-		_dirty = gpu._dirty,
-		stats = copyStats(gpu),
-	}
-end
-
-local function restoreVga(gpu, snapshot)
-	if not gpu or not snapshot then
-		return
-	end
-	gpu._biosMode = snapshot._biosMode
-	gpu._nextFrameTime = snapshot._nextFrameTime
-	gpu._frameInterval = snapshot._frameInterval
-	gpu._apertureBase = snapshot._apertureBase
-	gpu._apertureSize = snapshot._apertureSize
-	gpu._textBaseOffset = snapshot._textBaseOffset
-	gpu._textByteCount = snapshot._textByteCount
-	gpu._textCellCount = snapshot._textCellCount
-	gpu._planeSize = snapshot._planeSize
-	gpu._crtcIndex = snapshot._crtcIndex
-	assignFields(gpu._crtc, snapshot._crtc)
-	gpu._miscOutput = snapshot._miscOutput
-	gpu._status1 = snapshot._status1
-	gpu._featureControl = snapshot._featureControl
-	gpu._attrFlipFlop = snapshot._attrFlipFlop
-	gpu._attrIndex = snapshot._attrIndex
-	gpu._seqIndex = snapshot._seqIndex
-	gpu._gcIndex = snapshot._gcIndex
-	gpu._dacMask = snapshot._dacMask
-	gpu._dacReadIndex = snapshot._dacReadIndex
-	gpu._dacWriteIndex = snapshot._dacWriteIndex
-	gpu._dacReadComponent = snapshot._dacReadComponent
-	gpu._dacWriteComponent = snapshot._dacWriteComponent
-	assignFields(gpu._sequencer, snapshot._sequencer)
-	assignFields(gpu._graphics, snapshot._graphics)
-	assignFields(gpu._attribute, snapshot._attribute)
-	assignFields(gpu._dac, snapshot._dac)
-	assignFields(gpu._textBuf, snapshot._textBuf)
-	gpu._vram = deepCopy(snapshot._vram)
-	gpu._cursorRow = snapshot._cursorRow
-	gpu._cursorCol = snapshot._cursorCol
-	gpu._cursorVisible = snapshot._cursorVisible
-	assignFields(gpu._lastCursor, snapshot._lastCursor)
-	assignFields(gpu._dirtyCells, snapshot._dirtyCells)
-	assignFields(gpu._dirtyCellList, snapshot._dirtyCellList)
-	assignFields(gpu._hostOverlay, snapshot._hostOverlay)
-	assignFields(gpu._latch, snapshot._latch)
-	gpu._fontHeight = snapshot._fontHeight
-	assignFields(gpu._timing, snapshot._timing)
-	gpu._dirty = snapshot._dirty
-	restoreStats(gpu, snapshot.stats)
-end
-
-local function snapshotMachine(machine)
-	local bus = machine.bus
-	local ram = machine.ram
-	local rom = machine.rom
-	local hdd = machine.hdd
-	local gpu = machine.gpu
-	return {
-		bootStage = machine._bootStage,
-		bootRecord = deepCopy(machine._bootRecord),
-		powered = machine._powered,
-		heartbeatGeneration = machine._heartbeatGeneration,
-		lastHeartbeatAt = machine._lastHeartbeatAt,
-		uptimeStart = machine._uptimeStart,
-		cursorTimer = machine._cursorTimer,
-		bus = {
-			stats = copyStats(bus),
-			fault = deepCopy(bus and bus._fault),
-			pic = snapshotPIC(bus and bus.pic),
-			timer = snapshotTimer(bus and bus.timer),
-		},
-		cpu = snapshotCpu(machine.cpu),
-		ram = ram
-				and {
-					_mem = deepCopy(ram._mem),
-					_dirty = deepCopy(ram._dirty),
-					stats = copyStats(ram),
-				}
-			or nil,
-		rom = rom
-				and {
-					_data = deepCopy(rom._data),
-					_locked = rom._locked,
-					_unlockSeq = deepCopy(rom._unlockSeq),
-					_unlockStep = rom._unlockStep,
-					stats = copyStats(rom),
-				}
-			or nil,
-		hdd = hdd
-				and {
-					_sectors = deepCopy(hdd._sectors),
-					_activity = hdd._activity,
-					_headPos = hdd._headPos,
-					_status = hdd._status,
-					_error = hdd._error,
-					_features = hdd._features,
-					_sectorCount = hdd._sectorCount,
-					_sectorNumber = hdd._sectorNumber,
-					_cylinderLow = hdd._cylinderLow,
-					_cylinderHigh = hdd._cylinderHigh,
-					_driveHead = hdd._driveHead,
-					_deviceControl = hdd._deviceControl,
-					_ioBuffer = deepCopy(hdd._ioBuffer),
-					_transfer = deepCopy(hdd._transfer),
-					_pending = deepCopy(hdd._pending),
-					stats = copyStats(hdd),
-				}
-			or nil,
-		gpu = snapshotVga(gpu),
-	}
-end
-
-local function restoreMachine(machine, snapshot)
-	if not snapshot then
-		return
-	end
-	machine._bootStage = snapshot.bootStage
-	machine._bootRecord = deepCopy(snapshot.bootRecord)
-	machine._powered = snapshot.powered
-	machine._heartbeatGeneration = snapshot.heartbeatGeneration
-	machine._lastHeartbeatAt = snapshot.lastHeartbeatAt
-	machine._uptimeStart = snapshot.uptimeStart
-	machine._cursorTimer = snapshot.cursorTimer
-
-	if machine.bus and snapshot.bus then
-		assignFields(machine.bus.stats, snapshot.bus.stats)
-		machine.bus._fault = deepCopy(snapshot.bus.fault)
-		restorePIC(machine.bus.pic, snapshot.bus.pic)
-		restoreTimer(machine.bus.timer, snapshot.bus.timer)
-	end
-
-	restoreCpu(machine.cpu, snapshot.cpu)
-
-	if machine.ram and snapshot.ram then
-		machine.ram._mem = deepCopy(snapshot.ram._mem)
-		machine.ram._dirty = deepCopy(snapshot.ram._dirty)
-		restoreStats(machine.ram, snapshot.ram.stats)
-	end
-
-	if machine.rom and snapshot.rom then
-		machine.rom._data = deepCopy(snapshot.rom._data)
-		machine.rom._locked = snapshot.rom._locked
-		machine.rom._unlockSeq = deepCopy(snapshot.rom._unlockSeq)
-		machine.rom._unlockStep = snapshot.rom._unlockStep
-		restoreStats(machine.rom, snapshot.rom.stats)
-	end
-
-	if machine.hdd and snapshot.hdd then
-		machine.hdd._sectors = deepCopy(snapshot.hdd._sectors)
-		machine.hdd._activity = snapshot.hdd._activity
-		machine.hdd._headPos = snapshot.hdd._headPos
-		machine.hdd._status = snapshot.hdd._status
-		machine.hdd._error = snapshot.hdd._error
-		machine.hdd._features = snapshot.hdd._features
-		machine.hdd._sectorCount = snapshot.hdd._sectorCount
-		machine.hdd._sectorNumber = snapshot.hdd._sectorNumber
-		machine.hdd._cylinderLow = snapshot.hdd._cylinderLow
-		machine.hdd._cylinderHigh = snapshot.hdd._cylinderHigh
-		machine.hdd._driveHead = snapshot.hdd._driveHead
-		machine.hdd._deviceControl = snapshot.hdd._deviceControl
-		machine.hdd._ioBuffer = deepCopy(snapshot.hdd._ioBuffer)
-		machine.hdd._transfer = deepCopy(snapshot.hdd._transfer)
-		machine.hdd._pending = deepCopy(snapshot.hdd._pending)
-		restoreStats(machine.hdd, snapshot.hdd.stats)
-	end
-
-	restoreVga(machine.gpu, snapshot.gpu)
-end
-
-local function readTextScreen(machine, config)
-	local x86 = config.X86 or {}
-	local textBase = x86.TEXT_BUFFER_BASE or 0xB8000
-	local textByteCount = x86.TEXT_BUFFER_SIZE or 0x8000
-	local chars = {}
-	for offset = 0, textByteCount - 2, 2 do
-		local ch = (machine.bus and machine.bus.memRead and machine.bus:memRead(textBase + offset)) or 0
-		if ch == 0 then
-			ch = 32
-		end
-		chars[#chars + 1] = string.char(ch % 0x100)
-	end
-	return table.concat(chars)
-end
-
 local function buildValidationImage(config, name)
 	local entry = BootImageCatalog[name]
 	assert(entry and type(entry.build) == "function", "unknown x86 validation image: " .. tostring(name))
@@ -971,13 +624,14 @@ local function runValidationImage(machine, config, imageName, expectedPassText, 
 			if machine.bus and type(machine.bus.peekFault) == "function" then
 				local fault = machine.bus:peekFault()
 				if fault then
-					return false, string.format(
-						"bus fault kind=%s addr=%s op=%s detail=%s",
-						tostring(fault.kind),
-						formatHex(fault.addr, 5),
-						tostring(fault.op),
-						tostring(fault.detail)
-					)
+					return false,
+						string.format(
+							"bus fault kind=%s addr=%s op=%s detail=%s",
+							tostring(fault.kind),
+							formatHex(fault.addr, 5),
+							tostring(fault.op),
+							tostring(fault.detail)
+						)
 				end
 			end
 		end
