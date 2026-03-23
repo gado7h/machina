@@ -195,13 +195,7 @@ function PcSystem:_getCpuFaultLocation(cpuStats)
 end
 
 function PcSystem:_writeCpuFaultBytes(cpuStats)
-	if
-		not (
-			self.cpu
-			and type(self.cpu.linearAddress) == "function"
-			and type(self.cpu.readPhysical8) == "function"
-		)
-	then
+	if not (self.cpu and type(self.cpu.linearAddress) == "function" and type(self.cpu.readPhysical8) == "function") then
 		return
 	end
 

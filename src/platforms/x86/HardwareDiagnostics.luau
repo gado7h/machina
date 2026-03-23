@@ -624,13 +624,14 @@ local function runValidationImage(machine, config, imageName, expectedPassText, 
 			if machine.bus and type(machine.bus.peekFault) == "function" then
 				local fault = machine.bus:peekFault()
 				if fault then
-					return false, string.format(
-						"bus fault kind=%s addr=%s op=%s detail=%s",
-						tostring(fault.kind),
-						formatHex(fault.addr, 5),
-						tostring(fault.op),
-						tostring(fault.detail)
-					)
+					return false,
+						string.format(
+							"bus fault kind=%s addr=%s op=%s detail=%s",
+							tostring(fault.kind),
+							formatHex(fault.addr, 5),
+							tostring(fault.op),
+							tostring(fault.detail)
+						)
 				end
 			end
 		end

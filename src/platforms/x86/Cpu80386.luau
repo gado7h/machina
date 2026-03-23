@@ -717,7 +717,11 @@ function Cpu80386:_loadDataSegmentDescriptor(selector, descriptor, name, desired
 		self:_raiseException(targetName == "SS" and VECTOR_SS or VECTOR_NP, selector or 0, "segment not present")
 	end
 	if descriptor.system then
-		self:_raiseException(self:_segmentFaultVector(targetName), selector or 0, "system descriptor cannot be loaded here")
+		self:_raiseException(
+			self:_segmentFaultVector(targetName),
+			selector or 0,
+			"system descriptor cannot be loaded here"
+		)
 	end
 
 	if targetName == "SS" then
@@ -1153,9 +1157,21 @@ function Cpu80386:_invokeInterrupt(vector, hardware, errorCode, isFault)
 			stackWidth32 = gate.gate32 or newSSDescriptor.default32
 			stackSelector = loadedSS
 			stackDescriptor = newSSDescriptor
-			local switchedSP = self:_pushToDescriptorStack(stackSelector, stackDescriptor, stackWidth32, gate.gate32 and 32 or 16, oldSS)
+			local switchedSP = self:_pushToDescriptorStack(
+				stackSelector,
+				stackDescriptor,
+				stackWidth32,
+				gate.gate32 and 32 or 16,
+				oldSS
+			)
 			self:_setStackPointer(switchedSP, stackWidth32)
-			switchedSP = self:_pushToDescriptorStack(stackSelector, stackDescriptor, stackWidth32, gate.gate32 and 32 or 16, oldSP)
+			switchedSP = self:_pushToDescriptorStack(
+				stackSelector,
+				stackDescriptor,
+				stackWidth32,
+				gate.gate32 and 32 or 16,
+				oldSP
+			)
 			self:_setStackPointer(switchedSP, stackWidth32)
 		end
 

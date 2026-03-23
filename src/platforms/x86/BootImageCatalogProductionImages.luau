@@ -547,30 +547,15 @@ local function buildProtectedModeStubSource(config, pmOffset, kernelBaseLinear, 
 		'  DB "IA-32 protected-mode bring-up", 13, 10, 0',
 		"GDT:",
 		"  DW 0x0000, 0x0000, 0x0000, 0x0000",
-		"  DW "
-			.. Utils.hex16(codeDesc.limitLow)
-			.. ", "
-			.. Utils.hex16(codeDesc.baseLow)
-			.. ", "
-			.. Utils.hex16(codeDesc.accessBaseMid)
-			.. ", "
-			.. Utils.hex16(codeDesc.flagsBaseHigh),
-		"  DW "
-			.. Utils.hex16(dataDesc.limitLow)
-			.. ", "
-			.. Utils.hex16(dataDesc.baseLow)
-			.. ", "
-			.. Utils.hex16(dataDesc.accessBaseMid)
-			.. ", "
-			.. Utils.hex16(dataDesc.flagsBaseHigh),
-		"  DW "
-			.. Utils.hex16(videoDesc.limitLow)
-			.. ", "
-			.. Utils.hex16(videoDesc.baseLow)
-			.. ", "
-			.. Utils.hex16(videoDesc.accessBaseMid)
-			.. ", "
-			.. Utils.hex16(videoDesc.flagsBaseHigh),
+		"  DW " .. Utils.hex16(codeDesc.limitLow) .. ", " .. Utils.hex16(codeDesc.baseLow) .. ", " .. Utils.hex16(
+			codeDesc.accessBaseMid
+		) .. ", " .. Utils.hex16(codeDesc.flagsBaseHigh),
+		"  DW " .. Utils.hex16(dataDesc.limitLow) .. ", " .. Utils.hex16(dataDesc.baseLow) .. ", " .. Utils.hex16(
+			dataDesc.accessBaseMid
+		) .. ", " .. Utils.hex16(dataDesc.flagsBaseHigh),
+		"  DW " .. Utils.hex16(videoDesc.limitLow) .. ", " .. Utils.hex16(videoDesc.baseLow) .. ", " .. Utils.hex16(
+			videoDesc.accessBaseMid
+		) .. ", " .. Utils.hex16(videoDesc.flagsBaseHigh),
 		"GDT_DESC:",
 		"  DW GDT_END - GDT - 1",
 		"  DW " .. Utils.hex16(gdtLinear % 0x10000),

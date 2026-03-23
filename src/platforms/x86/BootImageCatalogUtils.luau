@@ -159,8 +159,7 @@ function BootImageCatalogUtils.buildLoadedBootImage(config, name, kernelSource, 
 		bootLines[#bootLines + 1] = "  MOV SI, BOOT_MSG"
 		bootLines[#bootLines + 1] = "  CALL PRINT_STRING"
 	end
-	bootLines[#bootLines + 1] =
-		"  MOV AX, " .. BootImageCatalogUtils.hex16(bit32.bor(0x0200, kernelSectorCount))
+	bootLines[#bootLines + 1] = "  MOV AX, " .. BootImageCatalogUtils.hex16(bit32.bor(0x0200, kernelSectorCount))
 	bootLines[#bootLines + 1] = "  MOV BX, " .. BootImageCatalogUtils.hex16(kernelOrigin)
 	bootLines[#bootLines + 1] = "  MOV CX, 0x0002"
 	bootLines[#bootLines + 1] = "  MOV DL, [BOOT_DRIVE]"
@@ -265,8 +264,13 @@ function BootImageCatalogUtils.buildIdtEntries(maxVector, entries)
 	for vector = 0, maxVector do
 		local entry = entries[vector]
 		if entry then
-			lines[#lines + 1] =
-				"  DW " .. entry.offset .. ", " .. entry.selector .. ", 0x0000, " .. entry.typeWord .. ", 0x0000"
+			lines[#lines + 1] = "  DW "
+				.. entry.offset
+				.. ", "
+				.. entry.selector
+				.. ", 0x0000, "
+				.. entry.typeWord
+				.. ", 0x0000"
 		else
 			lines[#lines + 1] = "  DW 0x0000, 0x0000, 0x0000, 0x0000, 0x0000"
 		end
