@@ -215,61 +215,12 @@ local function cloneSequence(entry)
 	return { entry }
 end
 
-local function queueLength(queue, head)
-	return math.max(0, #queue - head + 1)
-end
-
-local function compactQueue(self, fieldName, headName)
-	local queue = self[fieldName]
-	local head = self[headName]
-	if head <= 32 or head <= math.floor(#queue / 2) then
-		return
-	end
-	local compacted = {}
-	for index = head, #queue do
-		compacted[#compacted + 1] = queue[index]
-	end
-	self[fieldName] = compacted
-	self[headName] = 1
-end
-
-local function pushQueue(self, fieldName, headName, value)
-	local queue = self[fieldName]
-	queue[#queue + 1] = value
-	compactQueue(self, fieldName, headName)
-end
-
-local function popQueue(self, fieldName, headName)
-	local queue = self[fieldName]
-	local head = self[headName]
-	if head > #queue then
-		return nil
-	end
-	local value = queue[head]
-	queue[head] = nil
-	self[headName] = head + 1
-	compactQueue(self, fieldName, headName)
-	return value
-end
-
-local function peekQueue(self, fieldName, headName)
-	local queue = self[fieldName]
-	return queue[self[headName]]
-end
-
-local function clearQueue(self, fieldName, headName)
-	self[fieldName] = {}
-	self[headName] = 1
-end
-
 function I8042Controller.new(config, bus)
 	local self = setmetatable({}, I8042Controller)
 	self.config = config
 	self.bus = bus
 	self._buffer = {}
-	self._bufferHead = 1
 	self._ascii = {}
-	self._asciiHead = 1
 	self._shift = false
 	self._ctrl = false
 	self._alt = false
@@ -302,17 +253,17 @@ function I8042Controller:_raiseIRQ()
 end
 
 function I8042Controller:_pushOutputByte(value)
-	if queueLength(self._buffer, self._bufferHead) >= OUTPUT_BUFFER_LIMIT then
+	if #self._buffer >= OUTPUT_BUFFER_LIMIT then
 		self.stats.bufferOverruns = self.stats.bufferOverruns + 1
 		return
 	end
-	pushQueue(self, "_buffer", "_bufferHead", bit32.band(tonumber(value) or 0, 0xFF))
+	self._buffer[#self._buffer + 1] = bit32.band(tonumber(value) or 0, 0xFF)
 	self._status = bit32.bor(self._status, STATUS_OUTPUT_FULL)
 	self:_raiseIRQ()
 end
 
 function I8042Controller:_clearOutputStatus()
-	if queueLength(self._buffer, self._bufferHead) == 0 then
+	if #self._buffer == 0 then
 		self._status = bit32.band(self._status, bit32.bnot(STATUS_OUTPUT_FULL))
 	end
 end
@@ -342,8 +293,8 @@ function I8042Controller:_translateASCII(scanCode)
 		end
 	end
 
-	if ascii and queueLength(self._ascii, self._asciiHead) < ASCII_BUFFER_LIMIT then
-		pushQueue(self, "_ascii", "_asciiHead", ascii)
+	if ascii and #self._ascii < ASCII_BUFFER_LIMIT then
+		self._ascii[#self._ascii + 1] = ascii
 	end
 end
 
@@ -403,7 +354,7 @@ function I8042Controller:keyUp(key)
 end
 
 function I8042Controller:_readData()
-	local value = popQueue(self, "_buffer", "_bufferHead") or 0
+	local value = table.remove(self._buffer, 1) or 0
 	self:_clearOutputStatus()
 	return value
 end
@@ -413,8 +364,8 @@ function I8042Controller:_readStatus()
 end
 
 function I8042Controller:_resetBuffers()
-	clearQueue(self, "_buffer", "_bufferHead")
-	clearQueue(self, "_ascii", "_asciiHead")
+	self._buffer = {}
+	self._ascii = {}
 end
 
 function I8042Controller:_writeI8042ControllerCommand(value)
@@ -483,11 +434,11 @@ function I8042Controller:_writeCtrl(value)
 end
 
 function I8042Controller:readChar()
-	return popQueue(self, "_ascii", "_asciiHead")
+	return table.remove(self._ascii, 1)
 end
 
 function I8042Controller:peekChar()
-	return peekQueue(self, "_ascii", "_asciiHead")
+	return self._ascii[1]
 end
 
 function I8042Controller:pollLine(currentLine, echo, gpu)
