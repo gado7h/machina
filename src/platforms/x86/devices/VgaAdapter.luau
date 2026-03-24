@@ -126,6 +126,9 @@ local _GLYPHS = {
 	[126] = F(0, 0, 5, 10, 0, 0, 0, 0), -- ~
 }
 local FONT = table.clone(_GLYPHS)
+local fontByte
+local isTextState
+local isChain4State
 
 local GLYPH_DEFAULT = F(15, 9, 9, 9, 9, 15, 0, 0)
 local function getGlyph(ch)
@@ -318,6 +321,12 @@ function VgaAdapter.new(config)
 	-- Native buffer for WritePixelsBuffer â€” allocated once, reused every frame.
 	-- Layout: RGBA u8 bytes, row-major. Size = W * H * 4 bytes.
 	self._pixelBuffer = buffer.create(self.W * self.H * 4)
+	self._dirtyPixelRect = {
+		x0 = 0,
+		y0 = 0,
+		x1 = self.W - 1,
+		y1 = self.H - 1,
+	}
 
 	-- VRAM (bus-mapped region, written by CPU via memWrite)
 	self._vram = {}
@@ -408,6 +417,48 @@ local function markAllCellsDirty(self)
 	end
 end
 
+local function clearDirtyCells(self)
+	for _, idx in ipairs(self._dirtyCellList) do
+		self._dirtyCells[idx] = nil
+	end
+	self._dirtyCellList = {}
+end
+
+local function markTextStateDirty(self)
+	if self.mode == "TEXT" then
+		markAllCellsDirty(self)
+	end
+end
+
+local function markPixelRectDirty(self, x, y, w, h)
+	if w <= 0 or h <= 0 then
+		return
+	end
+	local x0 = math.max(0, math.floor(x))
+	local y0 = math.max(0, math.floor(y))
+	local x1 = math.min(self.W - 1, math.floor(x + w - 1))
+	local y1 = math.min(self.H - 1, math.floor(y + h - 1))
+	if x1 < x0 or y1 < y0 then
+		return
+	end
+
+	local rect = self._dirtyPixelRect
+	if rect == nil then
+		self._dirtyPixelRect = {
+			x0 = x0,
+			y0 = y0,
+			x1 = x1,
+			y1 = y1,
+		}
+		return
+	end
+
+	rect.x0 = math.min(rect.x0, x0)
+	rect.y0 = math.min(rect.y0, y0)
+	rect.x1 = math.max(rect.x1, x1)
+	rect.y1 = math.max(rect.y1, y1)
+end
+
 local function syncCellToVRAM(self, absoluteIdx)
 	local cell = self._textBuf[absoluteIdx] or { char = 32, attr = 0x07 }
 	local base = absoluteIdx * 2
@@ -480,6 +531,7 @@ function VgaAdapter:setPixel(x, y, argb)
 	end
 	self._framebuf[y * self.W + x] = argb
 	self._dirty = true
+	markPixelRectDirty(self, x, y, 1, 1)
 	self.stats.pixelWrites = self.stats.pixelWrites + 1
 end
 
@@ -505,10 +557,15 @@ function VgaAdapter:fillRect(x, y, w, h, argb)
 	end
 	self.stats.pixelWrites = self.stats.pixelWrites + written
 	self._dirty = true
+	markPixelRectDirty(self, x0, y0, x1 - x0 + 1, y1 - y0 + 1)
 end
 
 function VgaAdapter:drawLine(x0, y0, x1, y1, argb)
 	x0, y0, x1, y1 = math.floor(x0), math.floor(y0), math.floor(x1), math.floor(y1)
+	local minX = math.min(x0, x1)
+	local minY = math.min(y0, y1)
+	local maxX = math.max(x0, x1)
+	local maxY = math.max(y0, y1)
 	local dx = math.abs(x1 - x0)
 	local dy = -math.abs(y1 - y0)
 	local sx = (x0 < x1) and 1 or -1
@@ -539,6 +596,7 @@ function VgaAdapter:drawLine(x0, y0, x1, y1, argb)
 	if written > 0 then
 		self.stats.pixelWrites = self.stats.pixelWrites + written
 		self._dirty = true
+		markPixelRectDirty(self, minX, minY, maxX - minX + 1, maxY - minY + 1)
 	end
 end
 
@@ -631,6 +689,7 @@ function VgaAdapter:drawChar(x, y, ch, fgARGB, bgARGB)
 	end
 	self.stats.pixelWrites = self.stats.pixelWrites + written
 	self._dirty = true
+	markPixelRectDirty(self, x, y, self.CW, self.CH)
 end
 
 function VgaAdapter:blitRect(srcX, srcY, w, h, dstX, dstY)
@@ -683,6 +742,7 @@ function VgaAdapter:blitRect(srcX, srcY, w, h, dstX, dstY)
 	if written > 0 then
 		self.stats.pixelWrites = self.stats.pixelWrites + written
 		self._dirty = true
+		markPixelRectDirty(self, dstX, dstY, copyW, copyH)
 	end
 end
 
@@ -697,33 +757,61 @@ function VgaAdapter:_packPixelBuffer()
 	local fb = self._framebuf
 	local pb = self._pixelBuffer
 	local W = self.W
-	local H = self.H
 
-	local needed = W * H * 4
+	local needed = W * self.H * 4
 	if buffer.len(pb) ~= needed then
 		pb = buffer.create(needed)
 		self._pixelBuffer = pb
+		self._dirtyPixelRect = {
+			x0 = 0,
+			y0 = 0,
+			x1 = W - 1,
+			y1 = self.H - 1,
+		}
 	end
 
-	for i = 0, W * H - 1 do
-		local argb = fb[i] or 0xFF000000
-		local base = i * 4
-		local a = math.floor(argb / 16777216) % 256
-		local r = math.floor(argb / 65536) % 256
-		local g = math.floor(argb / 256) % 256
-		local b = argb % 256
-		buffer.writeu8(pb, base, r)
-		buffer.writeu8(pb, base + 1, g)
-		buffer.writeu8(pb, base + 2, b)
-		buffer.writeu8(pb, base + 3, a)
+	local rect = self._dirtyPixelRect
+	if rect == nil then
+		return pb
 	end
 
+	for y = rect.y0, rect.y1 do
+		local rowBase = y * W
+		for x = rect.x0, rect.x1 do
+			local i = rowBase + x
+			local argb = fb[i] or 0xFF000000
+			local base = i * 4
+			local a = math.floor(argb / 16777216) % 256
+			local r = math.floor(argb / 65536) % 256
+			local g = math.floor(argb / 256) % 256
+			local b = argb % 256
+			buffer.writeu8(pb, base, r)
+			buffer.writeu8(pb, base + 1, g)
+			buffer.writeu8(pb, base + 2, b)
+			buffer.writeu8(pb, base + 3, a)
+		end
+	end
+
+	self._dirtyPixelRect = nil
 	return pb
 end
 
 function VgaAdapter:getFrame()
-	if self.mode == "TEXT" and self._dirty then
-		self:_renderText()
+	if self._dirty then
+		if isTextState(self) then
+			if self._hostOverlay.active then
+				self:_renderHardwareText()
+				self:_renderHostOverlay()
+			else
+				self:_renderText()
+			end
+		elseif isChain4State(self) then
+			self:_renderMode13()
+			self:_renderHostOverlay()
+		else
+			self:_renderPlanar()
+			self:_renderHostOverlay()
+		end
 	end
 
 	return {
@@ -736,29 +824,67 @@ end
 function VgaAdapter:_renderText()
 	local cols = self.config.TEXT_COLS
 	local startCell = textStartCell(self)
+	local blinkEnabled = bit32.band(self._attribute[0x10] or 0, 0x08) ~= 0
+	local cursorDisabled = bit32.band(self._crtc[0x0A] or 0, 0x20) ~= 0
+	local cursorStart = bit32.band(self._crtc[0x0A] or 0, 0x1F)
+	local cursorEnd = bit32.band(self._crtc[0x0B] or 0, 0x1F)
+
+	if self._lastCursor.col ~= self._cursorCol or self._lastCursor.row ~= self._cursorRow then
+		markCellDirty(self, self._lastCursor.col, self._lastCursor.row)
+		markCellDirty(self, self._cursorCol, self._cursorRow)
+	end
 
 	for _, idx in ipairs(self._dirtyCellList) do
 		local row = math.floor(idx / cols)
 		local col = idx % cols
 		local absoluteIdx = (startCell + idx) % math.max(1, self._textCellCount)
 		local cell = self._textBuf[absoluteIdx] or { char = 32, attr = 0x07 }
-		local fg = PALETTE[cell.attr % 16] or 0xFFAAAAAA
-		local bg = PALETTE[math.floor(cell.attr / 16) % 16] or 0xFF000000
-		self:drawChar(col * self.CW, row * self.CH, cell.char, fg, bg)
-		self._dirtyCells[idx] = nil
-	end
-	self._dirtyCellList = {}
-
-	markCellDirty(self, self._lastCursor.col, self._lastCursor.row)
-	local cursorDisabled = bit32.band(self._crtc[0x0A] or 0, 0x20) ~= 0
-	if self._cursorVisible and not cursorDisabled then
-		local cx = self._cursorCol * self.CW
-		local cy = self._cursorRow * self.CH + (self.CH - 1)
-		for i = 0, self.CW - 1 do
-			self:_setPixelRaw(cx + i, cy, 0xFFAAAAAA)
+		local attr = cell.attr or 0x07
+		local fgIndex = bit32.band(attr, 0x0F)
+		local bgIndex = bit32.band(bit32.rshift(attr, 4), 0x07)
+		local suppressGlyph = false
+		if bit32.band(attr, 0x80) ~= 0 then
+			if blinkEnabled then
+				suppressGlyph = not self._cursorVisible
+			else
+				bgIndex = bit32.bor(bgIndex, 0x08)
+			end
 		end
-		self.stats.pixelWrites = self.stats.pixelWrites + self.CW
+
+		local fg = self:_attributeColor(fgIndex)
+		local bg = self:_attributeColor(bgIndex)
+		local px0 = col * self.CW
+		local py0 = row * self.CH
+		local charCode = cell.char or 32
+		for glyphRow = 0, self._fontHeight - 1 do
+			local rowBits = fontByte(self, charCode, glyphRow)
+			local py = py0 + glyphRow
+			local base = py * self.W + px0
+			for glyphCol = 0, 7 do
+				local mask = bit32.lshift(1, 7 - glyphCol)
+				local on = bit32.band(rowBits, mask) ~= 0
+				self._framebuf[base + glyphCol] = (not suppressGlyph and on) and fg or bg
+			end
+		end
+
+		local drawCursor = not cursorDisabled
+			and self._cursorVisible
+			and col == self._cursorCol
+			and row == self._cursorRow
+		if drawCursor then
+			local y0 = py0 + math.min(self.CH - 1, cursorStart)
+			local y1 = py0 + math.min(self.CH - 1, math.max(cursorStart, cursorEnd))
+			for py = y0, y1 do
+				local base = py * self.W + px0
+				for glyphCol = 0, self.CW - 1 do
+					self._framebuf[base + glyphCol] = fg
+				end
+			end
+		end
+
+		markPixelRectDirty(self, px0, py0, self.CW, self.CH)
 	end
+	clearDirtyCells(self)
 	self._lastCursor.col = self._cursorCol
 	self._lastCursor.row = self._cursorRow
 end
@@ -794,7 +920,7 @@ local function readVerticalField(self, lowReg, highBitMask, extraBitMask, adjust
 	return value + (adjust or 0)
 end
 
-local function fontByte(self, charCode, row)
+fontByte = function(self, charCode, row)
 	local offset = ((tonumber(charCode) or 0) % 256) * 32 + ((tonumber(row) or 0) % 32)
 	return self._planes[2][offset] or 0
 end
@@ -857,11 +983,11 @@ local function decodeWindow(self, address)
 	return address - 0x18000
 end
 
-local function isTextState(self)
+isTextState = function(self)
 	return bit32.band(self._attribute[0x10] or 0, 0x01) == 0 and bit32.band(self._graphics[0x06] or 0, 0x01) == 0
 end
 
-local function isChain4State(self)
+isChain4State = function(self)
 	return bit32.band(self._sequencer[0x04] or 0, 0x04) ~= 0 and bit32.band(self._graphics[0x05] or 0, 0x40) ~= 0
 end
 
@@ -1044,6 +1170,7 @@ function VgaAdapter:_clearFrame(argb)
 	for index = 0, self.W * self.H - 1 do
 		self._framebuf[index] = argb
 	end
+	markPixelRectDirty(self, 0, 0, self.W, self.H)
 end
 
 function VgaAdapter:_blitScaledPixel(x, y, argb)
@@ -1153,6 +1280,7 @@ function VgaAdapter:_renderHostOverlay()
 	if not self._hostOverlay.active then
 		return
 	end
+	markPixelRectDirty(self, 0, 0, self.W, self.H)
 	for row = 0, self.config.TEXT_ROWS - 1 do
 		for col = 0, self.config.TEXT_COLS - 1 do
 			local idx = row * self.config.TEXT_COLS + col
@@ -1216,6 +1344,7 @@ function VgaAdapter:hostClear(attr)
 	self._hostOverlay.cursorRow = 0
 	clearCells(self._hostOverlay.cells, self.config.TEXT_COLS * self.config.TEXT_ROWS, overlayAttr)
 	self._dirty = true
+	markAllCellsDirty(self)
 end
 
 function VgaAdapter:hostWrite(text, attr)
@@ -1229,12 +1358,14 @@ function VgaAdapter:hostWrite(text, attr)
 	end
 	self.stats.hostWrites = self.stats.hostWrites + #rendered
 	self._dirty = true
+	markAllCellsDirty(self)
 end
 
 function VgaAdapter:hostWriteLine(text, attr)
 	self:hostWrite(tostring(text or ""), attr)
 	hostWriteChar(self, 10, (tonumber(attr) or self._hostOverlay.defaultAttr or 0x0C) % 256)
 	self._dirty = true
+	markAllCellsDirty(self)
 end
 
 function VgaAdapter:clearHostOverlay()
@@ -1243,6 +1374,7 @@ function VgaAdapter:clearHostOverlay()
 	self._hostOverlay.cursorRow = 0
 	clearCells(self._hostOverlay.cells, self.config.TEXT_COLS * self.config.TEXT_ROWS, self._hostOverlay.defaultAttr)
 	self._dirty = true
+	markAllCellsDirty(self)
 end
 
 function VgaAdapter:attachBus(bus)
@@ -1258,6 +1390,7 @@ function VgaAdapter:attachBus(bus)
 			self._attrFlipFlop = false
 			self.stats.registerWrites = self.stats.registerWrites + 1
 			self._dirty = true
+			markTextStateDirty(self)
 		end
 	end, "VGA Attribute")
 	bus:registerPort(self.config.PORT.VGA_ATTR_DATA_READ, function()
@@ -1269,6 +1402,7 @@ function VgaAdapter:attachBus(bus)
 		self._miscOutput = bit32.band(tonumber(v) or 0, 0xFF)
 		self.stats.registerWrites = self.stats.registerWrites + 1
 		self._dirty = true
+		markTextStateDirty(self)
 	end, "VGA Misc")
 	bus:registerPort(self.config.PORT.VGA_SEQ_INDEX, function()
 		return self._seqIndex
@@ -1281,6 +1415,7 @@ function VgaAdapter:attachBus(bus)
 		self._sequencer[self._seqIndex] = bit32.band(tonumber(v) or 0, 0xFF)
 		self.stats.registerWrites = self.stats.registerWrites + 1
 		self._dirty = true
+		markTextStateDirty(self)
 	end, "VGA Sequencer Data")
 	bus:registerPort(self.config.PORT.VGA_DAC_MASK, function()
 		return self._dacMask
@@ -1329,6 +1464,7 @@ function VgaAdapter:attachBus(bus)
 		end
 		self.stats.paletteWrites = self.stats.paletteWrites + 1
 		self._dirty = true
+		markTextStateDirty(self)
 	end, "VGA DAC Data")
 	bus:registerPort(self.config.PORT.VGA_MISC_READ, function()
 		return self._miscOutput
@@ -1344,6 +1480,7 @@ function VgaAdapter:attachBus(bus)
 		self._graphics[self._gcIndex] = bit32.band(tonumber(v) or 0, 0xFF)
 		self.stats.registerWrites = self.stats.registerWrites + 1
 		self._dirty = true
+		markTextStateDirty(self)
 	end, "VGA Graphics Data")
 	bus:registerPort(self.config.PORT.VGA_CRTC_INDEX, function()
 		return self._crtcIndex
@@ -1365,6 +1502,7 @@ function VgaAdapter:attachBus(bus)
 			markCellDirty(self, self._cursorCol, self._cursorRow)
 		end
 		self._dirty = true
+		markTextStateDirty(self)
 	end, "VGA CRTC Data")
 	bus:registerPort(self.config.PORT.VGA_INPUT_STATUS1, function()
 		self._attrFlipFlop = false
@@ -1532,6 +1670,8 @@ function VgaAdapter:println(str, attr)
 end
 
 function VgaAdapter:toggleCursor()
+	markCellDirty(self, self._cursorCol, self._cursorRow)
+	markCellDirty(self, self._lastCursor.col, self._lastCursor.row)
 	self._cursorVisible = not self._cursorVisible
 	self._dirty = true
 end
@@ -1547,14 +1687,19 @@ function VgaAdapter:flush(presentFn)
 	end
 
 	if isTextState(self) then
-		self:_renderHardwareText()
+		if self._hostOverlay.active then
+			self:_renderHardwareText()
+			self:_renderHostOverlay()
+		else
+			self:_renderText()
+		end
 	elseif isChain4State(self) then
 		self:_renderMode13()
+		self:_renderHostOverlay()
 	else
 		self:_renderPlanar()
+		self:_renderHostOverlay()
 	end
-
-	self:_renderHostOverlay()
 	self.stats.flushes = self.stats.flushes + 1
 
 	local pixelBuffer = self:_packPixelBuffer()
