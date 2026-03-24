@@ -1,4 +1,4 @@
-local Cpu8086 = require(script.Parent.Cpu8086)
+local Cpu8086 = require("src/platforms/x86/Cpu8086")
 
 local Cpu80386 = {}
 Cpu80386.__index = Cpu80386

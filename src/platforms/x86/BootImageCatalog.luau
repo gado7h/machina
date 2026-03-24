@@ -1,5 +1,5 @@
-local ProductionImages = require(script.Parent.BootImageCatalogProductionImages)
-local ValidationImages = require(script.Parent.BootImageCatalogValidationImages)
+local ProductionImages = require("src/platforms/x86/BootImageCatalogProductionImages")
+local ValidationImages = require("src/platforms/x86/BootImageCatalogValidationImages")
 
 local BootImageCatalog = {}
 

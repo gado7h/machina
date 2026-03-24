@@ -1,6 +1,6 @@
-local Assembler8086 = require(script.Parent.Assembler8086)
-local BiosRom = require(script.Parent.BiosRom)
-local Utils = require(script.Parent.BootImageCatalogUtils)
+local Assembler8086 = require("src/platforms/x86/Assembler8086")
+local BiosRom = require("src/platforms/x86/BiosRom")
+local Utils = require("src/platforms/x86/BootImageCatalogUtils")
 
 local ProductionImages = {}
 
