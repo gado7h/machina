@@ -15,6 +15,8 @@ local LSR_DATA_READY = 0x01
 local LSR_THR_EMPTY = 0x20
 local LSR_TX_EMPTY = 0x40
 
+local TX_LOG_LIMIT = 4096
+
 function Uart8250.new(config)
 	local self = setmetatable({}, Uart8250)
 	self.config = config
@@ -89,9 +91,13 @@ function Uart8250:_dlabEnabled()
 	return bit32.band(self._lcr, LCR_DLAB) ~= 0
 end
 
+function Uart8250:_rxCount()
+	return #self._rxFifo
+end
+
 function Uart8250:_updateIRQ()
 	local reason = nil
-	if #self._rxFifo > 0 and bit32.band(self._ier, IER_RX_AVAILABLE) ~= 0 then
+	if self:_rxCount() > 0 and bit32.band(self._ier, IER_RX_AVAILABLE) ~= 0 then
 		reason = IIR_RX_AVAILABLE
 	elseif bit32.band(self._ier, IER_TX_EMPTY) ~= 0 then
 		reason = IIR_TX_EMPTY
@@ -114,13 +120,21 @@ function Uart8250:_readData()
 	if self:_dlabEnabled() then
 		return self._divisor % 0x100
 	end
+
 	local value = table.remove(self._rxFifo, 1) or 0
-	if #self._rxFifo == 0 then
+	if self:_rxCount() == 0 then
 		self._lsr = bit32.band(self._lsr, bit32.bnot(LSR_DATA_READY))
 	end
 	self._irqPending = false
 	self:_updateIRQ()
 	return value
+end
+
+function Uart8250:_appendTxLog(value)
+	self._txLog[#self._txLog + 1] = value
+	if #self._txLog > TX_LOG_LIMIT then
+		table.remove(self._txLog, 1)
+	end
 end
 
 function Uart8250:_writeData(v)
@@ -134,10 +148,7 @@ function Uart8250:_writeData(v)
 		return
 	end
 	self.stats.txBytes = self.stats.txBytes + 1
-	self._txLog[#self._txLog + 1] = value
-	if #self._txLog > 4096 then
-		table.remove(self._txLog, 1)
-	end
+	self:_appendTxLog(value)
 	self._lsr = bit32.bor(self._lsr, LSR_THR_EMPTY, LSR_TX_EMPTY)
 	self._irqPending = false
 	self:_updateIRQ()
@@ -194,8 +205,9 @@ function Uart8250:pushInputByte(value)
 end
 
 function Uart8250:pushInput(text)
-	for index = 1, #tostring(text) do
-		self:pushInputByte(string.byte(text, index))
+	local normalized = tostring(text)
+	for index = 1, #normalized do
+		self:pushInputByte(string.byte(normalized, index))
 	end
 end
 

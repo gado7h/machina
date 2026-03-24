@@ -1,16 +1,26 @@
+local PIC_INIT = 0x10
+local PIC_OCW3 = 0x08
+local PIC_OCW3_REGISTER_SELECT = 0x02
+local PIC_OCW3_ISR = 0x01
+
+local PIC_COMMAND_MASK = 0xE0
+local PIC_EOI_NONSPECIFIC = 0x20
+local PIC_EOI_SPECIFIC = 0x60
+local PIC_EOI_ROTATE = 0xA0
+
 local Pic8259 = {}
 Pic8259.__index = Pic8259
 
-local function bit(mask, n)
-	return bit32.band(mask, bit32.lshift(1, n)) ~= 0
+local function bit(mask, index)
+	return bit32.band(mask, bit32.lshift(1, index)) ~= 0
 end
 
-local function clearBit(mask, n)
-	return bit32.band(mask, bit32.bnot(bit32.lshift(1, n)))
+local function clearBit(mask, index)
+	return bit32.band(mask, bit32.bnot(bit32.lshift(1, index)))
 end
 
-local function setBit(mask, n)
-	return bit32.bor(mask, bit32.lshift(1, n))
+local function setBit(mask, index)
+	return bit32.bor(mask, bit32.lshift(1, index))
 end
 
 local function newChip(defaultBase)
@@ -52,10 +62,12 @@ local function nextDeliverableIRQ(chip)
 	if pending == 0 then
 		return nil
 	end
+
 	local inService = highestInService(chip)
 	if inService == nil then
 		return highestPriorityBit(chip, pending)
 	end
+
 	for slot = 0, 7 do
 		local irq = priorityOrder(chip, slot)
 		if irq == inService then
@@ -65,6 +77,7 @@ local function nextDeliverableIRQ(chip)
 			return irq
 		end
 	end
+
 	return nil
 end
 
@@ -90,7 +103,6 @@ function Pic8259.new(config)
 	self.slave = newChip(config.PIC_VECTOR_BASE_SLAVE or 0x28)
 	self.master.icw3 = 0x04
 	self.slave.icw3 = 0x02
-
 	self.stats = {
 		raised = 0,
 		delivered = 0,
@@ -100,29 +112,35 @@ function Pic8259.new(config)
 	return self
 end
 
+function Pic8259:_registerChip(bus, chip, commandPort, dataPort, label)
+	bus:registerPort(commandPort, function()
+		return self:_readCommand(chip)
+	end, function(v)
+		self:_writeCommand(chip, v)
+	end, label .. " CMD")
+	bus:registerPort(dataPort, function()
+		return chip.imr
+	end, function(v)
+		self:_writeData(chip, v)
+	end, label .. " DATA")
+end
+
 function Pic8259:attachBus(bus)
 	self._bus = bus
-	bus:registerPort(self.config.PORT.PIC_MASTER_CMD, function()
-		return self:_readCommand(self.master)
-	end, function(v)
-		self:_writeCommand(self.master, v)
-	end, "Pic8259 Master CMD")
-	bus:registerPort(self.config.PORT.PIC_MASTER_DATA, function()
-		return self.master.imr
-	end, function(v)
-		self:_writeData(self.master, v)
-	end, "Pic8259 Master DATA")
-
-	bus:registerPort(self.config.PORT.PIC_SLAVE_CMD, function()
-		return self:_readCommand(self.slave)
-	end, function(v)
-		self:_writeCommand(self.slave, v)
-	end, "Pic8259 Slave CMD")
-	bus:registerPort(self.config.PORT.PIC_SLAVE_DATA, function()
-		return self.slave.imr
-	end, function(v)
-		self:_writeData(self.slave, v)
-	end, "Pic8259 Slave DATA")
+	self:_registerChip(
+		bus,
+		self.master,
+		self.config.PORT.PIC_MASTER_CMD,
+		self.config.PORT.PIC_MASTER_DATA,
+		"Pic8259 Master"
+	)
+	self:_registerChip(
+		bus,
+		self.slave,
+		self.config.PORT.PIC_SLAVE_CMD,
+		self.config.PORT.PIC_SLAVE_DATA,
+		"Pic8259 Slave"
+	)
 end
 
 function Pic8259:raiseIRQ(irqNum)
@@ -131,6 +149,7 @@ function Pic8259:raiseIRQ(irqNum)
 		self.stats.spurious = self.stats.spurious + 1
 		return false
 	end
+
 	self.stats.raised = self.stats.raised + 1
 	if irqNum < 8 then
 		self.master.irr = setBit(self.master.irr, irqNum)
@@ -138,6 +157,7 @@ function Pic8259:raiseIRQ(irqNum)
 		self.slave.irr = setBit(self.slave.irr, irqNum - 8)
 		self.master.irr = setBit(self.master.irr, 2)
 	end
+
 	return true
 end
 
@@ -150,18 +170,18 @@ function Pic8259:_nextMasterIRQ()
 	if pending == 0 then
 		return nil
 	end
+
 	local inService = highestInService(self.master)
 	for slot = 0, 7 do
 		local irq = priorityOrder(self.master, slot)
 		if inService ~= nil and irq == inService then
 			break
 		end
-		if bit(pending, irq) then
-			if irq ~= 2 or nextDeliverableIRQ(self.slave) ~= nil then
-				return irq
-			end
+		if bit(pending, irq) and (irq ~= 2 or nextDeliverableIRQ(self.slave) ~= nil) then
+			return irq
 		end
 	end
+
 	return nil
 end
 
@@ -198,12 +218,14 @@ function Pic8259:endOfInterrupt(vector)
 		self.stats.eoi = self.stats.eoi + 1
 		return true
 	end
+
 	if vector >= self.master.vectorBase and vector < self.master.vectorBase + 8 then
 		local irq = vector - self.master.vectorBase
 		self.master.isr = clearBit(self.master.isr, irq)
 		self.stats.eoi = self.stats.eoi + 1
 		return true
 	end
+
 	return false
 end
 
@@ -213,7 +235,8 @@ end
 
 function Pic8259:_writeCommand(chip, value)
 	local v = bit32.band(tonumber(value) or 0, 0xFF)
-	if bit32.band(v, 0x10) ~= 0 then
+
+	if bit32.band(v, PIC_INIT) ~= 0 then
 		chip.initStep = 1
 		chip.icw4Needed = bit32.band(v, 0x01) ~= 0
 		chip.singleMode = bit32.band(v, 0x02) ~= 0
@@ -222,26 +245,28 @@ function Pic8259:_writeCommand(chip, value)
 		return
 	end
 
-	if bit32.band(v, 0x08) ~= 0 then
-		if bit32.band(v, 0x02) ~= 0 then
-			chip.readRegister = bit32.band(v, 0x01) ~= 0 and "ISR" or "IRR"
+	if bit32.band(v, PIC_OCW3) ~= 0 then
+		if bit32.band(v, PIC_OCW3_REGISTER_SELECT) ~= 0 then
+			chip.readRegister = bit32.band(v, PIC_OCW3_ISR) ~= 0 and "ISR" or "IRR"
 		end
 		return
 	end
 
-	local command = bit32.band(v, 0xE0)
-	if command == 0x20 then
+	local command = bit32.band(v, PIC_COMMAND_MASK)
+	if command == PIC_EOI_NONSPECIFIC then
 		if nonspecificEOI(chip) ~= nil then
 			self.stats.eoi = self.stats.eoi + 1
 		end
 		return
 	end
-	if command == 0x60 then
+
+	if command == PIC_EOI_SPECIFIC then
 		chip.isr = clearBit(chip.isr, bit32.band(v, 0x07))
 		self.stats.eoi = self.stats.eoi + 1
 		return
 	end
-	if command == 0xA0 then
+
+	if command == PIC_EOI_ROTATE then
 		chip.isr = clearBit(chip.isr, bit32.band(v, 0x07))
 		chip.priorityAdd = (bit32.band(v, 0x07) + 1) % 8
 		self.stats.eoi = self.stats.eoi + 1

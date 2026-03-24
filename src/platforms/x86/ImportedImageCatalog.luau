@@ -1,4 +1,5 @@
 local BootImageCatalog = require("src/platforms/x86/BootImageCatalog")
+local ImageCatalogUtils = require("src/platforms/x86/ImageCatalogUtils")
 
 local ImportedImageCatalog = {}
 
@@ -19,52 +20,33 @@ local FROZEN_IMPORT_CONFIG = {
 	},
 }
 
-local function deepCopy(value)
-	if type(value) ~= "table" then
-		return value
-	end
-	local out = {}
-	for key, child in pairs(value) do
-		out[key] = deepCopy(child)
-	end
-	return out
-end
-
-local function sectorsToDiskBytes(sectors)
-	local maxLba = -1
-	for lba in pairs(sectors or {}) do
-		maxLba = math.max(maxLba, tonumber(lba) or -1)
-	end
-
-	local bytes = {}
-	for lba = 0, maxLba do
-		local sector = sectors[lba] or {}
-		for byteIndex = 1, 512 do
-			bytes[#bytes + 1] = (tonumber(sector[byteIndex]) or 0) % 256
-		end
-	end
-	return bytes
-end
-
-local function buildImportedImage(entryName)
+local function buildCatalogImage(entryName, config)
 	local entry = BootImageCatalog[entryName]
 	assert(entry, "unknown x86 imported image entry: " .. tostring(entryName))
 
-	local image = entry
 	if type(entry) == "table" and type(entry.build) == "function" then
-		image = entry.build(deepCopy(FROZEN_IMPORT_CONFIG))
+		return entry.build(config)
 	end
+	return entry
+end
 
+local function snapshotImage(image)
 	assert(type(image) == "table", "x86 imported image builder returned an invalid image")
 	assert(type(image.sectors) == "table", "x86 imported image is missing sectors")
 
 	return {
 		name = image.name,
-		diskBytes = sectorsToDiskBytes(image.sectors),
-		layout = deepCopy(image.layout or {}),
-		files = deepCopy(image.files or {}),
-		symbols = deepCopy(image.symbols or {}),
+		diskBytes = ImageCatalogUtils.sectorsToDiskBytes(image.sectors),
+		layout = ImageCatalogUtils.deepCopy(image.layout or {}),
+		files = ImageCatalogUtils.deepCopy(image.files or {}),
+		symbols = ImageCatalogUtils.deepCopy(image.symbols or {}),
 	}
+end
+
+local function buildImportedImage(entryName)
+	local frozenConfig = ImageCatalogUtils.deepCopy(FROZEN_IMPORT_CONFIG)
+	local image = buildCatalogImage(entryName, frozenConfig)
+	return snapshotImage(image)
 end
 
 ImportedImageCatalog.ProtectedModeBringUp = buildImportedImage("ProtectedModeBringUp")

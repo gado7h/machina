@@ -13,6 +13,9 @@ local COMMAND_IRQ1_ENABLE = 0x01
 local COMMAND_SYSTEM_FLAG = 0x04
 local COMMAND_DISABLE_KEYBOARD = 0x10
 
+local OUTPUT_BUFFER_LIMIT = 64
+local ASCII_BUFFER_LIMIT = 128
+
 local SCAN_MAKE = {
 	A = 0x1E,
 	B = 0x30,
@@ -250,7 +253,7 @@ function I8042Controller:_raiseIRQ()
 end
 
 function I8042Controller:_pushOutputByte(value)
-	if #self._buffer >= 64 then
+	if #self._buffer >= OUTPUT_BUFFER_LIMIT then
 		self.stats.bufferOverruns = self.stats.bufferOverruns + 1
 		return
 	end
@@ -283,14 +286,14 @@ function I8042Controller:_translateASCII(scanCode)
 
 	if self._ctrl and ascii and #ascii == 1 then
 		local upperAscii = string.upper(ascii)
-		local byte = string.byte(upperAscii)
-		local code = byte - 64
-		if code > 0 and code < 32 then
-			ascii = string.char(code)
+		local byteValue = string.byte(upperAscii)
+		local controlCode = byteValue - 64
+		if controlCode > 0 and controlCode < 32 then
+			ascii = string.char(controlCode)
 		end
 	end
 
-	if ascii and #self._ascii < 128 then
+	if ascii and #self._ascii < ASCII_BUFFER_LIMIT then
 		self._ascii[#self._ascii + 1] = ascii
 	end
 end
@@ -305,14 +308,14 @@ function I8042Controller:_queueScanSequence(sequence, isBreak)
 	end
 end
 
-function I8042Controller:_setModifierState(kc, isDown)
-	if kc == "LeftShift" or kc == "RightShift" then
+function I8042Controller:_setModifierState(keyCode, isDown)
+	if keyCode == "LeftShift" or keyCode == "RightShift" then
 		self._shift = isDown
-	elseif kc == "LeftControl" or kc == "RightControl" then
+	elseif keyCode == "LeftControl" or keyCode == "RightControl" then
 		self._ctrl = isDown
-	elseif kc == "LeftAlt" or kc == "RightAlt" then
+	elseif keyCode == "LeftAlt" or keyCode == "RightAlt" then
 		self._alt = isDown
-	elseif kc == "CapsLock" and isDown then
+	elseif keyCode == "CapsLock" and isDown then
 		self._capsLock = not self._capsLock
 	end
 end
@@ -360,6 +363,11 @@ function I8042Controller:_readStatus()
 	return self._status
 end
 
+function I8042Controller:_resetBuffers()
+	self._buffer = {}
+	self._ascii = {}
+end
+
 function I8042Controller:_writeI8042ControllerCommand(value)
 	local v = bit32.band(tonumber(value) or 0, 0xFF)
 	if self._pendingI8042ControllerData == "led" then
@@ -382,8 +390,7 @@ function I8042Controller:_writeI8042ControllerCommand(value)
 		self._scanningEnabled = false
 		self:_pushOutputByte(KBD_ACK)
 	elseif v == 0xFF then
-		self._buffer = {}
-		self._ascii = {}
+		self:_resetBuffers()
 		self._scanningEnabled = true
 		self:_pushOutputByte(KBD_ACK)
 		self:_pushOutputByte(KBD_SELF_TEST_PASSED)
@@ -442,14 +449,16 @@ function I8042Controller:pollLine(currentLine, echo, gpu)
 
 	if ch == "\n" or ch == "\r" then
 		local line = table.concat(currentLine)
-		for i = #currentLine, 1, -1 do
-			currentLine[i] = nil
+		for index = #currentLine, 1, -1 do
+			currentLine[index] = nil
 		end
 		if echo and gpu and gpu.biosTeletype then
 			gpu:biosTeletype(10)
 		end
 		return line
-	elseif ch == "\b" then
+	end
+
+	if ch == "\b" then
 		if #currentLine > 0 then
 			table.remove(currentLine)
 			if echo and gpu and gpu.biosTeletype then
@@ -462,6 +471,7 @@ function I8042Controller:pollLine(currentLine, echo, gpu)
 			gpu:biosTeletype(string.byte(ch))
 		end
 	end
+
 	return nil
 end
 
