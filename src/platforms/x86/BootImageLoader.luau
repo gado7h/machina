@@ -1,8 +1,8 @@
-local BootImageCatalog = require("src/platforms/x86/BootImageCatalog")
-local BiosRom = require("src/platforms/x86/BiosRom")
-local ImageCatalogUtils = require("src/platforms/x86/ImageCatalogUtils")
-local RawImageCatalog = require("src/platforms/x86/RawImageCatalog")
-local ImportedImageCatalog = require("src/platforms/x86/ImportedImageCatalog")
+local BootImageCatalog = require("@src/platforms/x86/BootImageCatalog")
+local BiosRom = require("@src/platforms/x86/BiosRom")
+local ImageCatalogUtils = require("@src/platforms/x86/ImageCatalogUtils")
+local RawImageCatalog = require("@src/platforms/x86/RawImageCatalog")
+local ImportedImageCatalog = require("@src/platforms/x86/ImportedImageCatalog")
 
 local BootImageLoader = {}
 

@@ -134,15 +134,15 @@ function PcSystem:_initializeBootRecord()
 end
 
 function PcSystem:_buildHardware()
-	local SystemBus = require("src/platforms/x86/devices/SystemBus")
-	local PhysicalMemory = require("src/platforms/x86/devices/PhysicalMemory")
-	local FirmwareRom = require("src/platforms/x86/devices/FirmwareRom")
-	local VgaAdapter = require("src/platforms/x86/devices/VgaAdapter")
-	local AtaController = require("src/platforms/x86/devices/AtaController")
-	local I8042Controller = require("src/platforms/x86/devices/I8042Controller")
-	local Uart8250 = require("src/platforms/x86/devices/Uart8250")
-	local CmosRtc = require("src/platforms/x86/devices/CmosRtc")
-	local Cpu80386 = require("src/platforms/x86/Cpu80386")
+	local SystemBus = require("@src/platforms/x86/devices/SystemBus")
+	local PhysicalMemory = require("@src/platforms/x86/devices/PhysicalMemory")
+	local FirmwareRom = require("@src/platforms/x86/devices/FirmwareRom")
+	local VgaAdapter = require("@src/platforms/x86/devices/VgaAdapter")
+	local AtaController = require("@src/platforms/x86/devices/AtaController")
+	local I8042Controller = require("@src/platforms/x86/devices/I8042Controller")
+	local Uart8250 = require("@src/platforms/x86/devices/Uart8250")
+	local CmosRtc = require("@src/platforms/x86/devices/CmosRtc")
+	local Cpu80386 = require("@src/platforms/x86/Cpu80386")
 
 	self.bus = SystemBus.new(self.boardConfig)
 	self.ram = PhysicalMemory.new(self.boardConfig)
@@ -173,7 +173,7 @@ function PcSystem:_buildHardware()
 end
 
 function PcSystem:_buildRuntime()
-	local BootController = require("src/platforms/x86/BootController")
+	local BootController = require("@src/platforms/x86/BootController")
 	self.runtime = BootController.new(self)
 	self.runtime:startBoot()
 end

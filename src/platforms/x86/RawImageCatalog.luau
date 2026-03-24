@@ -1,6 +1,6 @@
-local BootImageCatalog = require("src/platforms/x86/BootImageCatalog")
-local Config = require("src/Config")
-local ImageCatalogUtils = require("src/platforms/x86/ImageCatalogUtils")
+local BootImageCatalog = require("@src/platforms/x86/BootImageCatalog")
+local Config = require("@src/Config")
+local ImageCatalogUtils = require("@src/platforms/x86/ImageCatalogUtils")
 
 local RawImageCatalog = {}
 

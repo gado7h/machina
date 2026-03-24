@@ -1,5 +1,5 @@
-local Assembler8086 = require("src/platforms/x86/Assembler8086")
-local Utils = require("src/platforms/x86/BootImageCatalogUtils")
+local Assembler8086 = require("@src/platforms/x86/Assembler8086")
+local Utils = require("@src/platforms/x86/BootImageCatalogUtils")
 
 local ValidationImages = {}
 

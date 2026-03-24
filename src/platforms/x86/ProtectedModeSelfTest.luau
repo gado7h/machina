@@ -1,5 +1,5 @@
-local Assembler8086 = require("src/platforms/x86/Assembler8086")
-local Cpu80386 = require("src/platforms/x86/Cpu80386")
+local Assembler8086 = require("@src/platforms/x86/Assembler8086")
+local Cpu80386 = require("@src/platforms/x86/Cpu80386")
 
 local ProtectedModeSelfTest = {}
 

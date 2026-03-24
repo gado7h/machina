@@ -1,5 +1,5 @@
-local ProductionImages = require("src/platforms/x86/BootImageCatalogProductionImages")
-local ValidationImages = require("src/platforms/x86/BootImageCatalogValidationImages")
+local ProductionImages = require("@src/platforms/x86/BootImageCatalogProductionImages")
+local ValidationImages = require("@src/platforms/x86/BootImageCatalogValidationImages")
 
 local BootImageCatalog = {}
 

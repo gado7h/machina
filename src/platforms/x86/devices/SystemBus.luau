@@ -33,8 +33,8 @@ function SystemBus.new(config)
 		faults = 0,
 	}
 
-	local Pic8259Module = require("src/platforms/x86/devices/Pic8259")
-	local Pit8254Module = require("src/platforms/x86/devices/Pit8254")
+	local Pic8259Module = require("@src/platforms/x86/devices/Pic8259")
+	local Pit8254Module = require("@src/platforms/x86/devices/Pit8254")
 	self.pic = Pic8259Module.new(config)
 	self.timer = Pit8254Module.new(config)
 	self._devices.pic = self.pic

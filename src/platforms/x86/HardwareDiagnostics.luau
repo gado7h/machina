@@ -1,7 +1,7 @@
-local BootImageCatalog = require("src/platforms/x86/BootImageCatalog")
-local BiosInterrupts = require("src/platforms/x86/BiosInterrupts")
-local DiagnosticsState = require("src/platforms/x86/HardwareDiagnosticsState")
-local ProtectedModeSelfTest = require("src/platforms/x86/ProtectedModeSelfTest")
+local BootImageCatalog = require("@src/platforms/x86/BootImageCatalog")
+local BiosInterrupts = require("@src/platforms/x86/BiosInterrupts")
+local DiagnosticsState = require("@src/platforms/x86/HardwareDiagnosticsState")
+local ProtectedModeSelfTest = require("@src/platforms/x86/ProtectedModeSelfTest")
 
 local HardwareDiagnostics = {}
 

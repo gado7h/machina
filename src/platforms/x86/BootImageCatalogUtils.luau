@@ -1,5 +1,5 @@
-local Assembler8086 = require("src/platforms/x86/Assembler8086")
-local BiosRom = require("src/platforms/x86/BiosRom")
+local Assembler8086 = require("@src/platforms/x86/Assembler8086")
+local BiosRom = require("@src/platforms/x86/BiosRom")
 
 local BootImageCatalogUtils = {}
 

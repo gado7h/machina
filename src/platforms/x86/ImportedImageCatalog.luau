@@ -1,5 +1,5 @@
-local BootImageCatalog = require("src/platforms/x86/BootImageCatalog")
-local ImageCatalogUtils = require("src/platforms/x86/ImageCatalogUtils")
+local BootImageCatalog = require("@src/platforms/x86/BootImageCatalog")
+local ImageCatalogUtils = require("@src/platforms/x86/ImageCatalogUtils")
 
 local ImportedImageCatalog = {}
 

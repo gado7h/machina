@@ -72,7 +72,7 @@ function Get-RelativeSourcePath([string]$fullPath) {
 }
 
 function Assert-PublicModuleId([string]$moduleId) {
-	if ($moduleId -notmatch '^src/[A-Za-z0-9_/]+$') {
+	if ($moduleId -notmatch '^@src/[A-Za-z0-9_/]+$') {
 		throw "Unsupported public module id: $moduleId"
 	}
 }
@@ -80,14 +80,14 @@ function Assert-PublicModuleId([string]$moduleId) {
 function Get-CanonicalModuleId([string]$fullPath) {
 	$relativePath = Get-RelativeSourcePath $fullPath
 	$modulePath = Normalize-Path ($relativePath -replace '\.luau$', '')
-	$moduleId = "src/$modulePath"
+	$moduleId = "@src/$modulePath"
 	Assert-PublicModuleId $moduleId
 	return $moduleId
 }
 
 function Get-PackageRelativePath([string]$moduleId) {
 	Assert-PublicModuleId $moduleId
-	return "$moduleId.luau"
+	return "$($moduleId.Substring(1)).luau"
 }
 
 function Get-SharedSourceFiles() {
@@ -121,9 +121,9 @@ function Validate-SharedSource() {
 
 function New-EntryPoints() {
 	return [ordered]@{
-		config = "src/Config"
-		machine = "src/platforms/x86/PcSystem"
-		platformContracts = "src/platform/Contracts"
+		config = "@src/Config"
+		machine = "@src/platforms/x86/PcSystem"
+		platformContracts = "@src/platform/Contracts"
 	}
 }
 
@@ -187,6 +187,7 @@ function Convert-ToRobloxSource([string]$content, [string]$currentModuleId, [has
 function Get-RobloxRootExpression([string]$targetModuleId) {
 	Assert-PublicModuleId $targetModuleId
 	$segments = $targetModuleId.Split("/")
+	$segments[0] = $segments[0].TrimStart("@")
 	return "root." + ($segments -join ".")
 }
 
@@ -210,9 +211,9 @@ function New-RobloxInitSource([string]$versionValue, [string[]]$moduleIds) {
 		"}",
 		"",
 		"Package.EntryPoints = {",
-		"	config = modules[`"src/Config`"],",
-		"	machine = modules[`"src/platforms/x86/PcSystem`"],",
-		"	platformContracts = modules[`"src/platform/Contracts`"],",
+		"	config = modules[`"@src/Config`"],",
+		"	machine = modules[`"@src/platforms/x86/PcSystem`"],",
+		"	platformContracts = modules[`"@src/platform/Contracts`"],",
 		"}",
 		"",
 		"function Package.getModule(moduleId)",
@@ -226,15 +227,15 @@ function New-RobloxInitSource([string]$versionValue, [string[]]$moduleIds) {
 		"end",
 		"",
 		"function Package.requireConfig()",
-		"	return Package.requireById(`"src/Config`")",
+		"	return Package.requireById(`"@src/Config`")",
 		"end",
 		"",
 		"function Package.requireMachine()",
-		"	return Package.requireById(`"src/platforms/x86/PcSystem`")",
+		"	return Package.requireById(`"@src/platforms/x86/PcSystem`")",
 		"end",
 		"",
 		"function Package.requirePlatformContracts()",
-		"	return Package.requireById(`"src/platform/Contracts`")",
+		"	return Package.requireById(`"@src/platform/Contracts`")",
 		"end",
 		"",
 		"return Package"
@@ -274,7 +275,7 @@ function Validate-PackageManifest([System.Collections.IDictionary]$manifest, [st
 
 function Validate-RobloxOutput([string]$targetRoot) {
 	$violations = Get-ChildItem -Path $targetRoot -Recurse -File -Filter *.luau |
-		Select-String -Pattern 'require\("src/|require\("@|@config|@platform/'
+		Select-String -Pattern 'require\("src/|require\("@src/|@config|@platform/'
 	if ($violations) {
 		$lines = $violations | ForEach-Object { "{0}:{1}: {2}" -f $_.Path, $_.LineNumber, $_.Line.Trim() }
 		throw "Generated machina-roblox package still contains unresolved string-based imports:`n$($lines -join [Environment]::NewLine)"
