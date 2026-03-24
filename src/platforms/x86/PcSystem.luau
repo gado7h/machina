@@ -87,6 +87,15 @@ local function getTickDuration(boardConfig)
 	return 1 / getTickRate(boardConfig)
 end
 
+local function getPresentationRate(self)
+	local x86 = getX86Config(self)
+	return math.max(1, x86.PRESENT_REFRESH_HZ or x86.DISPLAY_REFRESH_HZ or DEFAULT_REFRESH_HZ)
+end
+
+local function getPresentationDuration(self)
+	return 1 / getPresentationRate(self)
+end
+
 local function getTextColumns(self)
 	return self.boardConfig.TEXT_COLS or self.config.TEXT_COLS or 80
 end
@@ -110,6 +119,7 @@ function PcSystem.new(config)
 	self._bootStage = "OFF"
 	self._heartbeatGeneration = 0
 	self._lastHeartbeatAt = 0
+	self._lastPresentAt = 0
 	self._uptimeStart = 0
 	self._cursorTimer = 0
 	self._bootRecord = nil
@@ -272,23 +282,36 @@ function PcSystem:_startHeartbeat()
 	self._heartbeatGeneration = self._heartbeatGeneration + 1
 	local generation = self._heartbeatGeneration
 	self._lastHeartbeatAt = os.clock()
+	self._lastPresentAt = self._lastHeartbeatAt
 
-	local function tick()
+	local heartbeatDt = getTickDuration(self.boardConfig)
+	local presentDt = getPresentationDuration(self)
+
+	local function stepTick()
 		if not self._powered or generation ~= self._heartbeatGeneration then
 			return
 		end
 
 		local now = os.clock()
-		local dt = getTickDuration(self.boardConfig)
 		self._lastHeartbeatAt = now
-		self.bus:processDMA(dt)
-		self:_stepCPU(dt)
-		self:_toggleCursor(dt)
-		self:presentFrame()
-		task.delay(dt, tick)
+		self.bus:processDMA(heartbeatDt)
+		self:_stepCPU(heartbeatDt)
+		self:_toggleCursor(heartbeatDt)
+		task.delay(heartbeatDt, stepTick)
 	end
 
-	task.delay(getTickDuration(self.boardConfig), tick)
+	local function presentTick()
+		if not self._powered or generation ~= self._heartbeatGeneration then
+			return
+		end
+
+		self._lastPresentAt = os.clock()
+		self:presentFrame()
+		task.delay(presentDt, presentTick)
+	end
+
+	task.delay(heartbeatDt, stepTick)
+	task.delay(presentDt, presentTick)
 end
 
 function PcSystem:setFramePresenter(presentFrame)
