@@ -6,7 +6,7 @@ on:
       - "v*.*.*"
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: release-${{ github.ref }}
@@ -65,3 +65,12 @@ jobs:
         with:
           name: machina-bundles-${{ env.MACHINA_VERSION }}
           path: ${{ env.MACHINA_ARTIFACT_DIR }}
+
+      - name: Publish release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ env.MACHINA_ARTIFACT_DIR }}/machina-luau-${{ env.MACHINA_VERSION }}.tar.gz
+            ${{ env.MACHINA_ARTIFACT_DIR }}/machina-roblox-${{ env.MACHINA_VERSION }}.tar.gz
+            ${{ env.MACHINA_ARTIFACT_DIR }}/machina-release-metadata-${{ env.MACHINA_VERSION }}.json
+            ${{ env.MACHINA_ARTIFACT_DIR }}/machina-release-checksums-${{ env.MACHINA_VERSION }}.txt
