@@ -1,5 +1,5 @@
-local BootImageCatalog = require(script.Parent.BootImageCatalog)
-local Config = require(script.Parent.Parent.Parent.Config)
+local BootImageCatalog = require("src/platforms/x86/BootImageCatalog")
+local Config = require("src/Config")
 
 local RawImageCatalog = {}
 

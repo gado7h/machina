@@ -1,7 +1,7 @@
-local BootImageCatalog = require(script.Parent.BootImageCatalog)
-local BiosInterrupts = require(script.Parent.BiosInterrupts)
-local DiagnosticsState = require(script.Parent.HardwareDiagnosticsState)
-local ProtectedModeSelfTest = require(script.Parent.ProtectedModeSelfTest)
+local BootImageCatalog = require("src/platforms/x86/BootImageCatalog")
+local BiosInterrupts = require("src/platforms/x86/BiosInterrupts")
+local DiagnosticsState = require("src/platforms/x86/HardwareDiagnosticsState")
+local ProtectedModeSelfTest = require("src/platforms/x86/ProtectedModeSelfTest")
 
 local HardwareDiagnostics = {}
 

@@ -1,4 +1,4 @@
-local BootImageCatalog = require(script.Parent.BootImageCatalog)
+local BootImageCatalog = require("src/platforms/x86/BootImageCatalog")
 
 local ImportedImageCatalog = {}
 

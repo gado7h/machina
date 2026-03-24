@@ -1,7 +1,7 @@
-local BootImageCatalog = require(script.Parent.BootImageCatalog)
-local BiosRom = require(script.Parent.BiosRom)
-local RawImageCatalog = require(script.Parent.RawImageCatalog)
-local ImportedImageCatalog = require(script.Parent.ImportedImageCatalog)
+local BootImageCatalog = require("src/platforms/x86/BootImageCatalog")
+local BiosRom = require("src/platforms/x86/BiosRom")
+local RawImageCatalog = require("src/platforms/x86/RawImageCatalog")
+local ImportedImageCatalog = require("src/platforms/x86/ImportedImageCatalog")
 
 local BootImageLoader = {}
 

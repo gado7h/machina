@@ -1,6 +1,6 @@
-local BiosInterrupts = require(script.Parent.BiosInterrupts)
-local HardwareDiagnostics = require(script.Parent.HardwareDiagnostics)
-local BootImageLoader = require(script.Parent.BootImageLoader)
+local BiosInterrupts = require("src/platforms/x86/BiosInterrupts")
+local HardwareDiagnostics = require("src/platforms/x86/HardwareDiagnostics")
+local BootImageLoader = require("src/platforms/x86/BootImageLoader")
 
 local BootController = {}
 BootController.__index = BootController
