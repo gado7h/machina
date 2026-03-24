@@ -17,7 +17,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       MACHINA_VERSION: ${{ github.ref_name }}
-      MACHINA_ARTIFACT_DIR: ${{ runner.temp }}/machina-bundles
 
     steps:
       - name: Checkout
@@ -25,6 +24,9 @@ jobs:
         with:
           submodules: recursive
           fetch-depth: 0
+
+      - name: Prepare artifact directory
+        run: echo "MACHINA_ARTIFACT_DIR=$RUNNER_TEMP/machina-bundles" >> "$GITHUB_ENV"
 
       - name: Setup Rokit
         uses: CompeyDev/setup-rokit@v0.1.2
