@@ -5,6 +5,7 @@ local FLAG_CF = 0x0001
 local FLAG_ZF = 0x0040
 local FLAG_SF = 0x0080
 local FLAG_IF = 0x0200
+local FLAG_DF = 0x0400
 local FLAG_OF = 0x0800
 
 local REG16_NAMES = { "AX", "CX", "DX", "BX", "SP", "BP", "SI", "DI" }
@@ -32,6 +33,16 @@ end
 
 local function signBit(width)
 	return width == 8 and 0x80 or 0x8000
+end
+
+local function toSigned(width, value)
+	local base = maskForWidth(width) + 1
+	local signedLimit = base / 2
+	local masked = (tonumber(value) or 0) % base
+	if masked >= signedLimit then
+		return masked - base
+	end
+	return masked
 end
 
 function Cpu8086.new(bus, config)
@@ -525,6 +536,220 @@ function Cpu8086:_shiftRotate(width, operation, value, count)
 	return result % base
 end
 
+function Cpu8086:_raiseDivideError()
+	self._lastError = "divide error"
+	error(self._lastError)
+end
+
+function Cpu8086:_mulDivGroup(width, operation, value)
+	local mask = maskForWidth(width)
+	local base = mask + 1
+	local maskedValue = (tonumber(value) or 0) % base
+
+	if operation == "not" then
+		return bit32.band(bit32.bnot(maskedValue), mask)
+	elseif operation == "neg" then
+		local result = self:_sub(width, 0, maskedValue)
+		self:setFlag(FLAG_CF, maskedValue ~= 0)
+		return result
+	elseif operation == "mul" then
+		if width == 8 then
+			local product = self:getReg8(0) * maskedValue
+			self:setReg16(0, product % 0x10000)
+			local overflow = product >= 0x100
+			self:setFlag(FLAG_CF, overflow)
+			self:setFlag(FLAG_OF, overflow)
+		else
+			local product = self:getReg16(0) * maskedValue
+			self:setReg16(0, product % 0x10000)
+			self:setReg16(2, math.floor(product / 0x10000) % 0x10000)
+			local overflow = product >= 0x10000
+			self:setFlag(FLAG_CF, overflow)
+			self:setFlag(FLAG_OF, overflow)
+		end
+		return nil
+	elseif operation == "imul" then
+		if width == 8 then
+			local product = toSigned(8, self:getReg8(0)) * toSigned(8, maskedValue)
+			self:setReg16(0, product % 0x10000)
+			local overflow = product < -0x80 or product > 0x7F
+			self:setFlag(FLAG_CF, overflow)
+			self:setFlag(FLAG_OF, overflow)
+		else
+			local product = toSigned(16, self:getReg16(0)) * toSigned(16, maskedValue)
+			local stored = product % 0x100000000
+			self:setReg16(0, stored % 0x10000)
+			self:setReg16(2, math.floor(stored / 0x10000) % 0x10000)
+			local overflow = product < -0x8000 or product > 0x7FFF
+			self:setFlag(FLAG_CF, overflow)
+			self:setFlag(FLAG_OF, overflow)
+		end
+		return nil
+	elseif operation == "div" then
+		if maskedValue == 0 then
+			self:_raiseDivideError()
+		end
+		if width == 8 then
+			local dividend = self:getReg16(0)
+			local quotient = math.floor(dividend / maskedValue)
+			local remainder = dividend % maskedValue
+			if quotient > 0xFF then
+				self:_raiseDivideError()
+			end
+			self:setReg8(0, quotient)
+			self:setReg8(4, remainder)
+		else
+			local dividend = self:getReg16(0) + self:getReg16(2) * 0x10000
+			local quotient = math.floor(dividend / maskedValue)
+			local remainder = dividend % maskedValue
+			if quotient > 0xFFFF then
+				self:_raiseDivideError()
+			end
+			self:setReg16(0, quotient)
+			self:setReg16(2, remainder)
+		end
+		return nil
+	elseif operation == "idiv" then
+		local divisor = toSigned(width, maskedValue)
+		if divisor == 0 then
+			self:_raiseDivideError()
+		end
+		if width == 8 then
+			local dividend = toSigned(16, self:getReg16(0))
+			local quotient = dividend / divisor
+			quotient = quotient >= 0 and math.floor(quotient) or math.ceil(quotient)
+			local remainder = dividend - quotient * divisor
+			if quotient < -0x80 or quotient > 0x7F then
+				self:_raiseDivideError()
+			end
+			self:setReg8(0, quotient % 0x100)
+			self:setReg8(4, remainder % 0x100)
+		else
+			local dividend = self:getReg16(0) + self:getReg16(2) * 0x10000
+			if bit32.band(self:getReg16(2), 0x8000) ~= 0 then
+				dividend = dividend - 0x100000000
+			end
+			local quotient = dividend / divisor
+			quotient = quotient >= 0 and math.floor(quotient) or math.ceil(quotient)
+			local remainder = dividend - quotient * divisor
+			if quotient < -0x8000 or quotient > 0x7FFF then
+				self:_raiseDivideError()
+			end
+			self:setReg16(0, quotient % 0x10000)
+			self:setReg16(2, remainder % 0x10000)
+		end
+		return nil
+	end
+	error("unsupported F6/F7 group op")
+end
+
+function Cpu8086:_stringDelta(width)
+	local bytes = width == 8 and 1 or 2
+	return self:getFlag(FLAG_DF) and -bytes or bytes
+end
+
+function Cpu8086:_applyStringDelta(delta)
+	self.reg16.SI = (self.reg16.SI + delta) % 0x10000
+	self.reg16.DI = (self.reg16.DI + delta) % 0x10000
+end
+
+function Cpu8086:_stringRepeatCount(prefix)
+	if prefix == nil then
+		return 1, false
+	end
+	return self:getReg16(1), true
+end
+
+function Cpu8086:_storeRepeatCount(active, count)
+	if active then
+		self:setReg16(1, count % 0x10000)
+	end
+end
+
+function Cpu8086:_executeStringOp(opcode, repeatPrefix)
+	local width = (opcode == 0xA4 or opcode == 0xA6 or opcode == 0xAA or opcode == 0xAC or opcode == 0xAE or opcode == 0x6C or opcode == 0x6E)
+		and 8
+		or 16
+	local count, repeated = self:_stringRepeatCount(repeatPrefix)
+	if repeated and count == 0 then
+		return true
+	end
+
+	local remaining = count
+	while remaining > 0 do
+		local delta = self:_stringDelta(width)
+		if opcode == 0xA4 or opcode == 0xA5 then
+			local value = width == 8 and self:readMem8(self.seg.DS, self.reg16.SI) or self:readMem16(self.seg.DS, self.reg16.SI)
+			if width == 8 then
+				self:writeMem8(self.seg.ES, self.reg16.DI, value)
+			else
+				self:writeMem16(self.seg.ES, self.reg16.DI, value)
+			end
+			self:_applyStringDelta(delta)
+		elseif opcode == 0xA6 or opcode == 0xA7 then
+			local left = width == 8 and self:readMem8(self.seg.DS, self.reg16.SI) or self:readMem16(self.seg.DS, self.reg16.SI)
+			local right = width == 8 and self:readMem8(self.seg.ES, self.reg16.DI) or self:readMem16(self.seg.ES, self.reg16.DI)
+			self:_sub(width, left, right)
+			self:_applyStringDelta(delta)
+		elseif opcode == 0xAA or opcode == 0xAB then
+			local value = width == 8 and self:getReg8(0) or self:getReg16(0)
+			if width == 8 then
+				self:writeMem8(self.seg.ES, self.reg16.DI, value)
+			else
+				self:writeMem16(self.seg.ES, self.reg16.DI, value)
+			end
+			self.reg16.DI = (self.reg16.DI + delta) % 0x10000
+		elseif opcode == 0xAC or opcode == 0xAD then
+			local value = width == 8 and self:readMem8(self.seg.DS, self.reg16.SI) or self:readMem16(self.seg.DS, self.reg16.SI)
+			if width == 8 then
+				self:setReg8(0, value)
+			else
+				self:setReg16(0, value)
+			end
+			self.reg16.SI = (self.reg16.SI + delta) % 0x10000
+		elseif opcode == 0xAE or opcode == 0xAF then
+			local left = width == 8 and self:getReg8(0) or self:getReg16(0)
+			local right = width == 8 and self:readMem8(self.seg.ES, self.reg16.DI) or self:readMem16(self.seg.ES, self.reg16.DI)
+			self:_sub(width, left, right)
+			self.reg16.DI = (self.reg16.DI + delta) % 0x10000
+		elseif opcode == 0x6C or opcode == 0x6D then
+			local value = width == 8 and self.bus:portRead(self.reg16.DX) or self.bus:portRead16(self.reg16.DX)
+			self.stats.portReads = self.stats.portReads + 1
+			if width == 8 then
+				self:writeMem8(self.seg.ES, self.reg16.DI, value)
+			else
+				self:writeMem16(self.seg.ES, self.reg16.DI, value)
+			end
+			self.reg16.DI = (self.reg16.DI + delta) % 0x10000
+		elseif opcode == 0x6E or opcode == 0x6F then
+			local value = width == 8 and self:readMem8(self.seg.DS, self.reg16.SI) or self:readMem16(self.seg.DS, self.reg16.SI)
+			self.stats.portWrites = self.stats.portWrites + 1
+			if width == 8 then
+				self.bus:portWrite(self.reg16.DX, value)
+			else
+				self.bus:portWrite16(self.reg16.DX, value)
+			end
+			self.reg16.SI = (self.reg16.SI + delta) % 0x10000
+		end
+
+		remaining = remaining - 1
+		if repeatPrefix ~= nil then
+			self:_storeRepeatCount(true, remaining)
+			if opcode == 0xA6 or opcode == 0xA7 or opcode == 0xAE or opcode == 0xAF then
+				if repeatPrefix == 0xF3 and not self:getFlag(FLAG_ZF) then
+					break
+				elseif repeatPrefix == 0xF2 and self:getFlag(FLAG_ZF) then
+					break
+				end
+			end
+		end
+		if not repeated then
+			break
+		end
+	end
+	return true
+end
+
 function Cpu8086:_serviceExternalInterrupt()
 	if not self:getFlag(FLAG_IF) then
 		return false
@@ -585,7 +810,12 @@ function Cpu8086:step()
 
 	local startIP = self.ip
 	local startCS = self.seg.CS
+	local repeatPrefix = nil
 	local opcode = self:fetch8()
+	while opcode == 0xF2 or opcode == 0xF3 do
+		repeatPrefix = opcode
+		opcode = self:fetch8()
+	end
 	self._lastStep.opcode = opcode
 	self._lastStep.cs = startCS
 	self._lastStep.ip = startIP
@@ -595,10 +825,18 @@ function Cpu8086:step()
 	elseif opcode >= 0xB0 and opcode <= 0xB7 then
 		self:setReg8(opcode - 0xB0, self:fetch8())
 	elseif opcode == 0x90 then
+	elseif opcode == 0xF8 then
+		self:setFlag(FLAG_CF, false)
+	elseif opcode == 0xF9 then
+		self:setFlag(FLAG_CF, true)
 	elseif opcode == 0xFA then
 		self:setFlag(FLAG_IF, false)
 	elseif opcode == 0xFB then
 		self:setFlag(FLAG_IF, true)
+	elseif opcode == 0xFC then
+		self:setFlag(FLAG_DF, false)
+	elseif opcode == 0xFD then
+		self:setFlag(FLAG_DF, true)
 	elseif opcode == 0xF4 then
 		self.halted = true
 	elseif opcode == 0x9C then
@@ -713,6 +951,39 @@ function Cpu8086:step()
 		else
 			error(string.format("unsupported FE group /%d at %04X:%04X", decoded.reg, self.seg.CS, startIP))
 		end
+	elseif opcode == 0xF6 or opcode == 0xF7 then
+		local decoded = self:_decodeModRM()
+		local width = opcode == 0xF6 and 8 or 16
+		local value = width == 8 and self:_readRM8(decoded) or self:_readRM16(decoded)
+		if decoded.reg == 0 then
+			local imm = width == 8 and self:fetch8() or self:fetch16()
+			local result = bit32.band(value, imm)
+			self:_updateLogicFlags(width, result)
+		elseif decoded.reg == 2 then
+			local result = self:_mulDivGroup(width, "not", value)
+			if width == 8 then
+				self:_writeRM8(decoded, result)
+			else
+				self:_writeRM16(decoded, result)
+			end
+		elseif decoded.reg == 3 then
+			local result = self:_mulDivGroup(width, "neg", value)
+			if width == 8 then
+				self:_writeRM8(decoded, result)
+			else
+				self:_writeRM16(decoded, result)
+			end
+		elseif decoded.reg == 4 then
+			self:_mulDivGroup(width, "mul", value)
+		elseif decoded.reg == 5 then
+			self:_mulDivGroup(width, "imul", value)
+		elseif decoded.reg == 6 then
+			self:_mulDivGroup(width, "div", value)
+		elseif decoded.reg == 7 then
+			self:_mulDivGroup(width, "idiv", value)
+		else
+			error(string.format("unsupported F6/F7 group /%d at %04X:%04X", decoded.reg, self.seg.CS, startIP))
+		end
 	elseif opcode == 0x38 then
 		local decoded = self:_decodeModRM()
 		self:_sub(8, self:_readRM8(decoded), self:getReg8(decoded.reg))
@@ -760,6 +1031,35 @@ function Cpu8086:step()
 		if not self:getFlag(FLAG_CF) then
 			self.ip = (self.ip + rel) % 0x10000
 		end
+	elseif opcode == 0xE0 then
+		local rel = signExtend8(self:fetch8())
+		self:setReg16(1, (self:getReg16(1) - 1) % 0x10000)
+		if self:getReg16(1) ~= 0 and not self:getFlag(FLAG_ZF) then
+			self.ip = (self.ip + rel) % 0x10000
+		end
+	elseif opcode == 0xE1 then
+		local rel = signExtend8(self:fetch8())
+		self:setReg16(1, (self:getReg16(1) - 1) % 0x10000)
+		if self:getReg16(1) ~= 0 and self:getFlag(FLAG_ZF) then
+			self.ip = (self.ip + rel) % 0x10000
+		end
+	elseif opcode == 0xE2 then
+		local rel = signExtend8(self:fetch8())
+		self:setReg16(1, (self:getReg16(1) - 1) % 0x10000)
+		if self:getReg16(1) ~= 0 then
+			self.ip = (self.ip + rel) % 0x10000
+		end
+	elseif opcode == 0xE3 then
+		local rel = signExtend8(self:fetch8())
+		if self:getReg16(1) == 0 then
+			self.ip = (self.ip + rel) % 0x10000
+		end
+	elseif opcode == 0xA4 or opcode == 0xA5 or opcode == 0xA6 or opcode == 0xA7 then
+		self:_executeStringOp(opcode, repeatPrefix)
+	elseif opcode == 0xAA or opcode == 0xAB or opcode == 0xAC or opcode == 0xAD then
+		self:_executeStringOp(opcode, repeatPrefix)
+	elseif opcode == 0xAE or opcode == 0xAF then
+		self:_executeStringOp(opcode, repeatPrefix)
 	elseif opcode == 0xFF then
 		local decoded = self:_decodeModRM()
 		if decoded.reg == 0 then
