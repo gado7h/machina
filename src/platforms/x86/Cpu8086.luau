@@ -873,6 +873,20 @@ function Cpu8086:step()
 	elseif opcode == 0x8A then
 		local decoded = self:_decodeModRM()
 		self:setReg8(decoded.reg, self:_readRM8(decoded))
+	elseif opcode == 0x8D then
+		local decoded = self:_decodeModRM()
+		local segment, offset = self:_effectiveAddress(decoded)
+		self:setReg16(decoded.reg, offset % 0x10000)
+	elseif opcode == 0xC4 then
+		local decoded = self:_decodeModRM()
+		local segment, offset = self:_effectiveAddress(decoded)
+		self.seg.DS = segment
+		self:setReg16(decoded.reg, offset % 0x10000)
+	elseif opcode == 0xC5 then
+		local decoded = self:_decodeModRM()
+		local segment, offset = self:_effectiveAddress(decoded)
+		self.seg.ES = segment
+		self:setReg16(decoded.reg, offset % 0x10000)
 	elseif opcode == 0x88 then
 		local decoded = self:_decodeModRM()
 		self:_writeRM8(decoded, self:getReg8(decoded.reg))
@@ -1086,6 +1100,29 @@ function Cpu8086:step()
 		self.ip = self:pop16()
 		self.seg.CS = self:pop16()
 		self.flags = self:pop16()
+	elseif opcode == 0x9E then
+		local ah = self:getReg8(4)
+		local newFlags = bit32.bor(bit32.band(self.flags, 0xFFFFFF00), ah)
+		if bit32.band(ah, 0x80) ~= 0 then newFlags = bit32.bor(newFlags, FLAG_SF) else newFlags = bit32.band(newFlags, bit32.bnot(FLAG_SF)) end
+		if bit32.band(ah, 0x40) ~= 0 then newFlags = bit32.bor(newFlags, FLAG_ZF) else newFlags = bit32.band(newFlags, bit32.bnot(FLAG_ZF)) end
+		if bit32.band(ah, 0x10) ~= 0 then newFlags = bit32.bor(newFlags, 0x10) end
+		if bit32.band(ah, 0x04) ~= 0 then newFlags = bit32.bor(newFlags, 0x04) end
+		if bit32.band(ah, 0x01) ~= 0 then newFlags = bit32.bor(newFlags, FLAG_CF) else newFlags = bit32.band(newFlags, bit32.bnot(FLAG_CF)) end
+		self.flags = newFlags
+	elseif opcode == 0x9F then
+		local newFlags = bit32.band(self.flags, 0xFFFFFFF8)
+		if bit32.band(self.flags, 0x80) ~= 0 then newFlags = bit32.bor(newFlags, 0x80) end
+		if bit32.band(self.flags, 0x40) ~= 0 then newFlags = bit32.bor(newFlags, 0x40) end
+		if bit32.band(self.flags, 0x10) ~= 0 then newFlags = bit32.bor(newFlags, 0x10) end
+		if bit32.band(self.flags, 0x04) ~= 0 then newFlags = bit32.bor(newFlags, 0x04) end
+		if bit32.band(self.flags, 0x01) ~= 0 then newFlags = bit32.bor(newFlags, 0x01) end
+		self.flags = newFlags
+	elseif opcode == 0xCC then
+		self:_invokeInterrupt(3, false)
+	elseif opcode == 0xCE then
+		if self:getFlag(FLAG_OF) then
+			self:_invokeInterrupt(4, false)
+		end
 	elseif opcode == 0xCD then
 		local vector = self:fetch8()
 		self:_invokeInterrupt(vector, false)

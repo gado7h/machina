@@ -1791,11 +1791,54 @@ function Cpu80386:_stepInternal()
 		return self._lastStep.opcode
 	end
 
+	if opcode == 0x0F then
+		local extended = self:fetch8()
+		if extended == 0xB2 then
+			local decoded = self:_decodeModRMForAddressSize(addressOverride)
+			local segment, offset = self:_effectiveAddress(decoded)
+			self:setSeg(2, segment)
+			self:_setRegByWidth(decoded.reg, operandWidth, offset)
+		elseif extended == 0xB4 then
+			local decoded = self:_decodeModRMForAddressSize(addressOverride)
+			local segment, offset = self:_effectiveAddress(decoded)
+			self:setSeg(4, segment)
+			self:_setRegByWidth(decoded.reg, operandWidth, offset)
+		elseif extended == 0xB5 then
+			local decoded = self:_decodeModRMForAddressSize(addressOverride)
+			local segment, offset = self:_effectiveAddress(decoded)
+			self:setSeg(5, segment)
+			self:_setRegByWidth(decoded.reg, operandWidth, offset)
+		end
+	end
+
 	if opcode >= 0xB8 and opcode <= 0xBF then
 		self:_setRegByWidth(opcode - 0xB8, operandWidth, self:_fetchImmediate(operandWidth))
 	elseif opcode >= 0xB0 and opcode <= 0xB7 then
 		self:setReg8(opcode - 0xB0, self:fetch8())
 	elseif opcode == 0x90 then
+	elseif opcode == 0x9E then
+		local ah = self:getReg8(4)
+		local newFlags = bit32.bor(bit32.band(self.flags, 0xFFFFFF00), ah)
+		if bit32.band(ah, 0x80) ~= 0 then newFlags = bit32.bor(newFlags, FLAG_SF) else newFlags = bit32.band(newFlags, bit32.bnot(FLAG_SF)) end
+		if bit32.band(ah, 0x40) ~= 0 then newFlags = bit32.bor(newFlags, FLAG_ZF) else newFlags = bit32.band(newFlags, bit32.bnot(FLAG_ZF)) end
+		if bit32.band(ah, 0x10) ~= 0 then newFlags = bit32.bor(newFlags, 0x10) end
+		if bit32.band(ah, 0x04) ~= 0 then newFlags = bit32.bor(newFlags, 0x04) end
+		if bit32.band(ah, 0x01) ~= 0 then newFlags = bit32.bor(newFlags, FLAG_CF) else newFlags = bit32.band(newFlags, bit32.bnot(FLAG_CF)) end
+		self.flags = newFlags
+	elseif opcode == 0x9F then
+		local newFlags = bit32.band(self.flags, 0xFFFFFFF8)
+		if bit32.band(self.flags, 0x80) ~= 0 then newFlags = bit32.bor(newFlags, 0x80) end
+		if bit32.band(self.flags, 0x40) ~= 0 then newFlags = bit32.bor(newFlags, 0x40) end
+		if bit32.band(self.flags, 0x10) ~= 0 then newFlags = bit32.bor(newFlags, 0x10) end
+		if bit32.band(self.flags, 0x04) ~= 0 then newFlags = bit32.bor(newFlags, 0x04) end
+		if bit32.band(self.flags, 0x01) ~= 0 then newFlags = bit32.bor(newFlags, 0x01) end
+		self.flags = newFlags
+	elseif opcode == 0xCC then
+		self:_invokeInterrupt(3, false)
+	elseif opcode == 0xCE then
+		if self:getFlag(FLAG_OF) then
+			self:_invokeInterrupt(4, false)
+		end
 	elseif opcode == 0x60 then
 		if operandWidth == 32 then
 			local originalSP = self:getReg32(4)
@@ -1900,6 +1943,20 @@ function Cpu80386:_stepInternal()
 	elseif opcode == 0x8B then
 		local decoded = self:_decodeModRMForAddressSize(addressOverride)
 		self:_setRegByWidth(decoded.reg, operandWidth, self:_readRMByWidth(decoded, operandWidth))
+	elseif opcode == 0x8D then
+		local decoded = self:_decodeModRMForAddressSize(addressOverride)
+		local segment, offset = self:_effectiveAddress(decoded)
+		self:_setRegByWidth(decoded.reg, operandWidth, offset)
+	elseif opcode == 0xC4 then
+		local decoded = self:_decodeModRMForAddressSize(addressOverride)
+		local segment, offset = self:_effectiveAddress(decoded)
+		self:setSeg(3, segment)
+		self:_setRegByWidth(decoded.reg, operandWidth, offset)
+	elseif opcode == 0xC5 then
+		local decoded = self:_decodeModRMForAddressSize(addressOverride)
+		local segment, offset = self:_effectiveAddress(decoded)
+		self:setSeg(0, segment)
+		self:_setRegByWidth(decoded.reg, operandWidth, offset)
 	elseif opcode == 0x89 then
 		local decoded = self:_decodeModRMForAddressSize(addressOverride)
 		self:_writeRMByWidth(decoded, operandWidth, self:_getRegByWidth(decoded.reg, operandWidth))
