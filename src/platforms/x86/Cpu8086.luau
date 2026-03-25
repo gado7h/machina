@@ -372,6 +372,159 @@ function Cpu8086:_sub(width, a, b)
 	return result
 end
 
+function Cpu8086:_adc(width, a, b)
+	local mask = maskForWidth(width)
+	local carryIn = self:getFlag(FLAG_CF) and 1 or 0
+	local operand = (b + carryIn) % (mask + 1)
+	local total = a + b + carryIn
+	local result = total % (mask + 1)
+	self:setFlag(FLAG_CF, total > mask)
+	self:setFlag(FLAG_ZF, result == 0)
+	self:setFlag(FLAG_SF, bit32.band(result, signBit(width)) ~= 0)
+	local overflow = bit32.band(bit32.bnot(bit32.bxor(a, operand)), bit32.bxor(a, result), signBit(width)) ~= 0
+	self:setFlag(FLAG_OF, overflow)
+	return result
+end
+
+function Cpu8086:_sbb(width, a, b)
+	local mask = maskForWidth(width)
+	local borrow = self:getFlag(FLAG_CF) and 1 or 0
+	local fullOperand = (tonumber(b) or 0) + borrow
+	local operand = fullOperand % (mask + 1)
+	local result = (a - operand) % (mask + 1)
+	self:setFlag(FLAG_CF, a < fullOperand)
+	self:setFlag(FLAG_ZF, result == 0)
+	self:setFlag(FLAG_SF, bit32.band(result, signBit(width)) ~= 0)
+	local overflow = bit32.band(bit32.bxor(a, operand), bit32.bxor(a, result), signBit(width)) ~= 0
+	self:setFlag(FLAG_OF, overflow)
+	return result
+end
+
+function Cpu8086:_logicBinary(width, left, right, operation)
+	local mask = maskForWidth(width)
+	local result
+	if operation == "or" then
+		result = bit32.bor(left, right)
+	elseif operation == "and" then
+		result = bit32.band(left, right)
+	else
+		result = bit32.bxor(left, right)
+	end
+	result = result % (mask + 1)
+	self:_updateLogicFlags(width, result)
+	return result
+end
+
+function Cpu8086:_inc(width, value)
+	local carry = self:getFlag(FLAG_CF)
+	local result = self:_add(width, value, 1)
+	self:setFlag(FLAG_CF, carry)
+	return result
+end
+
+function Cpu8086:_dec(width, value)
+	local carry = self:getFlag(FLAG_CF)
+	local result = self:_sub(width, value, 1)
+	self:setFlag(FLAG_CF, carry)
+	return result
+end
+
+function Cpu8086:_shiftRotate(width, operation, value, count)
+	local mask = maskForWidth(width)
+	local topBit = signBit(width)
+	local base = mask + 1
+	local rawCount = bit32.band(tonumber(count) or 0, 0x1F)
+	local result = (tonumber(value) or 0) % base
+
+	if rawCount == 0 then
+		return result
+	end
+
+	local effectiveCount = rawCount
+	if operation == "rol" or operation == "ror" then
+		effectiveCount = rawCount % width
+	elseif operation == "rcl" or operation == "rcr" then
+		effectiveCount = rawCount % (width + 1)
+	end
+
+	if effectiveCount == 0 then
+		return result
+	end
+
+	local original = result
+	for _ = 1, effectiveCount do
+		if operation == "rol" then
+			local carryOut = bit32.band(result, topBit) ~= 0 and 1 or 0
+			result = bit32.band(bit32.lshift(result, 1), mask)
+			result = bit32.bor(result, carryOut)
+			self:setFlag(FLAG_CF, carryOut ~= 0)
+		elseif operation == "ror" then
+			local carryOut = bit32.band(result, 0x01)
+			result = bit32.rshift(result, 1)
+			if carryOut ~= 0 then
+				result = bit32.bor(result, topBit)
+			end
+			self:setFlag(FLAG_CF, carryOut ~= 0)
+		elseif operation == "rcl" then
+			local carryIn = self:getFlag(FLAG_CF) and 1 or 0
+			local carryOut = bit32.band(result, topBit) ~= 0 and 1 or 0
+			result = bit32.band(bit32.lshift(result, 1), mask)
+			result = bit32.bor(result, carryIn)
+			self:setFlag(FLAG_CF, carryOut ~= 0)
+		elseif operation == "rcr" then
+			local carryIn = self:getFlag(FLAG_CF) and topBit or 0
+			local carryOut = bit32.band(result, 0x01)
+			result = bit32.bor(bit32.rshift(result, 1), carryIn)
+			self:setFlag(FLAG_CF, carryOut ~= 0)
+		elseif operation == "shl" then
+			local carryOut = bit32.band(result, topBit) ~= 0 and 1 or 0
+			result = bit32.band(bit32.lshift(result, 1), mask)
+			self:setFlag(FLAG_CF, carryOut ~= 0)
+		elseif operation == "shr" then
+			local carryOut = bit32.band(result, 0x01)
+			result = bit32.rshift(result, 1)
+			self:setFlag(FLAG_CF, carryOut ~= 0)
+		elseif operation == "sar" then
+			local carryOut = bit32.band(result, 0x01)
+			local signSet = bit32.band(result, topBit) ~= 0
+			result = bit32.rshift(result, 1)
+			if signSet then
+				result = bit32.bor(result, topBit)
+			end
+			self:setFlag(FLAG_CF, carryOut ~= 0)
+		end
+	end
+
+	if operation == "rol" or operation == "rcl" then
+		if effectiveCount == 1 then
+			self:setFlag(FLAG_OF, (bit32.band(result, topBit) ~= 0) ~= self:getFlag(FLAG_CF))
+		end
+		return result % base
+	end
+
+	if operation == "ror" or operation == "rcr" then
+		if effectiveCount == 1 then
+			local msb = bit32.band(result, topBit) ~= 0
+			local nextBit = bit32.band(result, bit32.rshift(topBit, 1)) ~= 0
+			self:setFlag(FLAG_OF, msb ~= nextBit)
+		end
+		return result % base
+	end
+
+	self:setFlag(FLAG_ZF, result == 0)
+	self:setFlag(FLAG_SF, bit32.band(result, topBit) ~= 0)
+	if effectiveCount == 1 then
+		if operation == "shl" then
+			self:setFlag(FLAG_OF, (bit32.band(result, topBit) ~= 0) ~= self:getFlag(FLAG_CF))
+		elseif operation == "shr" then
+			self:setFlag(FLAG_OF, bit32.band(original, topBit) ~= 0)
+		else
+			self:setFlag(FLAG_OF, false)
+		end
+	end
+	return result % base
+end
+
 function Cpu8086:_serviceExternalInterrupt()
 	if not self:getFlag(FLAG_IF) then
 		return false
@@ -441,20 +594,23 @@ function Cpu8086:step()
 		self:setReg16(opcode - 0xB8, self:fetch16())
 	elseif opcode >= 0xB0 and opcode <= 0xB7 then
 		self:setReg8(opcode - 0xB0, self:fetch8())
-		--elseif opcode == 0x90 then
-		-- nop
+	elseif opcode == 0x90 then
 	elseif opcode == 0xFA then
 		self:setFlag(FLAG_IF, false)
 	elseif opcode == 0xFB then
 		self:setFlag(FLAG_IF, true)
 	elseif opcode == 0xF4 then
 		self.halted = true
+	elseif opcode == 0x9C then
+		self:push16(self.flags)
+	elseif opcode == 0x9D then
+		self.flags = bit32.bor(self:pop16(), 0x0002)
 	elseif opcode >= 0x40 and opcode <= 0x47 then
 		local reg = opcode - 0x40
-		self:setReg16(reg, self:_add(16, self:getReg16(reg), 1))
+		self:setReg16(reg, self:_inc(16, self:getReg16(reg)))
 	elseif opcode >= 0x48 and opcode <= 0x4F then
 		local reg = opcode - 0x48
-		self:setReg16(reg, self:_sub(16, self:getReg16(reg), 1))
+		self:setReg16(reg, self:_dec(16, self:getReg16(reg)))
 	elseif opcode >= 0x50 and opcode <= 0x57 then
 		self:push16(self:getReg16(opcode - 0x50))
 	elseif opcode >= 0x58 and opcode <= 0x5F then
@@ -505,24 +661,57 @@ function Cpu8086:step()
 		local width = opcode == 0x80 and 8 or 16
 		local imm = width == 8 and self:fetch8() or self:fetch16()
 		local left = width == 8 and self:_readRM8(decoded) or self:_readRM16(decoded)
+		local result = nil
 		if decoded.reg == 0 then
-			local result = self:_add(width, left, imm)
-			if width == 8 then
-				self:_writeRM8(decoded, result)
-			else
-				self:_writeRM16(decoded, result)
-			end
+			result = self:_add(width, left, imm)
+		elseif decoded.reg == 1 then
+			result = self:_logicBinary(width, left, imm, "or")
+		elseif decoded.reg == 2 then
+			result = self:_adc(width, left, imm)
+		elseif decoded.reg == 3 then
+			result = self:_sbb(width, left, imm)
+		elseif decoded.reg == 4 then
+			result = self:_logicBinary(width, left, imm, "and")
 		elseif decoded.reg == 5 then
-			local result = self:_sub(width, left, imm)
-			if width == 8 then
-				self:_writeRM8(decoded, result)
-			else
-				self:_writeRM16(decoded, result)
-			end
+			result = self:_sub(width, left, imm)
+		elseif decoded.reg == 6 then
+			result = self:_logicBinary(width, left, imm, "xor")
 		elseif decoded.reg == 7 then
 			self:_sub(width, left, imm)
 		else
 			error("unsupported group 80/81 op")
+		end
+		if result ~= nil then
+			if width == 8 then
+				self:_writeRM8(decoded, result)
+			else
+				self:_writeRM16(decoded, result)
+			end
+		end
+	elseif opcode >= 0xD0 and opcode <= 0xD3 then
+		local decoded = self:_decodeModRM()
+		local width = (opcode == 0xD0 or opcode == 0xD2) and 8 or 16
+		local count = (opcode == 0xD0 or opcode == 0xD1) and 1 or self:getReg8(1)
+		local operation = ({ [0] = "rol", [1] = "ror", [2] = "rcl", [3] = "rcr", [4] = "shl", [5] = "shr", [7] = "sar" })[decoded.reg]
+		if not operation then
+			error(string.format("unsupported shift/rotate group /%d", decoded.reg))
+		end
+		local value = width == 8 and self:_readRM8(decoded) or self:_readRM16(decoded)
+		local result = self:_shiftRotate(width, operation, value, count)
+		if width == 8 then
+			self:_writeRM8(decoded, result)
+		else
+			self:_writeRM16(decoded, result)
+		end
+	elseif opcode == 0xFE then
+		local decoded = self:_decodeModRM()
+		local value = self:_readRM8(decoded)
+		if decoded.reg == 0 then
+			self:_writeRM8(decoded, self:_inc(8, value))
+		elseif decoded.reg == 1 then
+			self:_writeRM8(decoded, self:_dec(8, value))
+		else
+			error(string.format("unsupported FE group /%d at %04X:%04X", decoded.reg, self.seg.CS, startIP))
 		end
 	elseif opcode == 0x38 then
 		local decoded = self:_decodeModRM()
@@ -573,11 +762,18 @@ function Cpu8086:step()
 		end
 	elseif opcode == 0xFF then
 		local decoded = self:_decodeModRM()
-		if decoded.reg == 2 then
+		if decoded.reg == 0 then
+			self:_writeRM16(decoded, self:_inc(16, self:_readRM16(decoded)))
+		elseif decoded.reg == 1 then
+			self:_writeRM16(decoded, self:_dec(16, self:_readRM16(decoded)))
+		elseif decoded.reg == 2 then
+			local target = self:_readRM16(decoded)
 			self:push16(self.ip)
-			self.ip = self:_readRM16(decoded)
+			self.ip = target
 		elseif decoded.reg == 4 then
 			self.ip = self:_readRM16(decoded)
+		elseif decoded.reg == 6 then
+			self:push16(self:_readRM16(decoded))
 		else
 			error(string.format("unsupported FF group /%d at %04X:%04X", decoded.reg, self.seg.CS, startIP))
 		end
