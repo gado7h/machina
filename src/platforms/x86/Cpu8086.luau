@@ -667,8 +667,16 @@ function Cpu8086:_storeRepeatCount(active, count)
 end
 
 function Cpu8086:_executeStringOp(opcode, repeatPrefix)
-	local width = (opcode == 0xA4 or opcode == 0xA6 or opcode == 0xAA or opcode == 0xAC or opcode == 0xAE or opcode == 0x6C or opcode == 0x6E)
-		and 8
+	local width = (
+		opcode == 0xA4
+		or opcode == 0xA6
+		or opcode == 0xAA
+		or opcode == 0xAC
+		or opcode == 0xAE
+		or opcode == 0x6C
+		or opcode == 0x6E
+	)
+			and 8
 		or 16
 	local count, repeated = self:_stringRepeatCount(repeatPrefix)
 	if repeated and count == 0 then
@@ -679,7 +687,8 @@ function Cpu8086:_executeStringOp(opcode, repeatPrefix)
 	while remaining > 0 do
 		local delta = self:_stringDelta(width)
 		if opcode == 0xA4 or opcode == 0xA5 then
-			local value = width == 8 and self:readMem8(self.seg.DS, self.reg16.SI) or self:readMem16(self.seg.DS, self.reg16.SI)
+			local value = width == 8 and self:readMem8(self.seg.DS, self.reg16.SI)
+				or self:readMem16(self.seg.DS, self.reg16.SI)
 			if width == 8 then
 				self:writeMem8(self.seg.ES, self.reg16.DI, value)
 			else
@@ -687,8 +696,10 @@ function Cpu8086:_executeStringOp(opcode, repeatPrefix)
 			end
 			self:_applyStringDelta(delta)
 		elseif opcode == 0xA6 or opcode == 0xA7 then
-			local left = width == 8 and self:readMem8(self.seg.DS, self.reg16.SI) or self:readMem16(self.seg.DS, self.reg16.SI)
-			local right = width == 8 and self:readMem8(self.seg.ES, self.reg16.DI) or self:readMem16(self.seg.ES, self.reg16.DI)
+			local left = width == 8 and self:readMem8(self.seg.DS, self.reg16.SI)
+				or self:readMem16(self.seg.DS, self.reg16.SI)
+			local right = width == 8 and self:readMem8(self.seg.ES, self.reg16.DI)
+				or self:readMem16(self.seg.ES, self.reg16.DI)
 			self:_sub(width, left, right)
 			self:_applyStringDelta(delta)
 		elseif opcode == 0xAA or opcode == 0xAB then
@@ -700,7 +711,8 @@ function Cpu8086:_executeStringOp(opcode, repeatPrefix)
 			end
 			self.reg16.DI = (self.reg16.DI + delta) % 0x10000
 		elseif opcode == 0xAC or opcode == 0xAD then
-			local value = width == 8 and self:readMem8(self.seg.DS, self.reg16.SI) or self:readMem16(self.seg.DS, self.reg16.SI)
+			local value = width == 8 and self:readMem8(self.seg.DS, self.reg16.SI)
+				or self:readMem16(self.seg.DS, self.reg16.SI)
 			if width == 8 then
 				self:setReg8(0, value)
 			else
@@ -709,7 +721,8 @@ function Cpu8086:_executeStringOp(opcode, repeatPrefix)
 			self.reg16.SI = (self.reg16.SI + delta) % 0x10000
 		elseif opcode == 0xAE or opcode == 0xAF then
 			local left = width == 8 and self:getReg8(0) or self:getReg16(0)
-			local right = width == 8 and self:readMem8(self.seg.ES, self.reg16.DI) or self:readMem16(self.seg.ES, self.reg16.DI)
+			local right = width == 8 and self:readMem8(self.seg.ES, self.reg16.DI)
+				or self:readMem16(self.seg.ES, self.reg16.DI)
 			self:_sub(width, left, right)
 			self.reg16.DI = (self.reg16.DI + delta) % 0x10000
 		elseif opcode == 0x6C or opcode == 0x6D then
@@ -722,7 +735,8 @@ function Cpu8086:_executeStringOp(opcode, repeatPrefix)
 			end
 			self.reg16.DI = (self.reg16.DI + delta) % 0x10000
 		elseif opcode == 0x6E or opcode == 0x6F then
-			local value = width == 8 and self:readMem8(self.seg.DS, self.reg16.SI) or self:readMem16(self.seg.DS, self.reg16.SI)
+			local value = width == 8 and self:readMem8(self.seg.DS, self.reg16.SI)
+				or self:readMem16(self.seg.DS, self.reg16.SI)
 			self.stats.portWrites = self.stats.portWrites + 1
 			if width == 8 then
 				self.bus:portWrite(self.reg16.DX, value)
@@ -825,6 +839,7 @@ function Cpu8086:step()
 	elseif opcode >= 0xB0 and opcode <= 0xB7 then
 		self:setReg8(opcode - 0xB0, self:fetch8())
 	elseif opcode == 0x90 then
+		-- NOP
 	elseif opcode == 0xF8 then
 		self:setFlag(FLAG_CF, false)
 	elseif opcode == 0xF9 then
@@ -875,7 +890,7 @@ function Cpu8086:step()
 		self:setReg8(decoded.reg, self:_readRM8(decoded))
 	elseif opcode == 0x8D then
 		local decoded = self:_decodeModRM()
-		local segment, offset = self:_effectiveAddress(decoded)
+		local _segment, offset = self:_effectiveAddress(decoded)
 		self:setReg16(decoded.reg, offset % 0x10000)
 	elseif opcode == 0xC4 then
 		local decoded = self:_decodeModRM()
@@ -944,7 +959,9 @@ function Cpu8086:step()
 		local decoded = self:_decodeModRM()
 		local width = (opcode == 0xD0 or opcode == 0xD2) and 8 or 16
 		local count = (opcode == 0xD0 or opcode == 0xD1) and 1 or self:getReg8(1)
-		local operation = ({ [0] = "rol", [1] = "ror", [2] = "rcl", [3] = "rcr", [4] = "shl", [5] = "shr", [7] = "sar" })[decoded.reg]
+		local operation = (
+			{ [0] = "rol", [1] = "ror", [2] = "rcl", [3] = "rcr", [4] = "shl", [5] = "shr", [7] = "sar" }
+		)[decoded.reg]
 		if not operation then
 			error(string.format("unsupported shift/rotate group /%d", decoded.reg))
 		end
@@ -1068,11 +1085,18 @@ function Cpu8086:step()
 		if self:getReg16(1) == 0 then
 			self.ip = (self.ip + rel) % 0x10000
 		end
-	elseif opcode == 0xA4 or opcode == 0xA5 or opcode == 0xA6 or opcode == 0xA7 then
-		self:_executeStringOp(opcode, repeatPrefix)
-	elseif opcode == 0xAA or opcode == 0xAB or opcode == 0xAC or opcode == 0xAD then
-		self:_executeStringOp(opcode, repeatPrefix)
-	elseif opcode == 0xAE or opcode == 0xAF then
+	elseif
+		opcode == 0xA4
+		or opcode == 0xA5
+		or opcode == 0xA6
+		or opcode == 0xA7
+		or opcode == 0xAA
+		or opcode == 0xAB
+		or opcode == 0xAC
+		or opcode == 0xAD
+		or opcode == 0xAE
+		or opcode == 0xAF
+	then
 		self:_executeStringOp(opcode, repeatPrefix)
 	elseif opcode == 0xFF then
 		local decoded = self:_decodeModRM()
@@ -1103,19 +1127,45 @@ function Cpu8086:step()
 	elseif opcode == 0x9E then
 		local ah = self:getReg8(4)
 		local newFlags = bit32.bor(bit32.band(self.flags, 0xFFFFFF00), ah)
-		if bit32.band(ah, 0x80) ~= 0 then newFlags = bit32.bor(newFlags, FLAG_SF) else newFlags = bit32.band(newFlags, bit32.bnot(FLAG_SF)) end
-		if bit32.band(ah, 0x40) ~= 0 then newFlags = bit32.bor(newFlags, FLAG_ZF) else newFlags = bit32.band(newFlags, bit32.bnot(FLAG_ZF)) end
-		if bit32.band(ah, 0x10) ~= 0 then newFlags = bit32.bor(newFlags, 0x10) end
-		if bit32.band(ah, 0x04) ~= 0 then newFlags = bit32.bor(newFlags, 0x04) end
-		if bit32.band(ah, 0x01) ~= 0 then newFlags = bit32.bor(newFlags, FLAG_CF) else newFlags = bit32.band(newFlags, bit32.bnot(FLAG_CF)) end
+		if bit32.band(ah, 0x80) ~= 0 then
+			newFlags = bit32.bor(newFlags, FLAG_SF)
+		else
+			newFlags = bit32.band(newFlags, bit32.bnot(FLAG_SF))
+		end
+		if bit32.band(ah, 0x40) ~= 0 then
+			newFlags = bit32.bor(newFlags, FLAG_ZF)
+		else
+			newFlags = bit32.band(newFlags, bit32.bnot(FLAG_ZF))
+		end
+		if bit32.band(ah, 0x10) ~= 0 then
+			newFlags = bit32.bor(newFlags, 0x10)
+		end
+		if bit32.band(ah, 0x04) ~= 0 then
+			newFlags = bit32.bor(newFlags, 0x04)
+		end
+		if bit32.band(ah, 0x01) ~= 0 then
+			newFlags = bit32.bor(newFlags, FLAG_CF)
+		else
+			newFlags = bit32.band(newFlags, bit32.bnot(FLAG_CF))
+		end
 		self.flags = newFlags
 	elseif opcode == 0x9F then
 		local newFlags = bit32.band(self.flags, 0xFFFFFFF8)
-		if bit32.band(self.flags, 0x80) ~= 0 then newFlags = bit32.bor(newFlags, 0x80) end
-		if bit32.band(self.flags, 0x40) ~= 0 then newFlags = bit32.bor(newFlags, 0x40) end
-		if bit32.band(self.flags, 0x10) ~= 0 then newFlags = bit32.bor(newFlags, 0x10) end
-		if bit32.band(self.flags, 0x04) ~= 0 then newFlags = bit32.bor(newFlags, 0x04) end
-		if bit32.band(self.flags, 0x01) ~= 0 then newFlags = bit32.bor(newFlags, 0x01) end
+		if bit32.band(self.flags, 0x80) ~= 0 then
+			newFlags = bit32.bor(newFlags, 0x80)
+		end
+		if bit32.band(self.flags, 0x40) ~= 0 then
+			newFlags = bit32.bor(newFlags, 0x40)
+		end
+		if bit32.band(self.flags, 0x10) ~= 0 then
+			newFlags = bit32.bor(newFlags, 0x10)
+		end
+		if bit32.band(self.flags, 0x04) ~= 0 then
+			newFlags = bit32.bor(newFlags, 0x04)
+		end
+		if bit32.band(self.flags, 0x01) ~= 0 then
+			newFlags = bit32.bor(newFlags, 0x01)
+		end
 		self.flags = newFlags
 	elseif opcode == 0xCC then
 		self:_invokeInterrupt(3, false)

@@ -101,7 +101,7 @@ local function mulUnsigned32(a, b)
 end
 
 local function negate64(hi, lo)
-	local nextLo = (-((tonumber(lo) or 0) % 0x100000000)) % 0x100000000
+	local nextLo = -((tonumber(lo) or 0) % 0x100000000) % 0x100000000
 	local carry = nextLo == 0 and 1 or 0
 	local nextHi = (bit32.band(bit32.bnot((tonumber(hi) or 0) % 0x100000000), 0xFFFFFFFF) + carry) % 0x100000000
 	return nextHi, nextLo
@@ -1079,7 +1079,8 @@ function Cpu80386:_mulDivGroup(width, operation, value)
 			end
 			self:setReg32(0, lo)
 			self:setReg32(2, hi)
-			local signExtended = (hi == 0 and bit32.band(lo, 0x80000000) == 0) or (hi == 0xFFFFFFFF and bit32.band(lo, 0x80000000) ~= 0)
+			local signExtended = (hi == 0 and bit32.band(lo, 0x80000000) == 0)
+				or (hi == 0xFFFFFFFF and bit32.band(lo, 0x80000000) ~= 0)
 			self:setFlag(FLAG_CF, not signExtended)
 			self:setFlag(FLAG_OF, not signExtended)
 		end
@@ -1151,11 +1152,13 @@ function Cpu80386:_mulDivGroup(width, operation, value)
 				self:_raiseException(VECTOR_DE, 0, "division overflow")
 			end
 			local negativeQuotient = negativeDividend ~= (divisor < 0)
-			if (negativeQuotient and quotientAbs > 0x80000000) or ((not negativeQuotient) and quotientAbs > 0x7FFFFFFF) then
+			if
+				(negativeQuotient and quotientAbs > 0x80000000) or ((not negativeQuotient) and quotientAbs > 0x7FFFFFFF)
+			then
 				self:_raiseException(VECTOR_DE, 0, "division overflow")
 			end
-			local quotient = negativeQuotient and ((-quotientAbs) % 0x100000000) or quotientAbs
-			local remainder = negativeDividend and ((-remainderAbs) % 0x100000000) or remainderAbs
+			local quotient = negativeQuotient and (-quotientAbs % 0x100000000) or quotientAbs
+			local remainder = negativeDividend and (-remainderAbs % 0x100000000) or remainderAbs
 			self:setReg32(0, quotient)
 			self:setReg32(2, remainder)
 		end
@@ -1220,7 +1223,15 @@ end
 
 function Cpu80386:_executeStringOp(opcode, repeatPrefix, operandWidth, addressOverride)
 	local width
-	if opcode == 0xA4 or opcode == 0xA6 or opcode == 0xAA or opcode == 0xAC or opcode == 0xAE or opcode == 0x6C or opcode == 0x6E then
+	if
+		opcode == 0xA4
+		or opcode == 0xA6
+		or opcode == 0xAA
+		or opcode == 0xAC
+		or opcode == 0xAE
+		or opcode == 0x6C
+		or opcode == 0x6E
+	then
 		width = 8
 	else
 		width = operandWidth
@@ -1816,22 +1827,49 @@ function Cpu80386:_stepInternal()
 	elseif opcode >= 0xB0 and opcode <= 0xB7 then
 		self:setReg8(opcode - 0xB0, self:fetch8())
 	elseif opcode == 0x90 then
+		-- NOP
 	elseif opcode == 0x9E then
 		local ah = self:getReg8(4)
 		local newFlags = bit32.bor(bit32.band(self.flags, 0xFFFFFF00), ah)
-		if bit32.band(ah, 0x80) ~= 0 then newFlags = bit32.bor(newFlags, FLAG_SF) else newFlags = bit32.band(newFlags, bit32.bnot(FLAG_SF)) end
-		if bit32.band(ah, 0x40) ~= 0 then newFlags = bit32.bor(newFlags, FLAG_ZF) else newFlags = bit32.band(newFlags, bit32.bnot(FLAG_ZF)) end
-		if bit32.band(ah, 0x10) ~= 0 then newFlags = bit32.bor(newFlags, 0x10) end
-		if bit32.band(ah, 0x04) ~= 0 then newFlags = bit32.bor(newFlags, 0x04) end
-		if bit32.band(ah, 0x01) ~= 0 then newFlags = bit32.bor(newFlags, FLAG_CF) else newFlags = bit32.band(newFlags, bit32.bnot(FLAG_CF)) end
+		if bit32.band(ah, 0x80) ~= 0 then
+			newFlags = bit32.bor(newFlags, FLAG_SF)
+		else
+			newFlags = bit32.band(newFlags, bit32.bnot(FLAG_SF))
+		end
+		if bit32.band(ah, 0x40) ~= 0 then
+			newFlags = bit32.bor(newFlags, FLAG_ZF)
+		else
+			newFlags = bit32.band(newFlags, bit32.bnot(FLAG_ZF))
+		end
+		if bit32.band(ah, 0x10) ~= 0 then
+			newFlags = bit32.bor(newFlags, 0x10)
+		end
+		if bit32.band(ah, 0x04) ~= 0 then
+			newFlags = bit32.bor(newFlags, 0x04)
+		end
+		if bit32.band(ah, 0x01) ~= 0 then
+			newFlags = bit32.bor(newFlags, FLAG_CF)
+		else
+			newFlags = bit32.band(newFlags, bit32.bnot(FLAG_CF))
+		end
 		self.flags = newFlags
 	elseif opcode == 0x9F then
 		local newFlags = bit32.band(self.flags, 0xFFFFFFF8)
-		if bit32.band(self.flags, 0x80) ~= 0 then newFlags = bit32.bor(newFlags, 0x80) end
-		if bit32.band(self.flags, 0x40) ~= 0 then newFlags = bit32.bor(newFlags, 0x40) end
-		if bit32.band(self.flags, 0x10) ~= 0 then newFlags = bit32.bor(newFlags, 0x10) end
-		if bit32.band(self.flags, 0x04) ~= 0 then newFlags = bit32.bor(newFlags, 0x04) end
-		if bit32.band(self.flags, 0x01) ~= 0 then newFlags = bit32.bor(newFlags, 0x01) end
+		if bit32.band(self.flags, 0x80) ~= 0 then
+			newFlags = bit32.bor(newFlags, 0x80)
+		end
+		if bit32.band(self.flags, 0x40) ~= 0 then
+			newFlags = bit32.bor(newFlags, 0x40)
+		end
+		if bit32.band(self.flags, 0x10) ~= 0 then
+			newFlags = bit32.bor(newFlags, 0x10)
+		end
+		if bit32.band(self.flags, 0x04) ~= 0 then
+			newFlags = bit32.bor(newFlags, 0x04)
+		end
+		if bit32.band(self.flags, 0x01) ~= 0 then
+			newFlags = bit32.bor(newFlags, 0x01)
+		end
 		self.flags = newFlags
 	elseif opcode == 0xCC then
 		self:_invokeInterrupt(3, false)
@@ -1945,7 +1983,7 @@ function Cpu80386:_stepInternal()
 		self:_setRegByWidth(decoded.reg, operandWidth, self:_readRMByWidth(decoded, operandWidth))
 	elseif opcode == 0x8D then
 		local decoded = self:_decodeModRMForAddressSize(addressOverride)
-		local segment, offset = self:_effectiveAddress(decoded)
+		local _segment, offset = self:_effectiveAddress(decoded)
 		self:_setRegByWidth(decoded.reg, operandWidth, offset)
 	elseif opcode == 0xC4 then
 		local decoded = self:_decodeModRMForAddressSize(addressOverride)
@@ -2041,7 +2079,9 @@ function Cpu80386:_stepInternal()
 			width = operandWidth
 			count = self:fetch8()
 		end
-		local operation = ({ [0] = "rol", [1] = "ror", [2] = "rcl", [3] = "rcr", [4] = "shl", [5] = "shr", [7] = "sar" })[decoded.reg]
+		local operation = (
+			{ [0] = "rol", [1] = "ror", [2] = "rcl", [3] = "rcr", [4] = "shl", [5] = "shr", [7] = "sar" }
+		)[decoded.reg]
 		if not operation then
 			self:_raiseException(VECTOR_UD, 0, string.format("unsupported shift/rotate group /%d", decoded.reg))
 		end
@@ -2195,18 +2235,37 @@ function Cpu80386:_stepInternal()
 		elseif self:getReg16(1) == 0 then
 			self:_setInstructionPointer(self:_currentIP() + rel)
 		end
-	elseif opcode == 0xA4 or opcode == 0xA5 or opcode == 0xA6 or opcode == 0xA7 then
-		self:_executeStringOp(opcode, repeatPrefix, operandWidth, addressOverride)
-	elseif opcode == 0xAA or opcode == 0xAB or opcode == 0xAC or opcode == 0xAD then
-		self:_executeStringOp(opcode, repeatPrefix, operandWidth, addressOverride)
-	elseif opcode == 0xAE or opcode == 0xAF or opcode == 0x6C or opcode == 0x6D or opcode == 0x6E or opcode == 0x6F then
+	elseif
+		opcode == 0xA4
+		or opcode == 0xA5
+		or opcode == 0xA6
+		or opcode == 0xA7
+		or opcode == 0xAA
+		or opcode == 0xAB
+		or opcode == 0xAC
+		or opcode == 0xAD
+		or opcode == 0xAE
+		or opcode == 0xAF
+		or opcode == 0x6C
+		or opcode == 0x6D
+		or opcode == 0x6E
+		or opcode == 0x6F
+	then
 		self:_executeStringOp(opcode, repeatPrefix, operandWidth, addressOverride)
 	elseif opcode == 0xFF then
 		local decoded = self:_decodeModRMForAddressSize(addressOverride)
 		if decoded.reg == 0 then
-			self:_writeRMByWidth(decoded, operandWidth, self:_inc(operandWidth, self:_readRMByWidth(decoded, operandWidth)))
+			self:_writeRMByWidth(
+				decoded,
+				operandWidth,
+				self:_inc(operandWidth, self:_readRMByWidth(decoded, operandWidth))
+			)
 		elseif decoded.reg == 1 then
-			self:_writeRMByWidth(decoded, operandWidth, self:_dec(operandWidth, self:_readRMByWidth(decoded, operandWidth)))
+			self:_writeRMByWidth(
+				decoded,
+				operandWidth,
+				self:_dec(operandWidth, self:_readRMByWidth(decoded, operandWidth))
+			)
 		elseif decoded.reg == 2 then
 			local target = self:_readRMByWidth(decoded, operandWidth)
 			local returnIP = self:_currentIP()
