@@ -17,6 +17,7 @@ local ERROR_IDNF = 0x10
 local CMD_READ = 0x20
 local CMD_WRITE = 0x30
 local CMD_IDENTIFY = 0xEC
+local CMD_FLUSH = 0xE7
 
 local DEVICE_CONTROL_NIEN = 0x02
 local DEVICE_CONTROL_SRST = 0x04
@@ -293,14 +294,19 @@ function AtaController:_issueCommand(cmd)
 	elseif command == 2 then
 		normalized = CMD_WRITE
 	end
-	if normalized ~= CMD_READ and normalized ~= CMD_WRITE and normalized ~= CMD_IDENTIFY then
+	if
+		normalized ~= CMD_READ
+		and normalized ~= CMD_WRITE
+		and normalized ~= CMD_IDENTIFY
+		and normalized ~= CMD_FLUSH
+	then
 		self:_setError(ERROR_ABORT)
 		return
 	end
 
 	local lba = 0
 	local count = 1
-	if normalized ~= CMD_IDENTIFY then
+	if normalized ~= CMD_IDENTIFY and normalized ~= CMD_FLUSH then
 		lba = self:_currentLBA()
 		count = self:_currentSectorCount()
 		if lba == nil or lba < 0 or (lba + count - 1) >= self.totalSectors then
@@ -309,11 +315,16 @@ function AtaController:_issueCommand(cmd)
 		end
 	end
 
+	local latency = 0.001
+	if normalized ~= CMD_FLUSH then
+		latency = self:_estimateLatencySec(lba)
+	end
+
 	self._pending = {
 		cmd = normalized,
 		lba = lba,
 		count = count,
-		remaining = self:_estimateLatencySec(lba),
+		remaining = latency,
 	}
 end
 
@@ -343,6 +354,9 @@ function AtaController:_finishCommand(op)
 		self:_beginWriteTransfer(op)
 	elseif op.cmd == CMD_IDENTIFY then
 		self:_beginReadTransfer(op, self:_buildIdentifySector())
+	elseif op.cmd == CMD_FLUSH then
+		self._status = bit32.bor(STATUS_DRDY, STATUS_DSC)
+		self:_raiseIRQ("flush-complete", nil)
 	end
 end
 

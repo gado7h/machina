@@ -16,6 +16,9 @@ local COMMAND_DISABLE_KEYBOARD = 0x10
 local OUTPUT_BUFFER_LIMIT = 64
 local ASCII_BUFFER_LIMIT = 128
 
+local OUTPUT_PORT_A20_ENABLED = 0x02
+local OUTPUT_PORT_KEYBOARD_ENABLED = 0x10
+
 local SCAN_MAKE = {
 	A = 0x1E,
 	B = 0x30,
@@ -231,6 +234,8 @@ function I8042Controller.new(config, bus)
 	self._pendingControllerData = nil
 	self._pendingI8042ControllerData = nil
 	self._status = STATUS_SYSTEM
+	self._outputPort = bit32.bor(OUTPUT_PORT_A20_ENABLED, OUTPUT_PORT_KEYBOARD_ENABLED)
+	self._pendingOutputPortWrite = nil
 	self.stats = { keyPresses = 0, bufferOverruns = 0 }
 
 	bus:registerPort(config.PORT.KBD_DATA, function()
@@ -376,6 +381,22 @@ function I8042Controller:_writeI8042ControllerCommand(value)
 		return
 	end
 
+	if self._pendingOutputPortWrite ~= nil then
+		self._outputPort = self._pendingOutputPortWrite
+		self._pendingOutputPortWrite = nil
+		self:_pushOutputByte(KBD_ACK)
+		if self.bus and self.bus.setA20Enabled then
+			self.bus:setA20Enabled(bit32.band(self._outputPort, OUTPUT_PORT_A20_ENABLED) ~= 0)
+		end
+		return
+	end
+
+	if self._pendingI8042ControllerData == "led" then
+		self._pendingI8042ControllerData = nil
+		self:_pushOutputByte(KBD_ACK)
+		return
+	end
+
 	if v == 0xED then
 		self._pendingI8042ControllerData = "led"
 		self:_pushOutputByte(KBD_ACK)
@@ -394,6 +415,11 @@ function I8042Controller:_writeI8042ControllerCommand(value)
 		self._scanningEnabled = true
 		self:_pushOutputByte(KBD_ACK)
 		self:_pushOutputByte(KBD_SELF_TEST_PASSED)
+	elseif v == 0xD0 then
+		self:_pushOutputByte(self._outputPort)
+	elseif v == 0xD1 then
+		self._pendingOutputPortWrite = 0
+		self._status = bit32.bor(self._status, STATUS_INPUT_FULL)
 	else
 		self:_pushOutputByte(KBD_ACK)
 	end

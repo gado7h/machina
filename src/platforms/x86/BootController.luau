@@ -64,6 +64,10 @@ function BootController:startBoot()
 		self.machine.cpu:reset()
 		self.machine.gpu:biosSetVideoMode(0x03)
 	end
+
+	self:_initializeIVT()
+	self:_initializeBDA()
+
 	if self.machine.bus and self.machine.bus.timer then
 		self.machine.bus.timer._enabled = true
 		self.machine.bus.timer._irqEnabled = true
@@ -114,6 +118,58 @@ function BootController:tick(_dt)
 	if not self._readyFlagLinear and pc >= self._kernelLinear then
 		self.machine:_setBootStage("RUNNING")
 	end
+end
+
+function BootController:_initializeIVT()
+	local cpu = self.machine.cpu
+	local romBase = self.x86.ROM_BASE or 0xF0000
+	for vector = 0, 0xFF do
+		local offset = vector * 4
+		cpu:writePhysical8(offset, 0x00)
+		cpu:writePhysical8(offset + 1, 0x00)
+		cpu:writePhysical8(offset + 2, bit32.band(romBase, 0xFF))
+		cpu:writePhysical8(offset + 3, bit32.rshift(romBase, 8) % 0x100)
+	end
+end
+
+function BootController:_initializeBDA()
+	local cpu = self.machine.cpu
+	cpu:writePhysical8(0x0400, 0x50)
+	cpu:writePhysical8(0x0401, 0x14)
+	cpu:writePhysical8(0x0402, 0x00)
+	cpu:writePhysical8(0x0403, 0x00)
+	cpu:writePhysical8(0x0404, 0x00)
+	cpu:writePhysical8(0x0405, 0x00)
+	cpu:writePhysical8(0x0406, 0x00)
+	cpu:writePhysical8(0x0407, 0x00)
+	cpu:writePhysical8(0x0408, 0x00)
+	cpu:writePhysical8(0x0409, 0x00)
+	cpu:writePhysical8(0x040A, 0x00)
+	cpu:writePhysical8(0x040B, 0x00)
+	cpu:writePhysical8(0x040C, 0x00)
+	cpu:writePhysical8(0x040D, 0x00)
+	cpu:writePhysical8(0x040E, 0x00)
+	cpu:writePhysical8(0x040F, 0x00)
+	cpu:writePhysical8(0x0410, 0x00)
+	cpu:writePhysical8(0x0411, 0x00)
+	cpu:writePhysical8(0x0412, 0x80)
+	cpu:writePhysical8(0x0413, 0x02)
+	cpu:writePhysical8(0x0414, 0x00)
+	cpu:writePhysical8(0x0415, 0x00)
+	cpu:writePhysical8(0x0416, 0x00)
+	cpu:writePhysical8(0x0417, 0x00)
+	cpu:writePhysical8(0x0418, 0x00)
+	cpu:writePhysical8(0x0419, 0x00)
+	cpu:writePhysical8(0x041A, 0x00)
+	cpu:writePhysical8(0x041B, 0x50)
+	cpu:writePhysical8(0x041C, 0x14)
+	cpu:writePhysical8(0x041D, 0x00)
+	cpu:writePhysical8(0x041E, 0x00)
+	cpu:writePhysical8(0x041F, 0x00)
+	cpu:writePhysical8(0x0480, 0x00)
+	cpu:writePhysical8(0x0481, 0x0C)
+	cpu:writePhysical8(0x0482, 0x00)
+	cpu:writePhysical8(0x0483, 0x00)
 end
 
 return BootController
