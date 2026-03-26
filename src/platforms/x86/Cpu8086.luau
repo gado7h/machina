@@ -839,7 +839,7 @@ function Cpu8086:step()
 	elseif opcode >= 0xB0 and opcode <= 0xB7 then
 		self:setReg8(opcode - 0xB0, self:fetch8())
 	elseif opcode == 0x90 then
-		self.ip = (self.ip) % 0x10000
+		self.ip = self.ip % 0x10000
 	elseif opcode == 0xF8 then
 		self:setFlag(FLAG_CF, false)
 	elseif opcode == 0xF9 then
