@@ -21,6 +21,7 @@ function SystemBus.new(config)
 	self._lastMemMapping = nil
 	self._defaultDt = defaultTickDt(config)
 	self._a20Enabled = true
+	self._postCode = 0xFF
 
 	-- Statistics
 	self.stats = {
@@ -42,6 +43,12 @@ function SystemBus.new(config)
 	self._devices.timer = self.timer
 	self.pic:attachBus(self)
 	self.timer:attachBus(self)
+
+	self:registerPort(0x80, function()
+		return self._postCode or 0xFF
+	end, function(v)
+		self._postCode = bit32.band(tonumber(v) or 0, 0xFF)
+	end, "POST Code")
 
 	self:registerPort(0x92, function()
 		return bit32.bor(0, (self._a20Enabled and 0x02 or 0))

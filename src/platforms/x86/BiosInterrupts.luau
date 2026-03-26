@@ -52,6 +52,87 @@ function BiosInterrupts:_setVideoMode(cpu)
 	self:_setCarry(cpu, false)
 end
 
+function BiosInterrupts:_getCursorPosition(cpu)
+	local page = bit32.band(cpu:getReg8(2), 0x0F)
+	local row = 0
+	local col = 0
+	if self.machine.gpu.getCursorPos then
+		row, col = self.machine.gpu:getCursorPos(page)
+	end
+	cpu:setReg8(3, row)
+	cpu:setReg8(2, col)
+	self:_setCarry(cpu, false)
+end
+
+function BiosInterrupts:_setCursorPosition(cpu)
+	local page = bit32.band(cpu:getReg8(2), 0x0F)
+	local row = cpu:getReg8(1)
+	local col = cpu:getReg8(0)
+	if self.machine.gpu.setCursorPos then
+		self.machine.gpu:setCursorPos(page, row, col)
+	end
+	self:_setCarry(cpu, false)
+end
+
+function BiosInterrupts:_setCursorType(cpu)
+	local start = cpu:getReg8(1)
+	local endLine = cpu:getReg8(0)
+	if self.machine.gpu.setCursorType then
+		self.machine.gpu:setCursorType(start, endLine)
+	end
+	self:_setCarry(cpu, false)
+end
+
+function BiosInterrupts:_scrollWindow(cpu)
+	local lines = cpu:getReg8(0)
+	local attr = cpu:getReg8(1)
+	local top = bit32.rshift(bit32.band(cpu:getReg8(2), 0xFF), 8)
+	local left = cpu:getReg8(2)
+	local bottom = bit32.rshift(bit32.band(cpu:getReg8(3), 0xFF), 8)
+	local right = cpu:getReg8(3)
+	local page = bit32.band(cpu:getReg8(4), 0x0F)
+	if self.machine.gpu.scrollWindow then
+		self.machine.gpu:scrollWindow(page, top, left, bottom, right, lines, attr)
+	end
+	self:_setCarry(cpu, false)
+end
+
+function BiosInterrupts:_readCharAttr(cpu)
+	local page = bit32.band(cpu:getReg8(2), 0x0F)
+	local char = 0
+	local attr = 0
+	if self.machine.gpu.readCharAttr then
+		char, attr = self.machine.gpu:readCharAttr(page)
+	end
+	cpu:setReg8(0, char)
+	cpu:setReg8(1, attr)
+	self:_setCarry(cpu, false)
+end
+
+function BiosInterrupts:_writeCharAttr(cpu)
+	local char = cpu:getReg8(0)
+	local attr = cpu:getReg8(1)
+	local count = cpu:getReg16(2)
+	local page = bit32.band(cpu:getReg8(4), 0x0F)
+	if self.machine.gpu.writeCharAttr then
+		self.machine.gpu:writeCharAttr(page, char, attr, count)
+	end
+	self:_setCarry(cpu, false)
+end
+
+function BiosInterrupts:_getVideoMode(cpu)
+	local mode = 0x03
+	local cols = 80
+	local page = 0
+	if self.machine.gpu.getVideoMode then
+		mode, cols, page = self.machine.gpu:getVideoMode()
+	end
+	cpu:setReg8(0, mode)
+	cpu:setReg8(1, cols)
+	cpu:setReg8(2, page)
+	self:_setCarry(cpu, false)
+end
+
 function BiosInterrupts:_chsToLba(cylinder, head, sector)
 	local spt = self.x86.SECTORS_PER_TRACK or 18
 	local heads = self.x86.HEADS or 1
@@ -271,6 +352,56 @@ function BiosInterrupts:_systemConfigInterrupt(cpu)
 			return true
 		end
 	end
+	if service == 0x87 then
+		local src = cpu:getReg16(2) * 16 + cpu:getReg16(3)
+		local dest = cpu:getReg16(6) * 16 + cpu:getReg16(7)
+		local count = cpu:getReg16(3)
+		for i = 0, count * 2 - 1 do
+			local byte = cpu:readPhysical8(src + i)
+			cpu:writePhysical8(dest + i, byte)
+		end
+		cpu:setReg8(0, 0x00)
+		self:_setCarry(cpu, false)
+		return true
+	end
+	if service == 0xC5 then
+		cpu:setReg8(0, 0x00)
+		cpu:setReg8(1, 0x00)
+		cpu:setReg8(2, 0x00)
+		cpu:setReg8(3, 0x00)
+		self:_setCarry(cpu, false)
+		return true
+	end
+	return false
+end
+
+function BiosInterrupts:_a20Interrupt(cpu)
+	local service = cpu:getReg8(4)
+	if service == 0x24 then
+		local sub = cpu:getReg8(5)
+		if sub == 0x00 then
+			cpu:setReg8(0, 0x00)
+			local a20Enabled = self.machine.bus and self.machine.bus.isA20Enabled()
+			cpu:setReg8(1, a20Enabled and 0x02 or 0x00)
+			self:_setCarry(cpu, false)
+			return true
+		end
+		if sub == 0x01 then
+			local a20Enabled = bit32.band(cpu:getReg8(6), 0x01) ~= 0
+			if self.machine.bus and self.machine.bus.setA20Enabled then
+				self.machine.bus:setA20Enabled(a20Enabled)
+			end
+			cpu:setReg8(0, 0x00)
+			self:_setCarry(cpu, false)
+			return true
+		end
+		if sub == 0x02 then
+			cpu:setReg8(0, 0x00)
+			cpu:setReg8(1, 0x00)
+			self:_setCarry(cpu, false)
+			return true
+		end
+	end
 	return false
 end
 
@@ -298,6 +429,34 @@ function BiosInterrupts:handleInterrupt(cpu, vector)
 			self:_setVideoMode(cpu)
 			return true
 		end
+		if service == 0x03 then
+			self:_getCursorPosition(cpu)
+			return true
+		end
+		if service == 0x02 then
+			self:_setCursorPosition(cpu)
+			return true
+		end
+		if service == 0x01 then
+			self:_setCursorType(cpu)
+			return true
+		end
+		if service == 0x06 then
+			self:_scrollWindow(cpu)
+			return true
+		end
+		if service == 0x08 then
+			self:_readCharAttr(cpu)
+			return true
+		end
+		if service == 0x09 then
+			self:_writeCharAttr(cpu)
+			return true
+		end
+		if service == 0x0F then
+			self:_getVideoMode(cpu)
+			return true
+		end
 		return true
 	end
 	if vector == 0x12 then
@@ -307,6 +466,9 @@ function BiosInterrupts:handleInterrupt(cpu, vector)
 		return self:_diskInterrupt(cpu)
 	end
 	if vector == 0x15 then
+		if self:_a20Interrupt(cpu) then
+			return true
+		end
 		return self:_systemConfigInterrupt(cpu)
 	end
 	if vector == 0x16 then
