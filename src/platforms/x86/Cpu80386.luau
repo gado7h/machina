@@ -1827,7 +1827,7 @@ function Cpu80386:_stepInternal()
 	elseif opcode >= 0xB0 and opcode <= 0xB7 then
 		self:setReg8(opcode - 0xB0, self:fetch8())
 	elseif opcode == 0x90 then
-		-- NOP
+		self:_setInstructionPointer(self:_currentIP())
 	elseif opcode == 0x9E then
 		local ah = self:getReg8(4)
 		local newFlags = bit32.bor(bit32.band(self.flags, 0xFFFFFF00), ah)
