@@ -20,6 +20,7 @@ function SystemBus.new(config)
 	self._fault = nil
 	self._lastMemMapping = nil
 	self._defaultDt = defaultTickDt(config)
+	self._a20Enabled = true
 
 	-- Statistics
 	self.stats = {
@@ -42,7 +43,26 @@ function SystemBus.new(config)
 	self.pic:attachBus(self)
 	self.timer:attachBus(self)
 
+	self:registerPort(0x92, function()
+		return bit32.bor(0, (self._a20Enabled and 0x02 or 0))
+	end, function(v)
+		self._a20Enabled = (bit32.band(v, 0x02) ~= 0)
+	end, "Fast A20")
+
 	return self
+end
+
+function SystemBus:setA20Enabled(enabled)
+	self._a20Enabled = enabled
+	self:_log("BUS", "A20 gate " .. (enabled and "enabled" or "disabled"))
+end
+
+function SystemBus:isA20Enabled()
+	return self._a20Enabled
+end
+
+local function maskA20(addr)
+	return bit32.band(addr, 0xFFFFF)
 end
 
 -- Device Registration
@@ -180,6 +200,7 @@ function SystemBus:consumeFault()
 end
 
 function SystemBus:memRead(addr)
+	addr = maskA20(addr)
 	self.stats.memReads = self.stats.memReads + 1
 	local m = findMapping(self, addr)
 	if not m then
@@ -201,6 +222,7 @@ function SystemBus:memRead(addr)
 end
 
 function SystemBus:memWrite(addr, value)
+	addr = maskA20(addr)
 	self.stats.memWrites = self.stats.memWrites + 1
 	local m = findMapping(self, addr)
 	if not m then
