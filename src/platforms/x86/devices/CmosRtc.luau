@@ -15,6 +15,18 @@ local REGISTER_STATUS_B = 0x0B
 local REGISTER_STATUS_C = 0x0C
 local REGISTER_STATUS_D = 0x0D
 
+local REGISTER_DIAGNOSTIC = 0x0E
+local REGISTER_SHUTDOWN = 0x0F
+local REGISTER_FLOPPY_TYPE = 0x10
+local REGISTER_HD_TYPE = 0x12
+local REGISTER_EQUIPMENT = 0x14
+local REGISTER_BASE_MEM_LOW = 0x15
+local REGISTER_BASE_MEM_HIGH = 0x16
+local REGISTER_EXT_MEM_LOW = 0x17
+local REGISTER_EXT_MEM_HIGH = 0x18
+local REGISTER_CENTURY = 0x32
+local REGISTER_EXT_MEM_POST = 0x30
+
 local CmosRtc = {}
 CmosRtc.__index = CmosRtc
 
@@ -39,6 +51,21 @@ function CmosRtc.new(config)
 	self._statusB = STATUS_B_24H
 	self._statusC = 0x00
 	self._statusD = 0x80
+
+	self._cmos = {}
+	self._cmos[REGISTER_DIAGNOSTIC] = 0x00
+	self._cmos[REGISTER_SHUTDOWN] = 0x00
+	self._cmos[REGISTER_FLOPPY_TYPE] = 0x00
+	self._cmos[REGISTER_HD_TYPE] = 0x47
+	self._cmos[REGISTER_EQUIPMENT] = bit32.bor(0x02, 0x40)
+	self._cmos[REGISTER_BASE_MEM_LOW] = 0x00
+	self._cmos[REGISTER_BASE_MEM_HIGH] = 0x02
+	self._cmos[REGISTER_EXT_MEM_LOW] = 0x00
+	self._cmos[REGISTER_EXT_MEM_HIGH] = 0x0A
+	self._cmos[REGISTER_EXT_MEM_POST] = 0x00
+	self._cmos[REGISTER_EXT_MEM_POST + 1] = 0x00
+	self._cmos[REGISTER_CENTURY] = 0x20
+
 	self.stats = {
 		reads = 0,
 		writes = 0,
@@ -129,6 +156,14 @@ function CmosRtc:_readStatusRegister(index)
 	return nil
 end
 
+function CmosRtc:_readCmosRegister(index)
+	return self._cmos[index] or 0
+end
+
+function CmosRtc:_writeCmosRegister(index, value)
+	self._cmos[index] = bit32.band(tonumber(value) or 0, 0xFF)
+end
+
 function CmosRtc:_readSelected()
 	self.stats.reads = self.stats.reads + 1
 
@@ -142,7 +177,8 @@ function CmosRtc:_readSelected()
 		return statusValue
 	end
 
-	return 0
+	local cmosValue = self:_readCmosRegister(self._index)
+	return cmosValue
 end
 
 function CmosRtc:readRegister(index)
@@ -164,6 +200,8 @@ function CmosRtc:_writeSelected(value)
 		self._statusC = 0
 	elseif self._index == REGISTER_STATUS_D then
 		self._statusD = bit32.bor(bit32.band(v, 0x7F), 0x80)
+	else
+		self:_writeCmosRegister(self._index, v)
 	end
 end
 
