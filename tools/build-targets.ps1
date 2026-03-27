@@ -194,9 +194,9 @@ function Get-RobloxRootExpression([string]$targetModuleId) {
 function New-RobloxInitSource([string]$versionValue, [string[]]$moduleIds) {
 	$lines = @(
 		"-- Auto-generated Machina package",
-		"-- Root is script.Parent (works for both games and most tools)",
+		"-- Root is script (works for both games and most tools)",
 		"",
-		"local root = script.Parent",
+		"local root = script",
 		"",
 		"-- Auto-generated module registry",
 		"local modules = {"
