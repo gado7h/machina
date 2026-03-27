@@ -1,15 +1,16 @@
 local BootImageCatalog = require("@src/platforms/x86/BootImageCatalog")
-local Config = require("@src/Config")
+local DefaultConfiguration = require("@src/DefaultConfiguration")
 local ImageCatalogUtils = require("@src/platforms/x86/ImageCatalogUtils")
 
 local RawImageCatalog = {}
 
-local function buildCatalogImage(entryName)
+local function buildCatalogImage(entryName, config)
+	local cfg = config or DefaultConfiguration()
 	local entry = BootImageCatalog[entryName]
 	assert(entry, "unknown x86 raw image entry: " .. tostring(entryName))
 
 	if type(entry) == "table" and type(entry.build) == "function" then
-		return entry.build(Config)
+		return entry.build(cfg)
 	end
 	return entry
 end
@@ -29,8 +30,8 @@ local function snapshotImage(image)
 	}
 end
 
-local function buildRawImage(entryName)
-	return snapshotImage(buildCatalogImage(entryName))
+local function buildRawImage(entryName, config)
+	return snapshotImage(buildCatalogImage(entryName, config))
 end
 
 RawImageCatalog.ProtectedModeBringUp = buildRawImage("ProtectedModeBringUp")

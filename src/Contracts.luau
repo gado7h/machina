@@ -3,9 +3,9 @@ local Contracts = {}
 Contracts.Package = "machina"
 
 Contracts.EntryPoints = {
-	config = "@src/Config",
+	config = "@src/DefaultConfiguration",
 	machine = "@src/platforms/x86/PcSystem",
-	platformContracts = "@src/platform/Contracts",
+	platformContracts = "@src/Contracts",
 }
 
 Contracts.ManifestFormats = {

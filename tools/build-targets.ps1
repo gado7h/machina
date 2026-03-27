@@ -94,7 +94,7 @@ function Get-SharedSourceFiles() {
 	return Get-ChildItem -Path $sourceRoot -Recurse -File -Filter *.luau |
 		Where-Object {
 			$relative = Get-RelativeSourcePath $_.FullName
-			$relative -eq "Config.luau" -or $relative.StartsWith("platform/") -or $relative.StartsWith("platforms/")
+			$relative -eq "DefaultConfiguration.luau" -or $relative -eq "Contracts.luau" -or $relative.StartsWith("platforms/")
 		}
 }
 
@@ -111,7 +111,7 @@ function Get-ModuleEntries() {
 }
 
 function Validate-SharedSource() {
-	$pattern = 'script\.Parent|game:GetService|Instance\.new|ReplicatedStorage|RemoteFunction|DataStoreService|@host/|@config|@platform/'
+	$pattern = 'script\.Parent|game:GetService|Instance\.new|ReplicatedStorage|RemoteFunction|DataStoreService|@host/|@config/'
 	$violations = Get-SharedSourceFiles | Select-String -Pattern $pattern
 	if ($violations) {
 		$lines = $violations | ForEach-Object { "{0}:{1}: {2}" -f $_.Path, $_.LineNumber, $_.Line.Trim() }
@@ -121,9 +121,9 @@ function Validate-SharedSource() {
 
 function New-EntryPoints() {
 	return [ordered]@{
-		config = "@src/Config"
+		config = "@src/DefaultConfiguration"
 		machine = "@src/platforms/x86/PcSystem"
-		platformContracts = "@src/platform/Contracts"
+		platformContracts = "@src/Contracts"
 	}
 }
 
@@ -193,7 +193,12 @@ function Get-RobloxRootExpression([string]$targetModuleId) {
 
 function New-RobloxInitSource([string]$versionValue, [string[]]$moduleIds) {
 	$lines = @(
+		"-- Auto-generated Machina package",
+		"-- Root is script.Parent (works for both games and most tools)",
+		"",
 		"local root = script.Parent",
+		"",
+		"-- Auto-generated module registry",
 		"local modules = {"
 	)
 
@@ -210,32 +215,36 @@ function New-RobloxInitSource([string]$versionValue, [string[]]$moduleIds) {
 		"	Version = `"$versionValue`",",
 		"}",
 		"",
-		"Package.EntryPoints = {",
-		"	config = modules[`"@src/Config`"],",
-		"	machine = modules[`"@src/platforms/x86/PcSystem`"],",
-		"	platformContracts = modules[`"@src/platform/Contracts`"],",
-		"}",
+		"-- Entry points for common dependencies",
+		"Package.default = modules[`"@src/DefaultConfiguration`"]",
+		"Package.machine = modules[`"@src/platforms/x86/PcSystem`"]",
+		"Package.Contracts = modules[`"@src/Contracts`"]",
 		"",
-		"function Package.getModule(moduleId)",
+		"-- Resolve a module ID to a Roblox script instance",
+		"function Package.resolve(moduleId)",
 		"	local moduleScript = modules[moduleId]",
-		"	assert(moduleScript, `"machina-roblox: unknown module id `" .. tostring(moduleId))",
+		"	assert(moduleScript, `"machina: unknown module `" .. tostring(moduleId))",
 		"	return moduleScript",
 		"end",
 		"",
-		"function Package.requireById(moduleId)",
-		"	return require(Package.getModule(moduleId))",
+		"-- Require a module by its ID",
+		"function Package.require(moduleId)",
+		"	return require(Package.resolve(moduleId))",
 		"end",
 		"",
-		"function Package.requireConfig()",
-		"	return Package.requireById(`"@src/Config`")",
+		"-- Get the default configuration",
+		"function Package.getDefaultConfig()",
+		"	return Package.require(`"@src/DefaultConfiguration`")",
 		"end",
 		"",
-		"function Package.requireMachine()",
-		"	return Package.requireById(`"@src/platforms/x86/PcSystem`")",
+		"-- Get the PcSystem machine",
+		"function Package.getMachine()",
+		"	return Package.require(`"@src/platforms/x86/PcSystem`")",
 		"end",
 		"",
-		"function Package.requirePlatformContracts()",
-		"	return Package.requireById(`"@src/platform/Contracts`")",
+		"-- Get platform contracts",
+		"function Package.getContracts()",
+		"	return Package.require(`"@src/Contracts`")",
 		"end",
 		"",
 		"return Package"
@@ -275,7 +284,7 @@ function Validate-PackageManifest([System.Collections.IDictionary]$manifest, [st
 
 function Validate-RobloxOutput([string]$targetRoot) {
 	$violations = Get-ChildItem -Path $targetRoot -Recurse -File -Filter *.luau |
-		Select-String -Pattern 'require\("src/|require\("@src/|@config|@platform/'
+		Select-String -Pattern 'require\("src/|require\("@src/|@config/'
 	if ($violations) {
 		$lines = $violations | ForEach-Object { "{0}:{1}: {2}" -f $_.Path, $_.LineNumber, $_.Line.Trim() }
 		throw "Generated machina-roblox package still contains unresolved string-based imports:`n$($lines -join [Environment]::NewLine)"

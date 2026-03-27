@@ -5,6 +5,8 @@ Cpu80386.__index = Cpu80386
 setmetatable(Cpu80386, { __index = Cpu8086 })
 
 local FLAG_CF = 0x0001
+local FLAG_PF = 0x0004
+local FLAG_AF = 0x0010
 local FLAG_ZF = 0x0040
 local FLAG_SF = 0x0080
 local FLAG_IF = 0x0200
@@ -837,13 +839,27 @@ function Cpu80386:_loadDataSegmentDescriptor(selector, descriptor, name, desired
 	return bit32.bor(bit32.band(selector or 0, 0xFFFC), bit32.band(rpl, 0x03))
 end
 
+function Cpu80386:_computePF(value)
+	local low8 = bit32.band(value, 0xFF)
+	local bits = 0
+	for _ = 1, 8 do
+		if bit32.band(low8, 1) ~= 0 then
+			bits = bits + 1
+		end
+		low8 = bit32.rshift(low8, 1)
+	end
+	return bits % 2 == 0
+end
+
 function Cpu80386:_updateLogicFlags(width, value)
 	local mask = maskForWidth(width)
 	local masked = value % (mask + 1)
 	self:setFlag(FLAG_CF, false)
 	self:setFlag(FLAG_OF, false)
+	self:setFlag(FLAG_AF, false)
 	self:setFlag(FLAG_ZF, masked == 0)
 	self:setFlag(FLAG_SF, bit32.band(masked, signBit(width)) ~= 0)
+	self:setFlag(FLAG_PF, self:_computePF(masked))
 end
 
 function Cpu80386:_add(width, a, b)
@@ -852,6 +868,8 @@ function Cpu80386:_add(width, a, b)
 	self:setFlag(FLAG_CF, a + b > mask)
 	self:setFlag(FLAG_ZF, result == 0)
 	self:setFlag(FLAG_SF, bit32.band(result, signBit(width)) ~= 0)
+	self:setFlag(FLAG_AF, bit32.band(a, 0x0F) + bit32.band(b, 0x0F) > 0x0F)
+	self:setFlag(FLAG_PF, self:_computePF(result))
 	local overflow = bit32.band(bit32.bnot(bit32.bxor(a, b)), bit32.bxor(a, result), signBit(width)) ~= 0
 	self:setFlag(FLAG_OF, overflow)
 	return result
@@ -863,6 +881,8 @@ function Cpu80386:_sub(width, a, b)
 	self:setFlag(FLAG_CF, a < b)
 	self:setFlag(FLAG_ZF, result == 0)
 	self:setFlag(FLAG_SF, bit32.band(result, signBit(width)) ~= 0)
+	self:setFlag(FLAG_AF, bit32.band(a, 0x0F) < bit32.band(b, 0x0F))
+	self:setFlag(FLAG_PF, self:_computePF(result))
 	local overflow = bit32.band(bit32.bxor(a, b), bit32.bxor(a, result), signBit(width)) ~= 0
 	self:setFlag(FLAG_OF, overflow)
 	return result
@@ -872,11 +892,13 @@ function Cpu80386:_adc(width, a, b)
 	local mask = maskForWidth(width)
 	local carryIn = self:getFlag(FLAG_CF) and 1 or 0
 	local operand = (b + carryIn) % (mask + 1)
-	local total = a + b + carryIn
+	local total = a + operand
 	local result = total % (mask + 1)
 	self:setFlag(FLAG_CF, total > mask)
 	self:setFlag(FLAG_ZF, result == 0)
 	self:setFlag(FLAG_SF, bit32.band(result, signBit(width)) ~= 0)
+	self:setFlag(FLAG_AF, bit32.band(a, 0x0F) + bit32.band(operand, 0x0F) > 0x0F)
+	self:setFlag(FLAG_PF, self:_computePF(result))
 	local overflow = bit32.band(bit32.bnot(bit32.bxor(a, operand)), bit32.bxor(a, result), signBit(width)) ~= 0
 	self:setFlag(FLAG_OF, overflow)
 	return result
@@ -891,6 +913,8 @@ function Cpu80386:_sbb(width, a, b)
 	self:setFlag(FLAG_CF, a < fullOperand)
 	self:setFlag(FLAG_ZF, result == 0)
 	self:setFlag(FLAG_SF, bit32.band(result, signBit(width)) ~= 0)
+	self:setFlag(FLAG_AF, bit32.band(a, 0x0F) < bit32.band(operand, 0x0F))
+	self:setFlag(FLAG_PF, self:_computePF(result))
 	local overflow = bit32.band(bit32.bxor(a, operand), bit32.bxor(a, result), signBit(width)) ~= 0
 	self:setFlag(FLAG_OF, overflow)
 	return result
@@ -915,6 +939,7 @@ function Cpu80386:_inc(width, value)
 	local carry = self:getFlag(FLAG_CF)
 	local result = self:_add(width, value, 1)
 	self:setFlag(FLAG_CF, carry)
+	self:setFlag(FLAG_AF, bit32.band(value, 0x0F) == 0x0F)
 	return result
 end
 
@@ -922,6 +947,7 @@ function Cpu80386:_dec(width, value)
 	local carry = self:getFlag(FLAG_CF)
 	local result = self:_sub(width, value, 1)
 	self:setFlag(FLAG_CF, carry)
+	self:setFlag(FLAG_AF, bit32.band(value, 0x0F) == 0x00)
 	return result
 end
 
@@ -1009,6 +1035,8 @@ function Cpu80386:_shiftRotate(width, operation, value, count)
 
 	self:setFlag(FLAG_ZF, result == 0)
 	self:setFlag(FLAG_SF, bit32.band(result, topBit) ~= 0)
+	self:setFlag(FLAG_AF, false)
+	self:setFlag(FLAG_PF, self:_computePF(result))
 	if effectiveCount == 1 then
 		if operation == "shl" then
 			self:setFlag(FLAG_OF, (bit32.band(result, topBit) ~= 0) ~= self:getFlag(FLAG_CF))
@@ -1785,7 +1813,7 @@ function Cpu80386:_stepInternal()
 				self:_writeRM16(decoded, bit32.band(self.cr0, 0xFFFF))
 			elseif decoded.reg == 6 then
 				local value = self:_readRM16(decoded)
-				self.cr0 = bit32.bor(bit32.band(self.cr0, bit32.bnot(0x0F)), bit32.band(value, 0x0F))
+				self.cr0 = bit32.bor(bit32.band(self.cr0, bit32.bnot(0x3F)), bit32.band(value, 0x3F))
 				if bit32.band(self.cr0, 0x0001) ~= 0 then
 					self.protectedMode = true
 				else
@@ -1842,35 +1870,39 @@ function Cpu80386:_stepInternal()
 			newFlags = bit32.band(newFlags, bit32.bnot(FLAG_ZF))
 		end
 		if bit32.band(ah, 0x10) ~= 0 then
-			newFlags = bit32.bor(newFlags, 0x10)
+			newFlags = bit32.bor(newFlags, FLAG_AF)
+		else
+			newFlags = bit32.band(newFlags, bit32.bnot(FLAG_AF))
 		end
 		if bit32.band(ah, 0x04) ~= 0 then
-			newFlags = bit32.bor(newFlags, 0x04)
+			newFlags = bit32.bor(newFlags, FLAG_PF)
+		else
+			newFlags = bit32.band(newFlags, bit32.bnot(FLAG_PF))
 		end
 		if bit32.band(ah, 0x01) ~= 0 then
 			newFlags = bit32.bor(newFlags, FLAG_CF)
 		else
 			newFlags = bit32.band(newFlags, bit32.bnot(FLAG_CF))
 		end
-		self.flags = newFlags
+		self.flags = bit32.bor(newFlags, 0x0002)
 	elseif opcode == 0x9F then
-		local newFlags = bit32.band(self.flags, 0xFFFFFFF8)
-		if bit32.band(self.flags, 0x80) ~= 0 then
+		local newFlags = 0
+		if bit32.band(self.flags, FLAG_SF) ~= 0 then
 			newFlags = bit32.bor(newFlags, 0x80)
 		end
-		if bit32.band(self.flags, 0x40) ~= 0 then
+		if bit32.band(self.flags, FLAG_ZF) ~= 0 then
 			newFlags = bit32.bor(newFlags, 0x40)
 		end
-		if bit32.band(self.flags, 0x10) ~= 0 then
+		if bit32.band(self.flags, FLAG_AF) ~= 0 then
 			newFlags = bit32.bor(newFlags, 0x10)
 		end
-		if bit32.band(self.flags, 0x04) ~= 0 then
+		if bit32.band(self.flags, FLAG_PF) ~= 0 then
 			newFlags = bit32.bor(newFlags, 0x04)
 		end
-		if bit32.band(self.flags, 0x01) ~= 0 then
+		if bit32.band(self.flags, FLAG_CF) ~= 0 then
 			newFlags = bit32.bor(newFlags, 0x01)
 		end
-		self.flags = newFlags
+		self:_setReg8(7, newFlags)
 	elseif opcode == 0xCC then
 		self:_invokeInterrupt(3, false)
 	elseif opcode == 0xCE then
@@ -1927,9 +1959,9 @@ function Cpu80386:_stepInternal()
 		end
 	elseif opcode == 0x9D then
 		if operandWidth == 32 then
-			self.flags = bit32.bor(self:pop32(), 0x0002)
+			self.flags = bit32.bor(bit32.band(self:pop32(), 0x3F7FD5), 0x0002)
 		else
-			self.flags = bit32.bor(self:pop16(), 0x0002)
+			self.flags = bit32.bor(bit32.band(self:pop16(), 0x0FD5), 0x0002)
 		end
 	elseif opcode == 0xF8 then
 		self:setFlag(FLAG_CF, false)
