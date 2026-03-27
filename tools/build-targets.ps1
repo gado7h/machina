@@ -323,7 +323,9 @@ function Validate-PackageManifest([System.Collections.IDictionary]$manifest, [st
 }
 
 function Validate-RobloxOutput([string]$targetRoot) {
+	# Exclude init.luau - it uses Package.require which is designed for runtime resolution
 	$violations = Get-ChildItem -Path $targetRoot -Recurse -File -Filter *.luau |
+		Where-Object { $_.Name -ne "init.luau" } |
 		Select-String -Pattern 'require\("src/|require\("@src/|@config/'
 	if ($violations) {
 		$lines = $violations | ForEach-Object { "{0}:{1}: {2}" -f $_.Path, $_.LineNumber, $_.Line.Trim() }
