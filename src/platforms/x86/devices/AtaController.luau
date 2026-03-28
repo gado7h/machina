@@ -60,11 +60,12 @@ function AtaController.new(config)
 	local self = setmetatable({}, AtaController)
 	self.config = config
 	self.sectorSize = SECTOR_SIZE
-	self.totalSectors = config.DISK_BLOCKS
+	self.totalSectors = tonumber(config.DISK_BLOCKS) or 0
 	self._sectors = {}
 	self._activity = false
 	self._headPos = 0
 	self._bus = nil
+	self._irqPending = false
 
 	self._status = bit32.bor(STATUS_DRDY, STATUS_DSC)
 	self._error = 0
@@ -150,16 +151,26 @@ function AtaController:attachBus(bus)
 	end, "IDE Status/Command")
 	if ctrl then
 		bus:registerPort(ctrl, function()
-			return self._status
+			return self:_readAltStatus()
 		end, function(v)
 			self:_writeDeviceControl(v)
 		end, "IDE AltStatus/Control")
 	end
 end
 
+function AtaController:_selectedDrive()
+	return bit32.band(self._driveHead, 0x10) ~= 0 and 1 or 0
+end
+
 function AtaController:_setError(code)
 	self._error = code or 1
-	self._status = bit32.bor(bit32.band(self._status, bit32.bnot(STATUS_BSY)), STATUS_ERR)
+	self._status = bit32.bor(
+		bit32.band(self._status, bit32.bnot(bit32.bor(STATUS_BSY, STATUS_DRQ))),
+		STATUS_ERR,
+		STATUS_DRDY,
+		STATUS_DSC
+	)
+	self._irqPending = false
 	self.stats.errors = self.stats.errors + 1
 end
 
@@ -177,10 +188,17 @@ function AtaController:_raiseIRQ(kind, lba)
 		local irq = (self.config.IRQ and self.config.IRQ.ATA) or 14
 		self._bus:raiseIRQ(irq, { source = "hdd", event = kind, lba = lba })
 		self.stats.irqRaised = self.stats.irqRaised + 1
+		self._irqPending = true
 	end
 end
 
 function AtaController:_readStatus()
+	local status = self._status
+	self._irqPending = false
+	return status
+end
+
+function AtaController:_readAltStatus()
 	return self._status
 end
 
@@ -188,11 +206,13 @@ function AtaController:_writeDeviceControl(value)
 	local v = bit32.band(tonumber(value) or 0, 0xFF)
 	self._deviceControl = v
 	if bit32.band(v, DEVICE_CONTROL_SRST) ~= 0 then
+		self._irqPending = false
 		self:_softReset()
 	end
 end
 
 function AtaController:_softReset()
+	self._irqPending = false
 	self._status = bit32.bor(STATUS_DRDY, STATUS_DSC)
 	self._error = 0
 	self._features = 0
@@ -263,7 +283,7 @@ function AtaController:_beginReadTransfer(op, firstBuffer)
 		index = 1,
 	}
 	self:_loadReadBuffer(firstBuffer)
-	self:_raiseIRQ(op.cmd == CMD_IDENTIFY and "identify-complete" or "read-complete", op.lba)
+	self:_raiseIRQ(op.cmd == CMD_IDENTIFY and "identify-ready" or "read-ready", op.lba)
 end
 
 function AtaController:_beginWriteTransfer(op)
@@ -275,6 +295,7 @@ function AtaController:_beginWriteTransfer(op)
 	}
 	self._ioBuffer = blankSector()
 	self._status = bit32.bor(bit32.band(self._status, bit32.bnot(STATUS_BSY)), STATUS_DRDY, STATUS_DSC, STATUS_DRQ)
+	self:_raiseIRQ("write-ready", op.lba)
 end
 
 function AtaController:_completeTransfer()
@@ -287,6 +308,12 @@ function AtaController:_issueCommand(cmd)
 	self.stats.commands = self.stats.commands + 1
 	self:_clearError()
 	self._status = bit32.bor(STATUS_BSY, STATUS_DRDY)
+	self._irqPending = false
+
+	if self:_selectedDrive() ~= 0 then
+		self:_setError(ERROR_ABORT)
+		return
+	end
 
 	local normalized = command
 	if command == 1 then
@@ -372,6 +399,7 @@ function AtaController:_consumeReadByte()
 		if transfer.remaining > 0 then
 			transfer.lba = transfer.lba + 1
 			self:_loadReadBuffer(self:readSector(transfer.lba))
+			self:_raiseIRQ("read-ready", transfer.lba)
 		else
 			self:_completeTransfer()
 		end
@@ -393,6 +421,7 @@ function AtaController:_consumeWriteByte(value)
 			transfer.lba = transfer.lba + 1
 			transfer.index = 1
 			self._ioBuffer = blankSector()
+			self:_raiseIRQ("write-ready", transfer.lba)
 		else
 			self:_completeTransfer()
 			self:_raiseIRQ("write-complete", transfer.lba)
@@ -518,11 +547,7 @@ function AtaController:memWrite(offset, value)
 	if offset == 0x00 then
 		self:_issueCommand(v)
 	elseif offset == 0x03 then
-		if v ~= 0 then
-			self._deviceControl = bit32.band(self._deviceControl, bit32.bnot(DEVICE_CONTROL_NIEN))
-		else
-			self._deviceControl = bit32.bor(self._deviceControl, DEVICE_CONTROL_NIEN)
-		end
+		self:_writeDeviceControl(v)
 	elseif offset == 0x04 then
 		self._sectorNumber = v
 	elseif offset == 0x05 then

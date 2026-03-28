@@ -82,6 +82,90 @@ function State.restoreTimer(timer, snapshot)
 	State.restoreStats(timer, snapshot.stats)
 end
 
+function State.snapshotKeyboard(keyboard)
+	if not keyboard then
+		return nil
+	end
+	return {
+		_buffer = State.deepCopy(keyboard._buffer),
+		_ascii = State.deepCopy(keyboard._ascii),
+		_shift = keyboard._shift,
+		_ctrl = keyboard._ctrl,
+		_alt = keyboard._alt,
+		_capsLock = keyboard._capsLock,
+		_enabled = keyboard._enabled,
+		_scanningEnabled = keyboard._scanningEnabled,
+		_controllerCommandByte = keyboard._controllerCommandByte,
+		_pendingControllerData = keyboard._pendingControllerData,
+		_pendingI8042ControllerData = keyboard._pendingI8042ControllerData,
+		_status = keyboard._status,
+		_outputPort = keyboard._outputPort,
+		_pendingOutputPortWrite = keyboard._pendingOutputPortWrite,
+		stats = State.copyStats(keyboard),
+	}
+end
+
+function State.restoreKeyboard(keyboard, snapshot)
+	if not keyboard or not snapshot then
+		return
+	end
+	keyboard._buffer = State.deepCopy(snapshot._buffer)
+	keyboard._ascii = State.deepCopy(snapshot._ascii)
+	keyboard._shift = snapshot._shift
+	keyboard._ctrl = snapshot._ctrl
+	keyboard._alt = snapshot._alt
+	keyboard._capsLock = snapshot._capsLock
+	keyboard._enabled = snapshot._enabled
+	keyboard._scanningEnabled = snapshot._scanningEnabled
+	keyboard._controllerCommandByte = snapshot._controllerCommandByte
+	keyboard._pendingControllerData = snapshot._pendingControllerData
+	keyboard._pendingI8042ControllerData = snapshot._pendingI8042ControllerData
+	keyboard._status = snapshot._status
+	keyboard._outputPort = snapshot._outputPort
+	keyboard._pendingOutputPortWrite = snapshot._pendingOutputPortWrite
+	State.restoreStats(keyboard, snapshot.stats)
+end
+
+function State.snapshotSerial(serial)
+	if not serial then
+		return nil
+	end
+	return {
+		_divisor = serial._divisor,
+		_ier = serial._ier,
+		_iir = serial._iir,
+		_fcr = serial._fcr,
+		_lcr = serial._lcr,
+		_mcr = serial._mcr,
+		_lsr = serial._lsr,
+		_msr = serial._msr,
+		_scr = serial._scr,
+		_rxFifo = State.deepCopy(serial._rxFifo),
+		_txLog = State.deepCopy(serial._txLog),
+		_irqPending = serial._irqPending,
+		stats = State.copyStats(serial),
+	}
+end
+
+function State.restoreSerial(serial, snapshot)
+	if not serial or not snapshot then
+		return
+	end
+	serial._divisor = snapshot._divisor
+	serial._ier = snapshot._ier
+	serial._iir = snapshot._iir
+	serial._fcr = snapshot._fcr
+	serial._lcr = snapshot._lcr
+	serial._mcr = snapshot._mcr
+	serial._lsr = snapshot._lsr
+	serial._msr = snapshot._msr
+	serial._scr = snapshot._scr
+	serial._rxFifo = State.deepCopy(snapshot._rxFifo)
+	serial._txLog = State.deepCopy(snapshot._txLog)
+	serial._irqPending = snapshot._irqPending
+	State.restoreStats(serial, snapshot.stats)
+end
+
 function State.snapshotCpu(cpu)
 	if not cpu then
 		return nil
@@ -229,6 +313,8 @@ function State.snapshotMachine(machine)
 	local ram = machine.ram
 	local rom = machine.rom
 	local hdd = machine.hdd
+	local fdc = machine.fdc
+	local rtc = machine.rtc
 	local gpu = machine.gpu
 	return {
 		bootStage = machine._bootStage,
@@ -261,6 +347,7 @@ function State.snapshotMachine(machine)
 			_sectors = State.deepCopy(hdd._sectors),
 			_activity = hdd._activity,
 			_headPos = hdd._headPos,
+			_irqPending = hdd._irqPending,
 			_status = hdd._status,
 			_error = hdd._error,
 			_features = hdd._features,
@@ -275,6 +362,50 @@ function State.snapshotMachine(machine)
 			_pending = State.deepCopy(hdd._pending),
 			stats = State.copyStats(hdd),
 		} or nil,
+		fdc = fdc and {
+			_sectors = State.deepCopy(fdc._sectors),
+			_mediaType = State.deepCopy(fdc._mediaType),
+			_dor = fdc._dor,
+			_msr = fdc._msr,
+			_dataReg = fdc._dataReg,
+			_commandBuffer = State.deepCopy(fdc._commandBuffer),
+			_dataBuffer = State.deepCopy(fdc._dataBuffer),
+			_resultBuffer = State.deepCopy(fdc._resultBuffer),
+			_resultIndex = fdc._resultIndex,
+			_configReg = fdc._configReg,
+			_interruptPending = fdc._interruptPending,
+			_state = fdc._state,
+			_currentDrive = fdc._currentDrive,
+			_currentHead = fdc._currentHead,
+			_currentTrack = fdc._currentTrack,
+			_currentSector = fdc._currentSector,
+			_headPosition = State.deepCopy(fdc._headPosition),
+			_recalibrateNeeded = State.deepCopy(fdc._recalibrateNeeded),
+			_motorOn = State.deepCopy(fdc._motorOn),
+			_motorTimeout = fdc._motorTimeout,
+			_lastCommand = fdc._lastCommand,
+			_st0 = fdc._st0,
+			_st1 = fdc._st1,
+			_st2 = fdc._st2,
+			_writeTarget = State.deepCopy(fdc._writeTarget),
+			stats = State.copyStats(fdc),
+		} or nil,
+		rtc = rtc and {
+			_index = rtc._index,
+			_nmiMasked = rtc._nmiMasked,
+			_statusA = rtc._statusA,
+			_statusB = rtc._statusB,
+			_statusC = rtc._statusC,
+			_statusD = rtc._statusD,
+			_elapsed = rtc._elapsed,
+			_periodicAccum = rtc._periodicAccum,
+			_lastSecond = rtc._lastSecond,
+			_irqLatched = rtc._irqLatched,
+			_cmos = State.deepCopy(rtc._cmos),
+			stats = State.copyStats(rtc),
+		} or nil,
+		keyboard = State.snapshotKeyboard(machine.keyboard),
+		serial = State.snapshotSerial(machine.serial),
 		gpu = State.snapshotVga(gpu),
 	}
 end
@@ -318,6 +449,7 @@ function State.restoreMachine(machine, snapshot)
 		machine.hdd._sectors = State.deepCopy(snapshot.hdd._sectors)
 		machine.hdd._activity = snapshot.hdd._activity
 		machine.hdd._headPos = snapshot.hdd._headPos
+		machine.hdd._irqPending = snapshot.hdd._irqPending
 		machine.hdd._status = snapshot.hdd._status
 		machine.hdd._error = snapshot.hdd._error
 		machine.hdd._features = snapshot.hdd._features
@@ -332,6 +464,53 @@ function State.restoreMachine(machine, snapshot)
 		machine.hdd._pending = State.deepCopy(snapshot.hdd._pending)
 		State.restoreStats(machine.hdd, snapshot.hdd.stats)
 	end
+
+	if machine.fdc and snapshot.fdc then
+		machine.fdc._sectors = State.deepCopy(snapshot.fdc._sectors)
+		machine.fdc._mediaType = State.deepCopy(snapshot.fdc._mediaType)
+		machine.fdc._dor = snapshot.fdc._dor
+		machine.fdc._msr = snapshot.fdc._msr
+		machine.fdc._dataReg = snapshot.fdc._dataReg
+		machine.fdc._commandBuffer = State.deepCopy(snapshot.fdc._commandBuffer)
+		machine.fdc._dataBuffer = State.deepCopy(snapshot.fdc._dataBuffer)
+		machine.fdc._resultBuffer = State.deepCopy(snapshot.fdc._resultBuffer)
+		machine.fdc._resultIndex = snapshot.fdc._resultIndex
+		machine.fdc._configReg = snapshot.fdc._configReg
+		machine.fdc._interruptPending = snapshot.fdc._interruptPending
+		machine.fdc._state = snapshot.fdc._state
+		machine.fdc._currentDrive = snapshot.fdc._currentDrive
+		machine.fdc._currentHead = snapshot.fdc._currentHead
+		machine.fdc._currentTrack = snapshot.fdc._currentTrack
+		machine.fdc._currentSector = snapshot.fdc._currentSector
+		machine.fdc._headPosition = State.deepCopy(snapshot.fdc._headPosition)
+		machine.fdc._recalibrateNeeded = State.deepCopy(snapshot.fdc._recalibrateNeeded)
+		machine.fdc._motorOn = State.deepCopy(snapshot.fdc._motorOn)
+		machine.fdc._motorTimeout = snapshot.fdc._motorTimeout
+		machine.fdc._lastCommand = snapshot.fdc._lastCommand
+		machine.fdc._st0 = snapshot.fdc._st0
+		machine.fdc._st1 = snapshot.fdc._st1
+		machine.fdc._st2 = snapshot.fdc._st2
+		machine.fdc._writeTarget = State.deepCopy(snapshot.fdc._writeTarget)
+		State.restoreStats(machine.fdc, snapshot.fdc.stats)
+	end
+
+	if machine.rtc and snapshot.rtc then
+		machine.rtc._index = snapshot.rtc._index
+		machine.rtc._nmiMasked = snapshot.rtc._nmiMasked
+		machine.rtc._statusA = snapshot.rtc._statusA
+		machine.rtc._statusB = snapshot.rtc._statusB
+		machine.rtc._statusC = snapshot.rtc._statusC
+		machine.rtc._statusD = snapshot.rtc._statusD
+		machine.rtc._elapsed = snapshot.rtc._elapsed
+		machine.rtc._periodicAccum = snapshot.rtc._periodicAccum
+		machine.rtc._lastSecond = snapshot.rtc._lastSecond
+		machine.rtc._irqLatched = snapshot.rtc._irqLatched
+		machine.rtc._cmos = State.deepCopy(snapshot.rtc._cmos)
+		State.restoreStats(machine.rtc, snapshot.rtc.stats)
+	end
+
+	State.restoreKeyboard(machine.keyboard, snapshot.keyboard)
+	State.restoreSerial(machine.serial, snapshot.serial)
 
 	State.restoreVga(machine.gpu, snapshot.gpu)
 end

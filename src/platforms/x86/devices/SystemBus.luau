@@ -3,6 +3,8 @@
 local SystemBus = {}
 SystemBus.__index = SystemBus
 
+local MachineProfile = require("@src/platforms/x86/MachineProfile")
+
 local function defaultTickDt(config)
 	local hz = math.max(config.CPU_CLOCK_HZ or 1, config.DISPLAY_REFRESH_HZ or 60)
 	return 1 / math.max(1, hz)
@@ -22,6 +24,7 @@ function SystemBus.new(config)
 	self._defaultDt = defaultTickDt(config)
 	self._a20Enabled = true
 	self._postCode = 0xFF
+	self._trace = MachineProfile.getTraceConfig(config)
 
 	-- Statistics
 	self.stats = {
@@ -141,16 +144,25 @@ local function rawPortRead(self, port, width)
 	if width == 1 and h.read then
 		local ok, value = pcall(h.read)
 		if ok then
+			if self._trace.ENABLED == true and self._trace.PORT_IO == true then
+				self:_log("PORT", string.format("IN  %04Xh -> %02Xh (%s)", port, (tonumber(value) or 0) % 0x100, h.label))
+			end
 			return (tonumber(value) or 0) % 0x100
 		end
 	elseif width == 2 and h.read16 then
 		local ok, value = pcall(h.read16)
 		if ok then
+			if self._trace.ENABLED == true and self._trace.PORT_IO == true then
+				self:_log("PORT", string.format("IN  %04Xh -> %04Xh (%s)", port, (tonumber(value) or 0) % 0x10000, h.label))
+			end
 			return (tonumber(value) or 0) % 0x10000
 		end
 	elseif width == 4 and h.read32 then
 		local ok, value = pcall(h.read32)
 		if ok then
+			if self._trace.ENABLED == true and self._trace.PORT_IO == true then
+				self:_log("PORT", string.format("IN  %04Xh -> %08Xh (%s)", port, (tonumber(value) or 0) % 0x100000000, h.label))
+			end
 			return (tonumber(value) or 0) % 0x100000000
 		end
 	end
@@ -167,18 +179,24 @@ local function rawPortWrite(self, port, value, width)
 		local ok, err = pcall(h.write, masked % 0x100)
 		if not ok then
 			self:_setFault("port-write-fault", port, "out", err)
+		elseif self._trace.ENABLED == true and self._trace.PORT_IO == true then
+			self:_log("PORT", string.format("OUT %04Xh <- %02Xh (%s)", port, masked % 0x100, h.label))
 		end
 		return true
 	elseif width == 2 and h.write16 then
 		local ok, err = pcall(h.write16, masked % 0x10000)
 		if not ok then
 			self:_setFault("port-write-fault", port, "out16", err)
+		elseif self._trace.ENABLED == true and self._trace.PORT_IO == true then
+			self:_log("PORT", string.format("OUT %04Xh <- %04Xh (%s)", port, masked % 0x10000, h.label))
 		end
 		return true
 	elseif width == 4 and h.write32 then
 		local ok, err = pcall(h.write32, masked % 0x100000000)
 		if not ok then
 			self:_setFault("port-write-fault", port, "out32", err)
+		elseif self._trace.ENABLED == true and self._trace.PORT_IO == true then
+			self:_log("PORT", string.format("OUT %04Xh <- %08Xh (%s)", port, masked % 0x100000000, h.label))
 		end
 		return true
 	end
@@ -358,6 +376,9 @@ function SystemBus:raiseIRQ(irqNum, data)
 	if self.pic then
 		self.pic:raiseIRQ(irqNum)
 	end
+	if self._trace.ENABLED == true and self._trace.IRQ_ROUTING == true then
+		self:_log("IRQ", string.format("IRQ%d raised source=%s", irqNum, tostring(data and data.source or "?")))
+	end
 
 	local handlers = self._irqLines[irqNum]
 	if not handlers then
@@ -385,6 +406,9 @@ function SystemBus:getPendingInterruptVector()
 	local vec = self.pic:getNextVector()
 	if vec ~= nil then
 		self.stats.irqDelivered = self.stats.irqDelivered + 1
+		if self._trace.ENABLED == true and self._trace.IRQ_ROUTING == true then
+			self:_log("IRQ", string.format("vector %02Xh delivered", vec))
+		end
 	end
 	return vec
 end

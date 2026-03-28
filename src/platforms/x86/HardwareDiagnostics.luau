@@ -1,6 +1,7 @@
 local BootImageCatalog = require("@src/platforms/x86/BootImageCatalog")
 local BiosInterrupts = require("@src/platforms/x86/BiosInterrupts")
 local DiagnosticsState = require("@src/platforms/x86/HardwareDiagnosticsState")
+local MachineProfile = require("@src/platforms/x86/MachineProfile")
 local ProtectedModeSelfTest = require("@src/platforms/x86/ProtectedModeSelfTest")
 
 local HardwareDiagnostics = {}
@@ -14,20 +15,33 @@ local snapshotMachine = DiagnosticsState.snapshotMachine
 local restoreMachine = DiagnosticsState.restoreMachine
 local readTextScreen = DiagnosticsState.readTextScreen
 
-local function wrapTest(name, run)
-	local ok, passed, detail = pcall(run)
+local function wrapTest(name, suite, run)
+	local ok, passed, detail, evidence = pcall(run)
 	if not ok then
 		return {
 			name = name,
+			suite = suite or "smoke",
 			passed = false,
 			detail = tostring(passed),
+			evidence = {
+				error = tostring(passed),
+			},
 		}
 	end
 	return {
 		name = name,
+		suite = suite or "smoke",
 		passed = passed ~= false,
 		detail = tostring(detail or (passed ~= false and "ok" or "failed")),
+		evidence = evidence,
 	}
+end
+
+local function applyX86Overrides(target, source)
+	target.X86 = target.X86 or {}
+	for key, value in pairs(source or {}) do
+		target.X86[key] = deepCopy(value)
+	end
 end
 
 local function formatHex(value, width)
@@ -100,6 +114,15 @@ local function testPIT(machine, config)
 		bus:endOfInterrupt(vector)
 	end
 
+	bus:portWrite(config.PORT.PIT_CMD, 0xB6)
+	bus:portWrite(config.PORT.PIT_CHAN0 + 2, 0xFF)
+	bus:portWrite(config.PORT.PIT_CHAN0 + 2, 0x7F)
+	timer:tick(64 / math.max(1, timer._baseHz or 1193182))
+	bus:portWrite(config.PORT.PIT_CMD, 0xD8)
+	local status2 = bus:portRead(config.PORT.PIT_CHAN0 + 2)
+	local count2Lo = bus:portRead(config.PORT.PIT_CHAN0 + 2)
+	local count2Hi = bus:portRead(config.PORT.PIT_CHAN0 + 2)
+
 	timer._channels = deepCopy(timerChannels)
 	timer._subTicks = timerSubTicks
 	restoreStats(timer, timerStats)
@@ -107,8 +130,18 @@ local function testPIT(machine, config)
 	restoreStats(bus, busStats)
 
 	local expected = ((config.X86 and config.X86.PIC_VECTOR_BASE_MASTER) or config.PIC_VECTOR_BASE_MASTER or 0x08)
-	local passed = vector == expected
-	return passed, string.format("pit_vector=%s expected=%s", formatHex(vector), formatHex(expected))
+	local statusOk = bit32.band(status2, 0x36) == 0x36
+	local countOk = count2Lo ~= 0 or count2Hi ~= 0
+	local passed = vector == expected and statusOk and countOk
+	return passed,
+		string.format(
+			"pit_vector=%s expected=%s ch2_status=%s ch2_count=%s%s",
+			formatHex(vector),
+			formatHex(expected),
+			formatHex(status2),
+			formatHex(count2Hi),
+			formatHex(count2Lo)
+		)
 end
 
 local function testVGA(machine, config)
@@ -385,8 +418,10 @@ local function testKeyboard(machine, config)
 		scanningEnabled = keyboard._scanningEnabled,
 		controllerCommandByte = keyboard._controllerCommandByte,
 		pendingControllerData = keyboard._pendingControllerData,
-		pendingKeyboardData = keyboard._pendingKeyboardData,
+		pendingI8042ControllerData = keyboard._pendingI8042ControllerData,
 		status = keyboard._status,
+		outputPort = keyboard._outputPort,
+		pendingOutputPortWrite = keyboard._pendingOutputPortWrite,
 	}
 
 	bus:portWrite(config.PORT.KBD_STATUS, 0xAA)
@@ -406,8 +441,10 @@ local function testKeyboard(machine, config)
 	keyboard._scanningEnabled = snapshot.scanningEnabled
 	keyboard._controllerCommandByte = snapshot.controllerCommandByte
 	keyboard._pendingControllerData = snapshot.pendingControllerData
-	keyboard._pendingKeyboardData = snapshot.pendingKeyboardData
+	keyboard._pendingI8042ControllerData = snapshot.pendingI8042ControllerData
 	keyboard._status = snapshot.status
+	keyboard._outputPort = snapshot.outputPort
+	keyboard._pendingOutputPortWrite = snapshot.pendingOutputPortWrite
 	restoreStats(keyboard, keyboardStats)
 	restorePIC(bus.pic, picSnapshot)
 	restoreStats(bus, busStats)
@@ -426,34 +463,68 @@ end
 local function testRTC(machine, config)
 	local bus = machine.bus
 	local rtc = machine.rtc
-	local busStats = copyStats(bus)
-	local rtcStats = copyStats(rtc)
-	local previousIndex = rtc._index
-	local previousNmi = rtc._nmiMasked
+	local snapshot = snapshotMachine(machine)
+	local ok, passed, detail = pcall(function()
+		local expectedVector = ((config.X86 and config.X86.PIC_VECTOR_BASE_SLAVE) or config.PIC_VECTOR_BASE_SLAVE or 0x70)
+		bus.pic.master.imr = 0x00
+		bus.pic.slave.imr = 0x00
 
-	bus:portWrite(config.PORT.RTC_INDEX, 0x0B)
-	local statusB = bus:portRead(config.PORT.RTC_DATA)
-	local binaryMode = bit32.band(statusB, 0x04) ~= 0
-	bus:portWrite(config.PORT.RTC_INDEX, 0x00)
-	local sec = decodeRTCValue(bus:portRead(config.PORT.RTC_DATA), binaryMode)
-	bus:portWrite(config.PORT.RTC_INDEX, 0x02)
-	local min = decodeRTCValue(bus:portRead(config.PORT.RTC_DATA), binaryMode)
-	bus:portWrite(config.PORT.RTC_INDEX, 0x04)
-	local hour = decodeRTCValue(bus:portRead(config.PORT.RTC_DATA), binaryMode)
+		bus:portWrite(config.PORT.RTC_INDEX, 0x0A)
+		local statusA = bus:portRead(config.PORT.RTC_DATA)
+		bus:portWrite(config.PORT.RTC_INDEX, 0x0A)
+		bus:portWrite(config.PORT.RTC_DATA, bit32.bor(bit32.band(statusA, 0x70), 0x0F))
 
-	rtc._index = previousIndex
-	rtc._nmiMasked = previousNmi
-	restoreStats(rtc, rtcStats)
-	restoreStats(bus, busStats)
+		bus:portWrite(config.PORT.RTC_INDEX, 0x0B)
+		local statusB = bus:portRead(config.PORT.RTC_DATA)
+		bus:portWrite(config.PORT.RTC_INDEX, 0x0B)
+		bus:portWrite(config.PORT.RTC_DATA, bit32.bor(statusB, 0x40))
 
-	local passed = bit32.band(statusB, 0x02) ~= 0
-		and sec >= 0
-		and sec < 60
-		and min >= 0
-		and min < 60
-		and hour >= 0
-		and hour < 24
-	return passed, string.format("time=%02d:%02d:%02d statusB=%s", hour, min, sec, formatHex(statusB))
+		local binaryMode = bit32.band(statusB, 0x04) ~= 0
+		bus:portWrite(config.PORT.RTC_INDEX, 0x00)
+		local sec = decodeRTCValue(bus:portRead(config.PORT.RTC_DATA), binaryMode)
+		bus:portWrite(config.PORT.RTC_INDEX, 0x02)
+		local min = decodeRTCValue(bus:portRead(config.PORT.RTC_DATA), binaryMode)
+		bus:portWrite(config.PORT.RTC_INDEX, 0x04)
+		local hour = decodeRTCValue(bus:portRead(config.PORT.RTC_DATA), binaryMode)
+
+		rtc:tick(0.6)
+		local vector = bus:getPendingInterruptVector()
+		if vector then
+			bus:endOfInterrupt(vector)
+		end
+
+		bus:portWrite(config.PORT.RTC_INDEX, 0x0C)
+		local statusC1 = bus:portRead(config.PORT.RTC_DATA)
+		bus:portWrite(config.PORT.RTC_INDEX, 0x0C)
+		local statusC2 = bus:portRead(config.PORT.RTC_DATA)
+
+		local passedRtc = bit32.band(statusB, 0x02) ~= 0
+			and sec >= 0
+			and sec < 60
+			and min >= 0
+			and min < 60
+			and hour >= 0
+			and hour < 24
+			and vector == expectedVector
+			and bit32.band(statusC1, 0x40) ~= 0
+			and statusC2 == 0
+		return passedRtc,
+			string.format(
+				"time=%02d:%02d:%02d statusB=%s statusC=%s/%s irq=%s",
+				hour,
+				min,
+				sec,
+				formatHex(statusB),
+				formatHex(statusC1),
+				formatHex(statusC2),
+				formatHex(vector)
+			)
+	end)
+	restoreMachine(machine, snapshot)
+	if not ok then
+		return false, tostring(passed)
+	end
+	return passed, detail
 end
 
 local function testSerial(machine, config)
@@ -522,6 +593,7 @@ local function testIDE(machine, config)
 		pending = deepCopy(hdd._pending),
 		headPos = hdd._headPos,
 		activity = hdd._activity,
+		irqPending = hdd._irqPending,
 	}
 
 	local base = config.PORT.IDE_PRIMARY_CMD
@@ -545,6 +617,7 @@ local function testIDE(machine, config)
 	hdd._pending = deepCopy(snapshot.pending)
 	hdd._headPos = snapshot.headPos
 	hdd._activity = snapshot.activity
+	hdd._irqPending = snapshot.irqPending
 	restoreStats(hdd, hddStats)
 	restorePIC(bus.pic, picSnapshot)
 	restoreStats(bus, busStats)
@@ -553,11 +626,95 @@ local function testIDE(machine, config)
 	return passed, string.format("status=%s identify_word0=%s", formatHex(status), formatHex(word0, 4))
 end
 
+local function testFDC(machine, config)
+	local bus = machine.bus
+	local fdc = machine.fdc
+	if not fdc then
+		return false, "fdc missing", { device = "fdc" }
+	end
+
+	local snapshot = snapshotMachine(machine)
+	local ok, passed, detail, evidence = pcall(function()
+		local sector = {}
+		for i = 1, 512 do
+			sector[i] = (i - 1) % 256
+		end
+		fdc._mediaType = {
+			tracks = 80,
+			heads = 2,
+			sectors = 18,
+			size = 1440 * 1024,
+		}
+		fdc._sectors = {}
+		fdc:writeSector(0, sector)
+
+		bus:portWrite(0x03F2, 0x1C)
+		bus:portWrite(0x03F5, 0x07)
+		bus:portWrite(0x03F5, 0x00)
+		local irqVector = bus:getPendingInterruptVector()
+		if irqVector then
+			bus:endOfInterrupt(irqVector)
+		end
+
+		bus:portWrite(0x03F5, 0x08)
+		local senseSt0 = bus:portRead(0x03F5)
+		local sensePcn = bus:portRead(0x03F5)
+
+		bus:portWrite(0x03F5, 0x06)
+		bus:portWrite(0x03F5, 0x00)
+		bus:portWrite(0x03F5, 0x00)
+		bus:portWrite(0x03F5, 0x00)
+		bus:portWrite(0x03F5, 0x01)
+		bus:portWrite(0x03F5, 0x02)
+		bus:portWrite(0x03F5, 0x12)
+		bus:portWrite(0x03F5, 0x1B)
+		bus:portWrite(0x03F5, 0xFF)
+
+		local data = {}
+		for i = 1, 512 do
+			data[i] = bus:portRead(0x03F5)
+		end
+		local result = {}
+		for i = 1, 7 do
+			result[i] = bus:portRead(0x03F5)
+		end
+
+		local readOk = data[1] == 0x00 and data[2] == 0x01 and data[256] == 0xFF and data[257] == 0x00
+		local resultOk = result[1] == 0x00 and result[2] == 0x00 and result[3] == 0x00 and result[4] == 0x00 and result[5] == 0x00 and result[6] == 0x01
+		local passedFdc = senseSt0 == 0x00 and sensePcn == 0x00 and readOk and resultOk
+		return passedFdc,
+			string.format(
+				"sense=%s/%s data0=%s data1=%s result=%s,%s,%s,%s,%s,%s,%s",
+				formatHex(senseSt0),
+				formatHex(sensePcn),
+				formatHex(data[1]),
+				formatHex(data[2]),
+				formatHex(result[1]),
+				formatHex(result[2]),
+				formatHex(result[3]),
+				formatHex(result[4]),
+				formatHex(result[5]),
+				formatHex(result[6]),
+				formatHex(result[7])
+			),
+			{
+				sense = { senseSt0, sensePcn },
+				result = result,
+			}
+	end)
+	restoreMachine(machine, snapshot)
+	if not ok then
+		return false, tostring(passed), { error = tostring(passed) }
+	end
+	return passed, detail, evidence
+end
+
 local function testProtectedMode(machine, config)
 	return ProtectedModeSelfTest.run(machine, config)
 end
 
 local function buildValidationImage(config, name)
+	MachineProfile.validateConfig(config)
 	local entry = BootImageCatalog[name]
 	assert(entry and type(entry.build) == "function", "unknown x86 validation image: " .. tostring(name))
 	return entry.build(config)
@@ -565,9 +722,40 @@ end
 
 local function runValidationImage(machine, config, imageName, expectedPassText, options)
 	options = options or {}
-	local image = buildValidationImage(config, imageName)
+	local buildConfig = deepCopy(config)
+	buildConfig.X86 = deepCopy(config.X86 or {})
+	if options.x86Override then
+		applyX86Overrides(buildConfig, options.x86Override)
+	end
+
+	local image = buildValidationImage(buildConfig, imageName)
+	if image.configOverride then
+		applyX86Overrides(buildConfig, image.configOverride)
+	end
+	if options.bootOrder then
+		buildConfig.X86.BOOT_ORDER = deepCopy(options.bootOrder)
+	end
+	if options.bootDevice then
+		buildConfig.X86.BOOT_ORDER = { options.bootDevice }
+		buildConfig.X86.BOOT_DRIVE = MachineProfile.bootDriveForDevice(options.bootDevice)
+	end
+	if buildConfig.X86.BOOT_DRIVE == nil then
+		buildConfig.X86.BOOT_DRIVE = MachineProfile.resolveBootDrive(buildConfig)
+	end
 	local snapshot = snapshotMachine(machine)
-	local ok, passed, detail = pcall(function()
+	local savedConfigX86 = deepCopy(machine.config.X86 or {})
+	local savedBoardX86 = deepCopy((machine.boardConfig and machine.boardConfig.X86) or {})
+	local ok, passed, detail, evidence = pcall(function()
+		applyX86Overrides(machine.config, buildConfig.X86)
+		applyX86Overrides(machine.boardConfig, buildConfig.X86)
+		machine._trace = MachineProfile.getTraceConfig(machine.config)
+		if machine.bus then
+			machine.bus._trace = machine._trace
+		end
+		if machine.rtc and type(machine.rtc.refreshHardwareTable) == "function" then
+			machine.rtc:refreshHardwareTable(machine.boardConfig)
+		end
+
 		if machine.gpu and type(machine.gpu.clearHostOverlay) == "function" then
 			machine.gpu:clearHostOverlay()
 		end
@@ -580,11 +768,38 @@ local function runValidationImage(machine, config, imageName, expectedPassText, 
 			machine.bus.timer._irqEnabled = options.timerIrqEnabled ~= false
 		end
 
+		local bootDevice = options.bootDevice
+			or MachineProfile.resolveBootDevice(buildConfig, {
+				imageByteCount = math.max(0, ((image.layout and image.layout.kernelSectorCount) or 0) + 1) * 512,
+			})
+
 		if machine.hdd then
 			machine.hdd._sectors = {}
-			for lba, sector in pairs(image.sectors or {}) do
-				machine.hdd:writeSector(lba, sector)
+		end
+		if machine.fdc then
+			machine.fdc._sectors = {}
+			if type(machine.fdc.reset) == "function" then
+				machine.fdc:reset()
 			end
+		end
+
+		if machine.hdd then
+			if bootDevice == "ata" then
+				for lba, sector in pairs(image.sectors or {}) do
+					machine.hdd:writeSector(lba, sector)
+				end
+			end
+		end
+
+		if machine.fdc and bootDevice == "floppy" then
+			local bytes = {}
+			for lba = 0, math.max(0, (((image.layout and image.layout.kernelSectorCount) or 0) + 1) - 1) do
+				local sector = (image.sectors or {})[lba] or {}
+				for i = 1, 512 do
+					bytes[#bytes + 1] = sector[i] or 0
+				end
+			end
+			machine.fdc:loadImage(bytes)
 		end
 
 		if machine.rom and image.romBytes then
@@ -615,9 +830,15 @@ local function runValidationImage(machine, config, imageName, expectedPassText, 
 			end
 
 			if step % checkInterval == 0 or result == "HLT" then
-				local text = readTextScreen(machine, config)
+				local text = readTextScreen(machine, buildConfig)
 				if string.find(text, expectedPassText, 1, true) then
-					return true, string.format("pass=%s step=%d", expectedPassText, step)
+					return true, string.format("pass=%s step=%d", expectedPassText, step), {
+						image = imageName,
+						bootDevice = bootDevice,
+						bootDrive = buildConfig.X86.BOOT_DRIVE,
+						passText = expectedPassText,
+						step = step,
+					}
 				end
 			end
 
@@ -631,26 +852,47 @@ local function runValidationImage(machine, config, imageName, expectedPassText, 
 							formatHex(fault.addr, 5),
 							tostring(fault.op),
 							tostring(fault.detail)
-						)
+						),
+						{
+							image = imageName,
+							bootDevice = bootDevice,
+							fault = deepCopy(fault),
+						}
 				end
 			end
 		end
 
-		local text = readTextScreen(machine, config)
-		return false, string.format("missing PASS marker: %s", expectedPassText .. " text=" .. text:sub(1, 256))
+		local text = readTextScreen(machine, buildConfig)
+		return false, string.format("missing PASS marker: %s", expectedPassText .. " text=" .. text:sub(1, 256)), {
+			image = imageName,
+			bootDevice = bootDevice,
+			screen = text:sub(1, 256),
+		}
 	end)
 	restoreMachine(machine, snapshot)
-	if not ok then
-		return false, tostring(passed)
+	machine.config.X86 = savedConfigX86
+	machine.boardConfig.X86 = savedBoardX86
+	machine._trace = MachineProfile.getTraceConfig(machine.config)
+	if machine.bus then
+		machine.bus._trace = machine._trace
 	end
-	return passed, detail
+	if machine.rtc and type(machine.rtc.refreshHardwareTable) == "function" then
+		machine.rtc:refreshHardwareTable(machine.boardConfig)
+	end
+	if not ok then
+		return false, tostring(passed), {
+			image = imageName,
+			error = tostring(passed),
+		}
+	end
+	return passed, detail, evidence
 end
 
-local function runValidationSet(machine, config, entries)
+local function runValidationSet(machine, config, entries, defaultSuite)
 	local results = {}
 	local passedCount = 0
 	for _, entry in ipairs(entries) do
-		local result = wrapTest(entry.name, function()
+		local result = wrapTest(entry.name, entry.suite or defaultSuite, function()
 			return runValidationImage(machine, config, entry.image, entry.passText, entry.options)
 		end)
 		results[#results + 1] = result
@@ -733,39 +975,146 @@ local CPU_VALIDATIONS = {
 	},
 }
 
+local COMPATIBILITY_VALIDATIONS = {
+	{
+		name = "compat_floppy_boot",
+		suite = "compatibility",
+		image = "CompatibilityFloppyBootValidation",
+		passText = "compat floppy boot PASS",
+		options = {
+			bootDevice = "floppy",
+			maxSteps = 12000,
+			timerEnabled = false,
+			timerIrqEnabled = false,
+		},
+	},
+	{
+		name = "compat_ata_boot",
+		suite = "compatibility",
+		image = "CompatibilityAtaBootValidation",
+		passText = "compat ata boot PASS",
+		options = {
+			bootDevice = "ata",
+			maxSteps = 12000,
+			timerEnabled = false,
+			timerIrqEnabled = false,
+			x86Override = {
+				BOOT_ORDER = { "ata", "floppy" },
+			},
+		},
+	},
+	{
+		name = "compat_floppy_geometry",
+		suite = "compatibility",
+		image = "CompatibilityFloppyGeometryValidation",
+		passText = "compat floppy geometry PASS",
+		options = {
+			bootDevice = "floppy",
+			maxSteps = 12000,
+			timerEnabled = false,
+			timerIrqEnabled = false,
+		},
+	},
+	{
+		name = "compat_machine_profile",
+		suite = "compatibility",
+		image = "CompatibilityMachineProfileValidation",
+		passText = "compat machine profile PASS",
+		options = {
+			bootDevice = "floppy",
+			maxSteps = 12000,
+			timerEnabled = false,
+			timerIrqEnabled = false,
+		},
+	},
+	{
+		name = "compat_ata_geometry",
+		suite = "compatibility",
+		image = "AtaGeometryValidation",
+		passText = "compat ata geometry PASS",
+		options = {
+			bootDevice = "ata",
+			maxSteps = 18000,
+			timerEnabled = false,
+			timerIrqEnabled = false,
+		},
+	},
+	{
+		name = "compat_keyboard_controller",
+		suite = "compatibility",
+		image = "KeyboardControllerValidation",
+		passText = "compat keyboard controller PASS",
+		options = {
+			bootDevice = "floppy",
+			maxSteps = 12000,
+			timerEnabled = false,
+			timerIrqEnabled = false,
+		},
+	},
+	{
+		name = "compat_rtc_cmos",
+		suite = "compatibility",
+		image = "RtcCmosValidation",
+		passText = "compat rtc cmos PASS",
+		options = {
+			bootDevice = "floppy",
+			maxSteps = 12000,
+			timerEnabled = false,
+			timerIrqEnabled = false,
+		},
+	},
+	{
+		name = "compat_pit_programming",
+		suite = "compatibility",
+		image = "PitProgrammingValidation",
+		passText = "compat pit programming PASS",
+		options = {
+			bootDevice = "floppy",
+			maxSteps = 12000,
+			timerEnabled = false,
+			timerIrqEnabled = false,
+		},
+	},
+}
+
 function HardwareDiagnostics.run(machine, config)
+	MachineProfile.validateConfig(config)
+
 	local results = {
-		wrapTest("pic", function()
+		wrapTest("pic", "smoke", function()
 			return testPIC(machine, config)
 		end),
-		wrapTest("pit", function()
+		wrapTest("pit", "smoke", function()
 			return testPIT(machine, config)
 		end),
-		wrapTest("vga", function()
+		wrapTest("vga", "smoke", function()
 			return testVGA(machine, config)
 		end),
-		wrapTest("vga_font_plane", function()
+		wrapTest("vga_font_plane", "smoke", function()
 			return testVGAFontPlane(machine, config)
 		end),
-		wrapTest("vga_planar_modes", function()
+		wrapTest("vga_planar_modes", "smoke", function()
 			return testVGAPlanar(machine, config)
 		end),
-		wrapTest("vga_timing", function()
+		wrapTest("vga_timing", "smoke", function()
 			return testVGATiming(machine, config)
 		end),
-		wrapTest("keyboard", function()
+		wrapTest("keyboard", "smoke", function()
 			return testKeyboard(machine, config)
 		end),
-		wrapTest("rtc", function()
+		wrapTest("rtc", "smoke", function()
 			return testRTC(machine, config)
 		end),
-		wrapTest("serial", function()
+		wrapTest("serial", "smoke", function()
 			return testSerial(machine, config)
 		end),
-		wrapTest("ide", function()
+		wrapTest("ide", "smoke", function()
 			return testIDE(machine, config)
 		end),
-		wrapTest("protected_mode_smoke", function()
+		wrapTest("fdc", "smoke", function()
+			return testFDC(machine, config)
+		end),
+		wrapTest("protected_mode_smoke", "smoke", function()
 			return testProtectedMode(machine, config)
 		end),
 	}
@@ -786,11 +1135,11 @@ function HardwareDiagnostics.run(machine, config)
 end
 
 function HardwareDiagnostics.runGuestRuntimeValidations(machine, config)
-	return runValidationSet(machine, config, RUNTIME_VALIDATIONS)
+	return runValidationSet(machine, config, RUNTIME_VALIDATIONS, "runtime")
 end
 
 function HardwareDiagnostics.runGuestCPUValidations(machine, config)
-	return runValidationSet(machine, config, CPU_VALIDATIONS)
+	return runValidationSet(machine, config, CPU_VALIDATIONS, "cpu")
 end
 
 function HardwareDiagnostics.runReviewSuite(machine, config)
@@ -820,6 +1169,31 @@ function HardwareDiagnostics.runReviewSuite(machine, config)
 	}
 
 	return combined
+end
+
+function HardwareDiagnostics.runCompatibilitySuite(machine, config)
+	local review = HardwareDiagnostics.runReviewSuite(machine, config)
+	local compatibility = runValidationSet(machine, config, COMPATIBILITY_VALIDATIONS, "compatibility")
+
+	local results = {}
+	local passedCount = 0
+	for _, set in ipairs({ review, compatibility }) do
+		for _, result in ipairs(set.results or {}) do
+			results[#results + 1] = result
+			if result.passed then
+				passedCount = passedCount + 1
+			end
+		end
+	end
+
+	return {
+		passed = passedCount == #results,
+		passedCount = passedCount,
+		totalCount = #results,
+		results = results,
+		review = review,
+		compatibility = compatibility,
+	}
 end
 
 return HardwareDiagnostics

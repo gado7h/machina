@@ -1,5 +1,6 @@
 local BootOSHex = require("@src/platforms/x86/BootOSHex")
 local BiosRom = require("@src/platforms/x86/BiosRom")
+local MachineProfile = require("@src/platforms/x86/MachineProfile")
 
 local ProductionImages = {}
 
@@ -71,11 +72,17 @@ local function buildBootOS(config)
 
 	local configOverride = {
 		KERNEL_LOAD_SEG = 0x0780,
+		FLOPPY_A_PRESENT = true,
+		FLOPPY_A_TYPE = MachineProfile.floppyTypeForGeometry(tracks, heads, sectorsPerTrack),
 		FLOPPY_TRACKS = tracks,
 		FLOPPY_HEADS = heads,
 		FLOPPY_SECTORS = sectorsPerTrack,
 		HEADS = heads,
 		SECTORS_PER_TRACK = sectorsPerTrack,
+		DIAGNOSTICS = {
+			ENABLED = false,
+			PRINT_SUMMARY = false,
+		},
 	}
 
 	return {

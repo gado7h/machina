@@ -18,35 +18,16 @@ local CMD_RECALIBRATE = 0x07
 local CMD_SEEK = 0x0F
 local CMD_SENSE_INTERRUPT = 0x08
 
-local ST0_BUSY = 0x10
-local ST0_DIRECTION = 0x40
-local ST0_HEAD = 0x04
 local ST0_NOT_READY = 0x80
 local ST0_UNIT_SELECT = 0x08
 
-local ST1_MISSING_ADDRESS_MARK = 0x01
-local ST1_NOT_WRITEABLE = 0x02
 local ST1_NO_DATA = 0x04
-local ST1_OVERRUN = 0x10
-local ST1_CRC_ERROR = 0x20
-local ST1_END_OF_CYLINDER = 0x80
-
-local ST2_MISSING_ADDRESS_MARK = 0x01
-local ST2_BAD_CYLINDER = 0x02
-local ST2_CRC_ERROR = 0x04
-local ST2_CONTROL_MARK = 0x08
-local ST2_DELETED_DATA = 0x20
 
 local MSR_BUSY = 0x10
 local MSR_DIRECTION = 0x40
 local MSR_NON_DMA = 0x20
 local MSR_READY = 0x80
 
-local DOR_MOTOR_0 = 0x10
-local DOR_MOTOR_1 = 0x20
-local DOR_MOTOR_2 = 0x40
-local DOR_MOTOR_3 = 0x80
-local DOR_DMA_ENABLE = 0x08
 local DOR_RESET = 0x04
 
 local IRQ = 6
@@ -64,8 +45,11 @@ function Fdc765.new(config)
 	self._dataReg = 0
 
 	self._commandBuffer = {}
+	self._dataBuffer = {}
 	self._resultBuffer = {}
 	self._resultIndex = 0
+	self._configReg = 0
+	self._interruptPending = false
 
 	self._state = "idle"
 	self._currentDrive = 0
@@ -113,10 +97,22 @@ function Fdc765:_readStatus()
 end
 
 function Fdc765:_readData()
+	if #self._dataBuffer > 0 then
+		local b = table.remove(self._dataBuffer, 1)
+		if #self._dataBuffer == 0 then
+			if #self._resultBuffer > 0 then
+				self._msr = bit32.bor(MSR_READY, MSR_DIRECTION, MSR_BUSY)
+			else
+				self._msr = MSR_READY
+			end
+		end
+		return b
+	end
+
 	if #self._resultBuffer > 0 then
 		local b = table.remove(self._resultBuffer, 1)
 		if #self._resultBuffer == 0 then
-			self._msr = bit32.bor(MSR_READY, MSR_DIRECTION)
+			self._msr = MSR_READY
 		end
 		return b
 	end
@@ -134,8 +130,10 @@ function Fdc765:_writeDor(value)
 
 	if bit32.band(oldDor, DOR_RESET) == 0 then
 		self._msr = MSR_READY
+		self._st0 = 0xC0
+		self._interruptPending = true
+		self._resultBuffer = {}
 		self:_raiseIRQ()
-		self._resultBuffer = { 0xC0 }
 		return
 	end
 
@@ -144,13 +142,14 @@ function Fdc765:_writeDor(value)
 		self._motorOn[drive + 1] = (bit32.band(value, motorBit) ~= 0)
 	end
 
-	self._currentDrive = bit32.band(bit32.rshift(value, 2), 3)
+	self._currentDrive = bit32.band(value, 0x03)
 end
 
 function Fdc765:_writeTap(_value)
 end
 
 function Fdc765:_writeConfig(value)
+	self._configReg = bit32.band(tonumber(value) or 0, 0xFF)
 end
 
 function Fdc765:_writeData(byte)
@@ -178,19 +177,24 @@ function Fdc765:_processCommand()
 		if #self._commandBuffer >= 3 then
 			self._msr = MSR_READY
 			self._commandBuffer = {}
-			self:_raiseIRQ()
 		end
 	elseif cmd == CMD_SENSE_DRIVE_STATUS then
 		if #self._commandBuffer >= 2 then
 			local drive = bit32.band(self._commandBuffer[2], 3)
-			self._st0 = bit32.bor(drive, 0x20)
-			if self._recalibrateNeeded[drive + 1] then
-				self._st0 = bit32.bor(self._st0, 0x10)
+			local head = bit32.band(bit32.rshift(self._commandBuffer[2], 2), 1)
+			local st3 = drive
+			if head ~= 0 then
+				st3 = bit32.bor(st3, 0x04)
 			end
-			self._msr = MSR_READY
-			self._resultBuffer = { self._st0, 0x00 }
+			if not self._recalibrateNeeded[drive + 1] and (self._headPosition[drive + 1] or 0) == 0 then
+				st3 = bit32.bor(st3, 0x10)
+			end
+			if drive == 0 and ((self.config.X86 or {}).FLOPPY_A_PRESENT ~= false) then
+				st3 = bit32.bor(st3, 0x20)
+			end
+			self._msr = bit32.bor(MSR_READY, MSR_DIRECTION, MSR_BUSY)
+			self._resultBuffer = { st3 }
 			self._commandBuffer = {}
-			self:_raiseIRQ()
 		end
 	elseif cmd == CMD_RECALIBRATE then
 		if #self._commandBuffer >= 2 then
@@ -200,7 +204,6 @@ function Fdc765:_processCommand()
 			self._recalibrateNeeded[drive + 1] = false
 			self._st0 = drive
 			self._msr = MSR_READY
-			self._resultBuffer = { self._st0, 0x00 }
 			self._commandBuffer = {}
 			self.stats.recals = self.stats.recals + 1
 			self:_raiseIRQ()
@@ -214,7 +217,6 @@ function Fdc765:_processCommand()
 			self._recalibrateNeeded[drive + 1] = false
 			self._st0 = drive
 			self._msr = MSR_READY
-			self._resultBuffer = { self._st0, 0x00 }
 			self._commandBuffer = {}
 			self.stats.seeks = self.stats.seeks + 1
 			self:_raiseIRQ()
@@ -232,10 +234,11 @@ function Fdc765:_processCommand()
 			self:_executeFormatTrack()
 		end
 	elseif cmd == CMD_SENSE_INTERRUPT then
-		self._resultBuffer = { self._st0, 0x00 }
-		self._msr = MSR_READY
+		local cylinder = self._headPosition[self._currentDrive + 1] or 0
+		self._resultBuffer = { self._st0, cylinder }
+		self._interruptPending = false
+		self._msr = bit32.bor(MSR_READY, MSR_DIRECTION, MSR_BUSY)
 		self._commandBuffer = {}
-		self:_raiseIRQ()
 	else
 		self._msr = MSR_READY
 		self._commandBuffer = {}
@@ -244,22 +247,19 @@ function Fdc765:_processCommand()
 end
 
 function Fdc765:_executeReadSector()
-	local cmd = self._commandBuffer[1]
 	local drive = bit32.band(self._commandBuffer[2], 3)
-	local head = bit32.band(self._commandBuffer[2], 1)
 	local track = self._commandBuffer[3]
-	local sector = self._commandBuffer[4]
-	local eot = self._commandBuffer[5]
-	local gap = self._commandBuffer[6]
-	local dl = self._commandBuffer[7]
+	local head = bit32.band(self._commandBuffer[4], 1)
+	local sector = self._commandBuffer[5]
+	local sizeCode = self._commandBuffer[6]
 
 	local chs = self:_calculateChs(drive, head, track, sector)
-	if not chs or sector > self._mediaType.sectors then
+	if not chs or sector > self._mediaType.sectors or sizeCode ~= 0x02 then
 		self._st0 = bit32.bor(drive, ST0_UNIT_SELECT, ST0_NOT_READY)
 		self._st1 = ST1_NO_DATA
 		self._st2 = 0
-		self._msr = MSR_READY
-		self._resultBuffer = { self._st0, self._st1, self._st2, track, head, sector, 0 }
+		self._msr = bit32.bor(MSR_READY, MSR_DIRECTION, MSR_BUSY)
+		self._resultBuffer = { self._st0, self._st1, self._st2, track, head, sector, sizeCode or 0 }
 		self._commandBuffer = {}
 		self.stats.errors = self.stats.errors + 1
 		self:_raiseIRQ()
@@ -271,8 +271,8 @@ function Fdc765:_executeReadSector()
 		self._st0 = bit32.bor(drive, ST0_UNIT_SELECT)
 		self._st1 = ST1_NO_DATA
 		self._st2 = 0
-		self._msr = MSR_READY
-		self._resultBuffer = { self._st0, self._st1, self._st2, track, head, sector, 0 }
+		self._msr = bit32.bor(MSR_READY, MSR_DIRECTION, MSR_BUSY)
+		self._resultBuffer = { self._st0, self._st1, self._st2, track, head, sector, sizeCode or 0 }
 		self._commandBuffer = {}
 		self.stats.errors = self.stats.errors + 1
 		self:_raiseIRQ()
@@ -282,7 +282,11 @@ function Fdc765:_executeReadSector()
 	self._st0 = drive
 	self._st1 = 0
 	self._st2 = 0
-	self._msr = MSR_READY
+	self._dataBuffer = {}
+	for i = 1, SECTOR_SIZE do
+		self._dataBuffer[i] = data[i] or 0
+	end
+	self._msr = bit32.bor(MSR_READY, MSR_NON_DMA, MSR_DIRECTION, MSR_BUSY)
 	self._resultBuffer = {
 		self._st0,
 		self._st1,
@@ -290,11 +294,8 @@ function Fdc765:_executeReadSector()
 		track,
 		head,
 		sector,
-		SECTOR_SIZE % 256,
+		sizeCode or 0x02,
 	}
-	for i = 1, SECTOR_SIZE do
-		table.insert(self._resultBuffer, data[i] or 0)
-	end
 	self._commandBuffer = {}
 	self.stats.reads = self.stats.reads + 1
 	self:_raiseIRQ()
@@ -302,21 +303,23 @@ end
 
 function Fdc765:_beginWriteSector()
 	local drive = bit32.band(self._commandBuffer[2], 3)
-	local head = bit32.band(self._commandBuffer[2], 1)
 	local track = self._commandBuffer[3]
-	local sector = self._commandBuffer[4]
+	local head = bit32.band(self._commandBuffer[4], 1)
+	local sector = self._commandBuffer[5]
+	local sizeCode = self._commandBuffer[6]
 
 	self._writeTarget = {
 		drive = drive,
 		head = head,
 		track = track,
 		sector = sector,
+		sizeCode = sizeCode,
 		data = {},
 		received = 0,
 	}
 
 	self._commandBuffer = {}
-	self._msr = bit32.bor(MSR_READY, MSR_NON_DMA)
+	self._msr = bit32.bor(MSR_READY, MSR_NON_DMA, MSR_BUSY)
 end
 
 function Fdc765:_receiveWriteData(byte)
@@ -337,16 +340,13 @@ function Fdc765:_receiveWriteData(byte)
 		if chs then
 			self:writeSector(chs, self._writeTarget.data)
 			self.stats.writes = self.stats.writes + 1
+		else
+			self.stats.errors = self.stats.errors + 1
 		end
 
 		self._st0 = drive
 		self._st1 = 0
 		self._st2 = 0
-
-		local nextSector = sector + 1
-		if nextSector > self._mediaType.sectors then
-			nextSector = 1
-		end
 
 		self._resultBuffer = {
 			self._st0,
@@ -354,22 +354,23 @@ function Fdc765:_receiveWriteData(byte)
 			self._st2,
 			track,
 			head,
-			nextSector,
-			SECTOR_SIZE % 256,
+			sector,
+			self._writeTarget.sizeCode or 0x02,
 		}
 
 		self._writeTarget = nil
 		self._commandBuffer = {}
+		self._msr = bit32.bor(MSR_READY, MSR_DIRECTION, MSR_BUSY)
 		self:_raiseIRQ()
 	end
 end
 
 function Fdc765:_executeFormatTrack()
 	local drive = bit32.band(self._commandBuffer[2], 3)
-	local head = bit32.band(self._commandBuffer[2], 1)
-	local sectorsPerTrack = self._commandBuffer[3]
-	local gap = self._commandBuffer[4]
-	local filler = self._commandBuffer[5]
+	local head = bit32.band(bit32.rshift(self._commandBuffer[2], 2), 1)
+	local sizeCode = self._commandBuffer[3]
+	local sectorsPerTrack = self._commandBuffer[4]
+	local filler = self._commandBuffer[6]
 
 	for sectorNum = 1, sectorsPerTrack do
 		local chs = self:_calculateChs(drive, head, self._headPosition[drive + 1], sectorNum)
@@ -386,13 +387,16 @@ function Fdc765:_executeFormatTrack()
 	self._st1 = 0
 	self._st2 = 0
 
-	self._msr = MSR_READY
-	self._resultBuffer = { self._st0, self._st1, self._st2, 0, head, 0, 0 }
+	self._msr = bit32.bor(MSR_READY, MSR_DIRECTION, MSR_BUSY)
+	self._resultBuffer = { self._st0, self._st1, self._st2, self._headPosition[drive + 1], head, sectorsPerTrack, sizeCode }
 	self._commandBuffer = {}
 	self:_raiseIRQ()
 end
 
 function Fdc765:_calculateChs(drive, head, track, sector)
+	if drive ~= 0 or ((self.config.X86 or {}).FLOPPY_A_PRESENT == false) then
+		return nil
+	end
 	if track >= self._mediaType.tracks then
 		return nil
 	end
@@ -453,7 +457,7 @@ function Fdc765:writeSectorRaw(lba, data)
 end
 
 function Fdc765:loadImage(imageBytes)
-	if not imageBytes then
+	if not imageBytes or ((self.config.X86 or {}).FLOPPY_A_PRESENT == false) then
 		return false
 	end
 
@@ -486,8 +490,11 @@ end
 function Fdc765:_reset()
 	self._msr = 0
 	self._commandBuffer = {}
+	self._dataBuffer = {}
 	self._resultBuffer = {}
 	self._state = "idle"
+	self._writeTarget = nil
+	self._interruptPending = false
 	self._st0 = 0xC0
 	self._st1 = 0
 	self._st2 = 0
@@ -499,6 +506,7 @@ end
 
 function Fdc765:_raiseIRQ()
 	if self._bus then
+		self._interruptPending = true
 		self._bus:raiseIRQ(IRQ, { source = "fdc" })
 		self.stats.irqs = self.stats.irqs + 1
 	end

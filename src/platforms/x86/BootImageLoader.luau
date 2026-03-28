@@ -1,6 +1,7 @@
 local BootImageCatalog = require("@src/platforms/x86/BootImageCatalog")
 local BiosRom = require("@src/platforms/x86/BiosRom")
 local ImageCatalogUtils = require("@src/platforms/x86/ImageCatalogUtils")
+local MachineProfile = require("@src/platforms/x86/MachineProfile")
 local RawImageCatalog = require("@src/platforms/x86/RawImageCatalog")
 local ImportedImageCatalog = require("@src/platforms/x86/ImportedImageCatalog")
 
@@ -141,6 +142,8 @@ function BootImageLoader._diskBytesToSectors(diskBytes, startLba)
 end
 
 function BootImageLoader.load(config)
+	MachineProfile.validateConfig(config)
+
 	local x86 = config.X86 or {}
 	local imageConfig = x86.IMAGE or {}
 	local source = resolveSource(imageConfig)

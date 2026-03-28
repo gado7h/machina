@@ -1,6 +1,8 @@
 local PcSystem = {}
 PcSystem.__index = PcSystem
 
+local MachineProfile = require("@src/platforms/x86/MachineProfile")
+
 local DEFAULT_PROFILE = "x86-bios"
 local RUN_CYCLES_PER_TICK = 256
 local BOOT_CYCLES_PER_TICK = 768
@@ -113,6 +115,7 @@ function PcSystem.new(config)
 	self.config = config
 	self.boardConfig = buildBoardConfig(config)
 	self.profile = activeProfile(config)
+	self._trace = MachineProfile.getTraceConfig(config)
 	self._presentFrame = nil
 	self.runtime = nil
 	self._powered = false
@@ -124,6 +127,28 @@ function PcSystem.new(config)
 	self._cursorTimer = 0
 	self._bootRecord = nil
 	return self
+end
+
+function PcSystem:_traceCpuState()
+	if not self._trace or self._trace.ENABLED ~= true or self._trace.CPU_STATE ~= true then
+		return
+	end
+	if not (self.bus and self.bus._log and self.cpu) then
+		return
+	end
+	self.bus:_log(
+		"CPU",
+		string.format(
+			"CS:IP=%04X:%04X AX=%04X BX=%04X CX=%04X DX=%04X FLAGS=%04X",
+			self.cpu.seg.CS or 0,
+			self.cpu.ip or 0,
+			self.cpu.reg16.AX or 0,
+			self.cpu.reg16.BX or 0,
+			self.cpu.reg16.CX or 0,
+			self.cpu.reg16.DX or 0,
+			self.cpu.flags or 0
+		)
+	)
 end
 
 function PcSystem:_initializeBootRecord()
@@ -190,7 +215,7 @@ end
 
 function PcSystem:_getCyclesPerTick()
 	local x86 = getX86Config(self)
-	if self._bootStage == "RUNNING" then
+	if self._bootStage == "RUNNING" or self._bootStage == "KERNEL" then
 		return x86.RUN_CYCLES_PER_TICK or RUN_CYCLES_PER_TICK
 	else
 		return x86.BOOT_CYCLES_PER_TICK or BOOT_CYCLES_PER_TICK
@@ -263,6 +288,7 @@ end
 
 function PcSystem:_stepCPU(dt)
 	for _ = 1, self:_getCyclesPerTick() do
+		self:_traceCpuState()
 		local ok, result = pcall(function()
 			return self.cpu:step()
 		end)

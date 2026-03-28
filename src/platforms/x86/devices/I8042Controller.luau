@@ -228,7 +228,7 @@ function I8042Controller.new(config, bus)
 	self._ctrl = false
 	self._alt = false
 	self._capsLock = false
-	self._enabled = false
+	self._enabled = true
 	self._scanningEnabled = true
 	self._controllerCommandByte = bit32.bor(COMMAND_IRQ1_ENABLE, COMMAND_SYSTEM_FLAG)
 	self._pendingControllerData = nil
@@ -251,26 +251,53 @@ function I8042Controller.new(config, bus)
 	return self
 end
 
+function I8042Controller:_setInputFull(enabled)
+	if enabled then
+		self._status = bit32.bor(self._status, STATUS_INPUT_FULL)
+	else
+		self._status = bit32.band(self._status, bit32.bnot(STATUS_INPUT_FULL))
+	end
+end
+
+function I8042Controller:_setOutputPort(value)
+	self._outputPort = bit32.band(tonumber(value) or 0, 0xFF)
+	self._scanningEnabled = bit32.band(self._outputPort, OUTPUT_PORT_KEYBOARD_ENABLED) ~= 0
+	if self.bus and self.bus.setA20Enabled then
+		self.bus:setA20Enabled(bit32.band(self._outputPort, OUTPUT_PORT_A20_ENABLED) ~= 0)
+	end
+end
+
+function I8042Controller:_syncStatus()
+	if #self._buffer > 0 then
+		self._status = bit32.bor(self._status, STATUS_OUTPUT_FULL)
+	else
+		self._status = bit32.band(self._status, bit32.bnot(STATUS_OUTPUT_FULL))
+	end
+
+	local pendingInput = self._pendingControllerData ~= nil or self._pendingOutputPortWrite ~= nil
+	self:_setInputFull(pendingInput)
+end
+
 function I8042Controller:_raiseIRQ()
-	if bit32.band(self._controllerCommandByte, COMMAND_IRQ1_ENABLE) ~= 0 then
+	if bit32.band(self._controllerCommandByte, COMMAND_IRQ1_ENABLE) ~= 0 and self._enabled then
 		self.bus:raiseIRQ(self.config.IRQ.KEYBOARD, { source = "keyboard", status = self._status })
 	end
 end
 
-function I8042Controller:_pushOutputByte(value)
+function I8042Controller:_pushOutputByte(value, raiseIRQ)
 	if #self._buffer >= OUTPUT_BUFFER_LIMIT then
 		self.stats.bufferOverruns = self.stats.bufferOverruns + 1
 		return
 	end
 	self._buffer[#self._buffer + 1] = bit32.band(tonumber(value) or 0, 0xFF)
-	self._status = bit32.bor(self._status, STATUS_OUTPUT_FULL)
-	self:_raiseIRQ()
+	self:_syncStatus()
+	if raiseIRQ ~= false then
+		self:_raiseIRQ()
+	end
 end
 
 function I8042Controller:_clearOutputStatus()
-	if #self._buffer == 0 then
-		self._status = bit32.band(self._status, bit32.bnot(STATUS_OUTPUT_FULL))
-	end
+	self:_syncStatus()
 end
 
 function I8042Controller:_translateASCII(scanCode)
@@ -377,51 +404,42 @@ function I8042Controller:_writeI8042ControllerCommand(value)
 	local v = bit32.band(tonumber(value) or 0, 0xFF)
 	if self._pendingI8042ControllerData == "led" then
 		self._pendingI8042ControllerData = nil
-		self:_pushOutputByte(KBD_ACK)
+		self:_pushOutputByte(KBD_ACK, false)
 		return
 	end
 
 	if self._pendingOutputPortWrite ~= nil then
-		self._outputPort = self._pendingOutputPortWrite
+		self:_setOutputPort(v)
 		self._pendingOutputPortWrite = nil
-		self:_pushOutputByte(KBD_ACK)
-		if self.bus and self.bus.setA20Enabled then
-			self.bus:setA20Enabled(bit32.band(self._outputPort, OUTPUT_PORT_A20_ENABLED) ~= 0)
-		end
-		return
-	end
-
-	if self._pendingI8042ControllerData == "led" then
-		self._pendingI8042ControllerData = nil
-		self:_pushOutputByte(KBD_ACK)
+		self:_syncStatus()
 		return
 	end
 
 	if v == 0xED then
 		self._pendingI8042ControllerData = "led"
-		self:_pushOutputByte(KBD_ACK)
+		self:_pushOutputByte(KBD_ACK, false)
 	elseif v == 0xF2 then
-		self:_pushOutputByte(KBD_ACK)
-		self:_pushOutputByte(0xAB)
-		self:_pushOutputByte(0x83)
+		self:_pushOutputByte(KBD_ACK, false)
+		self:_pushOutputByte(0xAB, false)
+		self:_pushOutputByte(0x83, false)
 	elseif v == 0xF4 then
 		self._scanningEnabled = true
-		self:_pushOutputByte(KBD_ACK)
+		self:_pushOutputByte(KBD_ACK, false)
 	elseif v == 0xF5 then
 		self._scanningEnabled = false
-		self:_pushOutputByte(KBD_ACK)
+		self:_pushOutputByte(KBD_ACK, false)
 	elseif v == 0xFF then
 		self:_resetBuffers()
 		self._scanningEnabled = true
-		self:_pushOutputByte(KBD_ACK)
-		self:_pushOutputByte(KBD_SELF_TEST_PASSED)
+		self:_pushOutputByte(KBD_ACK, false)
+		self:_pushOutputByte(KBD_SELF_TEST_PASSED, false)
 	elseif v == 0xD0 then
-		self:_pushOutputByte(self._outputPort)
+		self:_pushOutputByte(self._outputPort, false)
 	elseif v == 0xD1 then
-		self._pendingOutputPortWrite = 0
-		self._status = bit32.bor(self._status, STATUS_INPUT_FULL)
+		self._pendingOutputPortWrite = true
+		self:_setInputFull(true)
 	else
-		self:_pushOutputByte(KBD_ACK)
+		self:_pushOutputByte(KBD_ACK, false)
 	end
 end
 
@@ -429,10 +447,19 @@ function I8042Controller:_writeData(value)
 	local v = bit32.band(tonumber(value) or 0, 0xFF)
 	if self._pendingControllerData == "command-byte" then
 		self._controllerCommandByte = v
+		self._scanningEnabled = bit32.band(self._controllerCommandByte, COMMAND_DISABLE_KEYBOARD) == 0
 		self._pendingControllerData = nil
-		self._status = bit32.band(self._status, bit32.bnot(STATUS_INPUT_FULL))
+		self:_syncStatus()
 		return
 	end
+
+	if self._pendingOutputPortWrite then
+		self._pendingOutputPortWrite = nil
+		self:_setOutputPort(v)
+		self:_syncStatus()
+		return
+	end
+
 	self:_writeI8042ControllerCommand(v)
 end
 
@@ -440,22 +467,25 @@ function I8042Controller:_writeCtrl(value)
 	local v = bit32.band(tonumber(value) or 0, 0xFF)
 	self._status = bit32.bor(self._status, STATUS_COMMAND)
 	if v == 0x20 then
-		self:_pushOutputByte(self._controllerCommandByte)
+		self:_pushOutputByte(self._controllerCommandByte, false)
 	elseif v == 0x60 then
 		self._pendingControllerData = "command-byte"
-		self._status = bit32.bor(self._status, STATUS_INPUT_FULL)
+		self:_setInputFull(true)
 	elseif v == 0xAA then
 		self._status = bit32.bor(self._status, STATUS_SYSTEM)
-		self:_pushOutputByte(0x55)
+		self:_pushOutputByte(0x55, false)
 	elseif v == 0xAB or v == 0xFE then
-		self:_pushOutputByte(0x00)
+		self:_pushOutputByte(0x00, false)
 	elseif v == 0xAD then
 		self._scanningEnabled = false
 		self._controllerCommandByte = bit32.bor(self._controllerCommandByte, COMMAND_DISABLE_KEYBOARD)
+		self._outputPort = bit32.band(self._outputPort, bit32.bnot(OUTPUT_PORT_KEYBOARD_ENABLED))
 	elseif v == 0xAE then
 		self._scanningEnabled = true
 		self._controllerCommandByte = bit32.band(self._controllerCommandByte, bit32.bnot(COMMAND_DISABLE_KEYBOARD))
+		self._outputPort = bit32.bor(self._outputPort, OUTPUT_PORT_KEYBOARD_ENABLED)
 	end
+	self:_syncStatus()
 	self._status = bit32.band(self._status, bit32.bnot(STATUS_COMMAND))
 end
 

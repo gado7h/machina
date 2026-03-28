@@ -16,8 +16,11 @@ Machina targets a baseline BIOS-era `80386` PC with:
 - BIOS boot flow
 - dual `8259A` PIC interrupt controller
 - `8254` PIT
+- one `1.44 MB` floppy drive at `A:`
 - primary-channel ATA disk
 - `8042` keyboard controller
+- RTC/CMOS
+- COM1 UART
 - baseline IBM VGA-compatible display adapter
 
 The intended software environment is a narrow, early-PC-compatible machine suitable for BIOS boot, real-mode bring-up, protected-mode transition, and eventually small real kernels and Linux-oriented experiments.
@@ -70,6 +73,13 @@ Guest-visible validation evidence is defined in [docs/VALIDATION.md](./VALIDATIO
 - protected-mode CPU validation
 - exception validation
 - privilege-transition validation
+
+`HardwareDiagnostics.runCompatibilitySuite()` is the stricter compatibility gate for this target. It extends the review suite with:
+
+- floppy-path guest boot validation
+- ATA-path guest boot validation
+- BIOS floppy-geometry validation
+- machine-profile / CMOS / equipment-word validation
 
 ### Register-Correct
 
@@ -132,12 +142,15 @@ Baseline IRQ intent:
 - IRQ1: keyboard
 - IRQ4: COM1
 - IRQ8: RTC
+- IRQ6: floppy controller
 - IRQ14: primary ATA
 
 ### Disk Model
 
+- one `1.44 MB` floppy drive `A:` with BIOS-visible CMOS/BDA equipment reporting
 - BIOS-era primary ATA channel
-- boot drive default `0x80`
+- default boot order: `floppy`, then `ata`
+- boot drive defaults to `0x00` when the locked profile includes a present floppy drive
 - CHS-facing BIOS boot path is acceptable for the target
 - guest-visible ATA task-file behavior should match primary-channel expectations
 

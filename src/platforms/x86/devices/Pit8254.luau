@@ -13,6 +13,7 @@ local function newChannel(defaultReload)
 		readFlipFlop = 0,
 		writeFlipFlop = 0,
 		latchValue = nil,
+		statusLatch = nil,
 		accumulatedTicks = 0,
 		running = true,
 	}
@@ -85,6 +86,41 @@ function Pit8254:_latchCount(channel)
 	channel.readFlipFlop = 0
 end
 
+function Pit8254:_latchStatus(channel)
+	local output = self:_currentOutput(channel)
+	local status = 0
+	if output then
+		status = bit32.bor(status, 0x80)
+	end
+	if channel.reloadValue == 0 and channel.writeFlipFlop == 0 and channel.writeLatch == nil then
+		status = bit32.bor(status, 0x40)
+	end
+	status = bit32.bor(status, bit32.lshift(bit32.band(channel.accessMode, 0x03), 4))
+	status = bit32.bor(status, bit32.lshift(bit32.band(channel.mode, 0x07), 1))
+	if channel.bcd then
+		status = bit32.bor(status, 0x01)
+	end
+	channel.statusLatch = status
+end
+
+function Pit8254:_currentOutput(channel)
+	local reload = effectiveReload(channel)
+	if reload <= 0 then
+		return false
+	end
+	local phase = math.floor(channel.accumulatedTicks) % reload
+	if channel.mode == 0 then
+		return channel.accumulatedTicks >= reload
+	end
+	if channel.mode == 2 then
+		return phase ~= reload - 1
+	end
+	if channel.mode == 3 then
+		return phase < (reload / 2)
+	end
+	return true
+end
+
 function Pit8254:_readLatchedByte(channel, value)
 	if channel.accessMode == 1 then
 		return value % 0x100
@@ -114,6 +150,12 @@ function Pit8254:_readChannel(index)
 		return 0
 	end
 
+	if channel.statusLatch ~= nil then
+		local status = channel.statusLatch
+		channel.statusLatch = nil
+		return status
+	end
+
 	local value = channel.latchValue
 	if value == nil then
 		value = self:_currentCount(channel)
@@ -126,6 +168,7 @@ function Pit8254:_commitReload(channel, value)
 	channel.accumulatedTicks = 0
 	channel.running = true
 	channel.latchValue = nil
+	channel.statusLatch = nil
 	channel.readFlipFlop = 0
 end
 
@@ -159,6 +202,22 @@ function Pit8254:_writeCommand(value)
 	local v = bit32.band(tonumber(value) or 0, 0xFF)
 	local select = bit32.rshift(v, 6)
 	if select == 3 then
+		local latchCount = bit32.band(v, 0x02) == 0
+		local latchStatus = bit32.band(v, 0x01) == 0
+		for index = 0, 2 do
+			local selectMask = bit32.lshift(1, index + 3)
+			if bit32.band(v, selectMask) == 0 then
+				local channel = self._channels[index]
+				if channel then
+					if latchCount then
+						self:_latchCount(channel)
+					end
+					if latchStatus then
+						self:_latchStatus(channel)
+					end
+				end
+			end
+		end
 		return
 	end
 
@@ -187,6 +246,7 @@ function Pit8254:_writeCommand(value)
 	channel.writeFlipFlop = 0
 	channel.readFlipFlop = 0
 	channel.latchValue = nil
+	channel.statusLatch = nil
 end
 
 function Pit8254:_fireIRQ(count)
@@ -231,6 +291,25 @@ function Pit8254:_tickChannel0(elapsedTicks)
 	end
 end
 
+function Pit8254:_tickChannel(index, elapsedTicks)
+	local channel = self._channels[index]
+	if not channel or not channel.running then
+		return
+	end
+
+	local reload = effectiveReload(channel)
+	if reload <= 0 then
+		return
+	end
+
+	if index == 0 then
+		self:_tickChannel0(elapsedTicks)
+		return
+	end
+
+	channel.accumulatedTicks = channel.accumulatedTicks + elapsedTicks
+end
+
 function Pit8254:tick(dt)
 	self.stats.ticks = self.stats.ticks + 1
 	if not self._enabled then
@@ -249,7 +328,9 @@ function Pit8254:tick(dt)
 	end
 
 	self._subTicks = self._subTicks - elapsedTicks
-	self:_tickChannel0(elapsedTicks)
+	for index = 0, 2 do
+		self:_tickChannel(index, elapsedTicks)
+	end
 end
 
 function Pit8254:memRead(offset)

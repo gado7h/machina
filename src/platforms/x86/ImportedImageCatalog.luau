@@ -5,7 +5,9 @@ local ImportedImageCatalog = {}
 
 local FROZEN_IMPORT_CONFIG = {
 	X86 = {
+		MACHINE_PROFILE = "ibm-pc-386-bios-v2",
 		BOOT_DRIVE = 0x00,
+		BOOT_ORDER = { "floppy", "ata" },
 		BIOS_ENTRY_OFFSET = 0x0100,
 		RESET_VECTOR_SEG = 0xF000,
 		RESET_VECTOR_OFF = 0xFFF0,
@@ -17,6 +19,11 @@ local FROZEN_IMPORT_CONFIG = {
 		TEXT_BUFFER_SIZE = 0x8000,
 		SECTORS_PER_TRACK = 18,
 		HEADS = 2,
+		FLOPPY_A_PRESENT = true,
+		FLOPPY_A_TYPE = "35_1440k",
+		FLOPPY_TRACKS = 80,
+		FLOPPY_HEADS = 2,
+		FLOPPY_SECTORS = 18,
 	},
 }
 

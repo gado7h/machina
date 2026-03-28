@@ -1,4 +1,5 @@
 local Assembler8086 = require("@src/platforms/x86/Assembler8086")
+local MachineProfile = require("@src/platforms/x86/MachineProfile")
 local Utils = require("@src/platforms/x86/BootImageCatalogUtils")
 
 local ValidationImages = {}
@@ -592,6 +593,427 @@ local function buildVgaPaletteValidation(config)
 	return Utils.buildStandaloneBootImage(config, "VgaPaletteValidation", source)
 end
 
+local function buildCompatibilityFloppyBootValidation(config)
+	return Utils.buildStandaloneBootImage(
+		config,
+		"CompatibilityFloppyBootValidation",
+		Utils.buildTextValidationBootSource("compat floppy boot PASS")
+	)
+end
+
+local function buildCompatibilityAtaBootValidation(config)
+	return Utils.buildStandaloneBootImage(
+		config,
+		"CompatibilityAtaBootValidation",
+		Utils.buildTextValidationBootSource("compat ata boot PASS")
+	)
+end
+
+local function buildCompatibilityFloppyGeometryValidation(config)
+	local floppy = MachineProfile.getFloppyDriveA(config)
+	local expectedCylinder = math.max(0, floppy.tracks - 1)
+	local expectedHead = math.max(0, floppy.heads - 1)
+	local expectedSector = math.max(1, floppy.sectors)
+	local source = table.concat({
+		"ORG 0x7C00",
+		"START:",
+		"  MOV [BOOT_DRIVE], DL",
+		"  MOV AH, 0x08",
+		"  MOV DL, [BOOT_DRIVE]",
+		"  INT 0x13",
+		"  JC FAIL",
+		"  CMP CH, " .. string.format("0x%02X", expectedCylinder % 0x100),
+		"  JNE FAIL",
+		"  MOV AL, CL",
+		"  AND AL, 0x3F",
+		"  CMP AL, " .. string.format("0x%02X", expectedSector % 0x100),
+		"  JNE FAIL",
+		"  CMP DH, " .. string.format("0x%02X", expectedHead % 0x100),
+		"  JNE FAIL",
+		"  CMP DL, 0x01",
+		"  JNE FAIL",
+		"  MOV SI, PASS_MSG",
+		"  CALL PRINT_STRING",
+		"HANG:",
+		"  HLT",
+		"  JMP HANG",
+		"FAIL:",
+		"  MOV SI, FAIL_MSG",
+		"  CALL PRINT_STRING",
+		"  HLT",
+		"  JMP FAIL",
+		"PRINT_STRING:",
+		"  MOV AL, [SI]",
+		"  CMP AL, 0",
+		"  JE PRINT_DONE",
+		"  MOV AH, 0x0E",
+		"  INT 0x10",
+		"  INC SI",
+		"  JMP PRINT_STRING",
+		"PRINT_DONE:",
+		"  RET",
+		"BOOT_DRIVE:",
+		"  DB 0",
+		"PASS_MSG:",
+		'  DB "compat floppy geometry PASS", 13, 10, 0',
+		"FAIL_MSG:",
+		'  DB "FAIL compat floppy geometry", 13, 10, 0',
+		"PADTO 0x7DFE, 0",
+		"DW 0xAA55",
+	}, "\n")
+	return Utils.buildStandaloneBootImage(config, "CompatibilityFloppyGeometryValidation", source)
+end
+
+local function buildCompatibilityMachineProfileValidation(config)
+	local equipmentWord = MachineProfile.getEquipmentWord(config)
+	local baseMemK = math.floor(((config.X86 or {}).LOW_RAM_SIZE or 0xA0000) / 1024)
+	local floppyNibble = MachineProfile.getFloppyDriveA(config).nibble
+	local source = table.concat({
+		"ORG 0x7C00",
+		"START:",
+		"  INT 0x11",
+		"  CMP AX, " .. Utils.hex16(equipmentWord),
+		"  JNE FAIL",
+		"  INT 0x12",
+		"  CMP AX, " .. Utils.hex16(baseMemK),
+		"  JNE FAIL",
+		"  MOV AL, 0x10",
+		"  OUT 0x70, AL",
+		"  IN AL, 0x71",
+		"  CMP AL, " .. string.format("0x%02X", bit32.lshift(floppyNibble, 4) % 0x100),
+		"  JNE FAIL",
+		"  MOV SI, PASS_MSG",
+		"  CALL PRINT_STRING",
+		"HANG:",
+		"  HLT",
+		"  JMP HANG",
+		"FAIL:",
+		"  MOV SI, FAIL_MSG",
+		"  CALL PRINT_STRING",
+		"  HLT",
+		"  JMP FAIL",
+		"PRINT_STRING:",
+		"  MOV AL, [SI]",
+		"  CMP AL, 0",
+		"  JE PRINT_DONE",
+		"  MOV AH, 0x0E",
+		"  INT 0x10",
+		"  INC SI",
+		"  JMP PRINT_STRING",
+		"PRINT_DONE:",
+		"  RET",
+		"PASS_MSG:",
+		'  DB "compat machine profile PASS", 13, 10, 0',
+		"FAIL_MSG:",
+		'  DB "FAIL compat machine profile", 13, 10, 0',
+		"PADTO 0x7DFE, 0",
+		"DW 0xAA55",
+	}, "\n")
+	return Utils.buildStandaloneBootImage(config, "CompatibilityMachineProfileValidation", source)
+end
+
+local function expectedAtaGeometry(config)
+	local x86 = config.X86 or {}
+	local totalSectors = tonumber(config.DISK_BLOCKS) or 0
+	local heads = tonumber(x86.HEADS) or 1
+	local sectorsPerTrack = tonumber(x86.SECTORS_PER_TRACK) or 18
+	local cylinders = math.max(1, math.floor(totalSectors / math.max(1, heads * sectorsPerTrack)))
+	local ch = cylinders % 0x100
+	local cl = bit32.bor(
+		bit32.band(sectorsPerTrack, 0x3F),
+		bit32.lshift(bit32.band(bit32.rshift(cylinders, 8), 0x03), 6)
+	)
+	local dh = math.max(0, heads - 1) % 0x100
+	return ch, cl, dh
+end
+
+local function buildAtaGeometryValidation(config)
+	local ch, cl, dh = expectedAtaGeometry(config)
+	local kernelSource = table.concat({
+		"ORG 0x0500",
+		"  JMP START",
+		"SIG:",
+		'  DB "ATA GEOMETRY PASS", 13, 10, 0',
+		"START:",
+		"  XOR AX, AX",
+		"  MOV DS, AX",
+		"  MOV ES, AX",
+		"  XOR BX, BX",
+		"  MOV DL, 0x80",
+		"  MOV AH, 0x08",
+		"  INT 0x13",
+		"  JC FAIL",
+		"  CMP CH, " .. string.format("0x%02X", ch),
+		"  JNE FAIL",
+		"  MOV AL, CL",
+		"  AND AL, 0x3F",
+		"  CMP AL, " .. string.format("0x%02X", bit32.band(cl, 0x3F)),
+		"  JNE FAIL",
+		"  MOV AL, CL",
+		"  AND AL, 0xC0",
+		"  CMP AL, " .. string.format("0x%02X", bit32.band(cl, 0xC0)),
+		"  JNE FAIL",
+		"  CMP DH, " .. string.format("0x%02X", dh),
+		"  JNE FAIL",
+		"  CMP DL, 0x01",
+		"  JNE FAIL",
+		"  MOV AX, 0x0201",
+		"  MOV BX, 0x0600",
+		"  MOV CX, 0x0002",
+		"  MOV DL, 0x80",
+		"  INT 0x13",
+		"  JC FAIL",
+		"  MOV SI, SIG",
+		"  MOV DI, 0x0600 + SIG - $$",
+		"  MOV CX, 20",
+		"COMPARE_LOOP:",
+		"  MOV AL, [SI]",
+		"  MOV BL, [DI]",
+		"  CMP AL, BL",
+		"  JNE FAIL",
+		"  INC SI",
+		"  INC DI",
+		"  LOOP COMPARE_LOOP",
+		"  MOV SI, PASS_MSG",
+		"  CALL PRINT_STRING",
+		"HANG:",
+		"  HLT",
+		"  JMP HANG",
+		"FAIL:",
+		"  MOV SI, FAIL_MSG",
+		"  CALL PRINT_STRING",
+		"  HLT",
+		"  JMP FAIL",
+		"PRINT_STRING:",
+		"  MOV AL, [SI]",
+		"  CMP AL, 0",
+		"  JE PRINT_DONE",
+		"  MOV AH, 0x0E",
+		"  INT 0x10",
+		"  INC SI",
+		"  JMP PRINT_STRING",
+		"PRINT_DONE:",
+		"  RET",
+		"PASS_MSG:",
+		'  DB "compat ata geometry PASS", 13, 10, 0',
+		"FAIL_MSG:",
+		'  DB "FAIL compat ata geometry", 13, 10, 0',
+	}, "\n")
+	local image = Utils.buildLoadedBootImage(config, "AtaGeometryValidation", kernelSource, {
+		kernelOrigin = 0x0500,
+		bootMessage = "ata geometry validation",
+	})
+	image.configOverride = {
+		BOOT_ORDER = { "ata", "floppy" },
+		BOOT_DRIVE = 0x80,
+	}
+	return image
+end
+
+local function buildKeyboardControllerValidation(config)
+	local source = table.concat({
+		"ORG 0x7C00",
+		"START:",
+		"  MOV DX, 0x0064",
+		"  MOV AL, 0xAA",
+		"  OUT DX, AL",
+		"  MOV DX, 0x0060",
+		"  IN AL, DX",
+		"  CMP AL, 0x55",
+		"  JNE FAIL",
+		"  MOV DX, 0x0064",
+		"  MOV AL, 0x20",
+		"  OUT DX, AL",
+		"  MOV DX, 0x0060",
+		"  IN AL, DX",
+		"  CMP AL, 0x05",
+		"  JNE FAIL",
+		"  MOV DX, 0x0064",
+		"  MOV AL, 0x60",
+		"  OUT DX, AL",
+		"  MOV DX, 0x0060",
+		"  MOV AL, 0x05",
+		"  OUT DX, AL",
+		"  MOV DX, 0x0064",
+		"  MOV AL, 0x20",
+		"  OUT DX, AL",
+		"  MOV DX, 0x0060",
+		"  IN AL, DX",
+		"  CMP AL, 0x05",
+		"  JNE FAIL",
+		"  MOV DX, 0x0064",
+		"  MOV AL, 0xD0",
+		"  OUT DX, AL",
+		"  MOV DX, 0x0060",
+		"  IN AL, DX",
+		"  AND AL, 0x12",
+		"  CMP AL, 0x12",
+		"  JNE FAIL",
+		"  MOV SI, PASS_MSG",
+		"  CALL PRINT_STRING",
+		"HANG:",
+		"  HLT",
+		"  JMP HANG",
+		"FAIL:",
+		"  MOV SI, FAIL_MSG",
+		"  CALL PRINT_STRING",
+		"  HLT",
+		"  JMP FAIL",
+		"PRINT_STRING:",
+		"  MOV AL, [SI]",
+		"  CMP AL, 0",
+		"  JE PRINT_DONE",
+		"  MOV AH, 0x0E",
+		"  INT 0x10",
+		"  INC SI",
+		"  JMP PRINT_STRING",
+		"PRINT_DONE:",
+		"  RET",
+		"PASS_MSG:",
+		'  DB "compat keyboard controller PASS", 13, 10, 0',
+		"FAIL_MSG:",
+		'  DB "FAIL compat keyboard controller", 13, 10, 0',
+		"PADTO 0x7DFE, 0",
+		"DW 0xAA55",
+	}, "\n")
+	return Utils.buildStandaloneBootImage(config, "KeyboardControllerValidation", source)
+end
+
+local function buildRtcCmosValidation(config)
+	local x86 = config.X86 or {}
+	local equipmentWord = MachineProfile.getEquipmentWord(config)
+	local baseMemK = math.floor((tonumber(x86.LOW_RAM_SIZE) or 0xA0000) / 1024)
+	local floppyNibble = MachineProfile.getFloppyDriveA(config).nibble
+	local source = table.concat({
+		"ORG 0x7C00",
+		"START:",
+		"  INT 0x11",
+		"  CMP AX, " .. Utils.hex16(equipmentWord),
+		"  JNE FAIL",
+		"  INT 0x12",
+		"  CMP AX, " .. Utils.hex16(baseMemK),
+		"  JNE FAIL",
+		"  MOV AL, 0x10",
+		"  OUT 0x70, AL",
+		"  IN AL, 0x71",
+		"  AND AL, 0xF0",
+		"  CMP AL, " .. string.format("0x%02X", bit32.lshift(floppyNibble, 4) % 0x100),
+		"  JNE FAIL",
+		"  MOV AL, 0x0B",
+		"  OUT 0x70, AL",
+		"  IN AL, 0x71",
+		"  AND AL, 0x02",
+		"  CMP AL, 0x02",
+		"  JNE FAIL",
+		"  MOV AH, 0x02",
+		"  INT 0x1A",
+		"  JNC TIME_OK",
+		"  JMP FAIL",
+		"TIME_OK:",
+		"  CMP CH, 0x60",
+		"  JNC FAIL",
+		"  CMP CL, 0x60",
+		"  JNC FAIL",
+		"  CMP DH, 0x24",
+		"  JNC FAIL",
+		"  MOV SI, PASS_MSG",
+		"  CALL PRINT_STRING",
+		"HANG:",
+		"  HLT",
+		"  JMP HANG",
+		"FAIL:",
+		"  MOV SI, FAIL_MSG",
+		"  CALL PRINT_STRING",
+		"  HLT",
+		"  JMP FAIL",
+		"PRINT_STRING:",
+		"  MOV AL, [SI]",
+		"  CMP AL, 0",
+		"  JE PRINT_DONE",
+		"  MOV AH, 0x0E",
+		"  INT 0x10",
+		"  INC SI",
+		"  JMP PRINT_STRING",
+		"PRINT_DONE:",
+		"  RET",
+		"PASS_MSG:",
+		'  DB "compat rtc cmos PASS", 13, 10, 0',
+		"FAIL_MSG:",
+		'  DB "FAIL compat rtc cmos", 13, 10, 0',
+		"PADTO 0x7DFE, 0",
+		"DW 0xAA55",
+	}, "\n")
+	return Utils.buildStandaloneBootImage(config, "RtcCmosValidation", source)
+end
+
+local function buildPitProgrammingValidation(config)
+	local source = table.concat({
+		"ORG 0x7C00",
+		"START:",
+		"  MOV DX, 0x0043",
+		"  MOV AL, 0x34",
+		"  OUT DX, AL",
+		"  MOV DX, 0x0040",
+		"  MOV AL, 0x34",
+		"  OUT DX, AL",
+		"  MOV AL, 0x12",
+		"  OUT DX, AL",
+		"  MOV DX, 0x0043",
+		"  MOV AL, 0x00",
+		"  OUT DX, AL",
+		"  MOV DX, 0x0040",
+		"  IN AL, DX",
+		"  MOV BL, AL",
+		"  IN AL, DX",
+		"  MOV BH, AL",
+		"  MOV DX, 0x0043",
+		"  MOV AL, 0x00",
+		"  OUT DX, AL",
+		"  MOV DX, 0x0040",
+		"  IN AL, DX",
+		"  CMP AL, BL",
+		"  JNE FAIL",
+		"  IN AL, DX",
+		"  CMP AL, BH",
+		"  JNE FAIL",
+		"  MOV DX, 0x0043",
+		"  MOV AL, 0xB6",
+		"  OUT DX, AL",
+		"  MOV DX, 0x0042",
+		"  MOV AL, 0xFF",
+		"  OUT DX, AL",
+		"  MOV AL, 0x7F",
+		"  OUT DX, AL",
+		"  MOV SI, PASS_MSG",
+		"  CALL PRINT_STRING",
+		"HANG:",
+		"  HLT",
+		"  JMP HANG",
+		"FAIL:",
+		"  MOV SI, FAIL_MSG",
+		"  CALL PRINT_STRING",
+		"  HLT",
+		"  JMP FAIL",
+		"PRINT_STRING:",
+		"  MOV AL, [SI]",
+		"  CMP AL, 0",
+		"  JE PRINT_DONE",
+		"  MOV AH, 0x0E",
+		"  INT 0x10",
+		"  INC SI",
+		"  JMP PRINT_STRING",
+		"PRINT_DONE:",
+		"  RET",
+		"PASS_MSG:",
+		'  DB "compat pit programming PASS", 13, 10, 0',
+		"FAIL_MSG:",
+		'  DB "FAIL compat pit programming", 13, 10, 0',
+		"PADTO 0x7DFE, 0",
+		"DW 0xAA55",
+	}, "\n")
+	return Utils.buildStandaloneBootImage(config, "PitProgrammingValidation", source)
+end
+
 ValidationImages.ResetVectorValidation = {
 	name = "ResetVectorValidation",
 	build = buildResetVectorValidation,
@@ -645,6 +1067,46 @@ ValidationImages.VgaFontValidation = {
 ValidationImages.VgaPaletteValidation = {
 	name = "VgaPaletteValidation",
 	build = buildVgaPaletteValidation,
+}
+
+ValidationImages.CompatibilityFloppyBootValidation = {
+	name = "CompatibilityFloppyBootValidation",
+	build = buildCompatibilityFloppyBootValidation,
+}
+
+ValidationImages.CompatibilityAtaBootValidation = {
+	name = "CompatibilityAtaBootValidation",
+	build = buildCompatibilityAtaBootValidation,
+}
+
+ValidationImages.CompatibilityFloppyGeometryValidation = {
+	name = "CompatibilityFloppyGeometryValidation",
+	build = buildCompatibilityFloppyGeometryValidation,
+}
+
+ValidationImages.CompatibilityMachineProfileValidation = {
+	name = "CompatibilityMachineProfileValidation",
+	build = buildCompatibilityMachineProfileValidation,
+}
+
+ValidationImages.AtaGeometryValidation = {
+	name = "AtaGeometryValidation",
+	build = buildAtaGeometryValidation,
+}
+
+ValidationImages.KeyboardControllerValidation = {
+	name = "KeyboardControllerValidation",
+	build = buildKeyboardControllerValidation,
+}
+
+ValidationImages.RtcCmosValidation = {
+	name = "RtcCmosValidation",
+	build = buildRtcCmosValidation,
+}
+
+ValidationImages.PitProgrammingValidation = {
+	name = "PitProgrammingValidation",
+	build = buildPitProgrammingValidation,
 }
 
 return ValidationImages
