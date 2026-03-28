@@ -80,6 +80,7 @@ Config.IRQ = {
 	KEYBOARD = 1,
 	COM1 = 4,
 	RTC = 8,
+	FLOPPY = 6,
 	ATA = 14,
 }
 
@@ -128,6 +129,7 @@ Config.PORT = {
 
 -- x86 BIOS subsystem
 Config.X86 = {
+	MACHINE_PROFILE = "ibm-pc-386-bios-v2",
 	HEARTBEAT_HZ = DISPLAY_REFRESH_HZ,
 	BOOT_CYCLES_PER_TICK = 1536,
 	RUN_CYCLES_PER_TICK = 1024,
@@ -147,7 +149,8 @@ Config.X86 = {
 	RESET_VECTOR_OFF = 0xFFF0,
 	BIOS_ENTRY_OFFSET = 0x0100,
 
-	BOOT_DRIVE = 0x80,
+	BOOT_DRIVE = 0x00,
+	BOOT_ORDER = { "floppy", "ata" },
 	BOOT_SECTOR_LOAD_SEG = 0x0000,
 	BOOT_SECTOR_LOAD_OFF = 0x7C00,
 	KERNEL_LOAD_SEG = 0x1000,
@@ -156,17 +159,32 @@ Config.X86 = {
 	SECTORS_PER_TRACK = 18,
 	HEADS = 1,
 
+	FLOPPY_A_PRESENT = true,
+	FLOPPY_A_TYPE = "35_1440k",
+	FLOPPY_TRACKS = 80,
+	FLOPPY_HEADS = 2,
+	FLOPPY_SECTORS = 18,
+
 	PIC_VECTOR_BASE_MASTER = BIOS_PIC_VECTORS.master,
 	PIC_VECTOR_BASE_SLAVE = BIOS_PIC_VECTORS.slave,
 
 	IMAGE = {
-		SOURCE = "imported",
-		IMPORT_IMAGE = "ProtectedModeBringUp",
+		SOURCE = "provider",
+		PROVIDER = "bootOS",
 	},
 
 	DIAGNOSTICS = {
 		ENABLED = true,
 		PRINT_SUMMARY = true,
+	},
+
+	TRACE = {
+		ENABLED = false,
+		CPU_STATE = false,
+		IRQ_ROUTING = false,
+		PORT_IO = false,
+		BIOS_CALLS = false,
+		DISK = false,
 	},
 }
 

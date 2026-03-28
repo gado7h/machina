@@ -39,6 +39,8 @@ local function buildSource(config)
 		"BOOT_HANG:",
 		"  HLT",
 		"  JMP BOOT_HANG",
+		"DEFAULT_INT_HANDLER:",
+		"  IRET",
 		"PRINT_STRING:",
 		"  MOV AL, [SI]",
 		"  CMP AL, 0",

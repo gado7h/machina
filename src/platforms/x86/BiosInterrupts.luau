@@ -1,6 +1,8 @@
 local BiosInterrupts = {}
 BiosInterrupts.__index = BiosInterrupts
 
+local MachineProfile = require("@src/platforms/x86/MachineProfile")
+
 local function scanCodeForChar(ch)
 	if ch == "\n" or ch == "\r" then
 		return 0x1C
@@ -21,6 +23,35 @@ local function biosCharValue(ch)
 	return string.byte(ch)
 end
 
+local REG8 = {
+	AL = 0,
+	CL = 1,
+	DL = 2,
+	BL = 3,
+	AH = 4,
+	CH = 5,
+	DH = 6,
+	BH = 7,
+}
+
+local REG16 = {
+	AX = 0,
+	CX = 1,
+	DX = 2,
+	BX = 3,
+	SP = 4,
+	BP = 5,
+	SI = 6,
+	DI = 7,
+}
+
+local SEG = {
+	ES = 0,
+	CS = 1,
+	SS = 2,
+	DS = 3,
+}
+
 function BiosInterrupts.new(machine, runtime, image)
 	local self = setmetatable({}, BiosInterrupts)
 	self.machine = machine
@@ -28,46 +59,75 @@ function BiosInterrupts.new(machine, runtime, image)
 	self.image = image or {}
 	self.config = machine.config
 	self.x86 = machine.config.X86 or {}
+	self._trace = MachineProfile.getTraceConfig(self.config)
 	self._keyboardLatch = nil
+	self._lastDiskStatus = 0x00
 	return self
+end
+
+function BiosInterrupts:_traceLog(flagName, message)
+	if not self._trace or self._trace.ENABLED ~= true then
+		return
+	end
+	if flagName and self._trace[flagName] ~= true then
+		return
+	end
+	if self.machine and self.machine.bus and self.machine.bus._log then
+		self.machine.bus:_log("BIOS", message)
+	end
 end
 
 function BiosInterrupts:_setCarry(cpu, enabled)
 	cpu:setFlag(0x0001, enabled)
 end
 
+function BiosInterrupts:_repeatSoftwareInterrupt(cpu, intWidth)
+	if not (cpu and cpu.readMem16 and cpu.writeMem16 and cpu.seg) then
+		return
+	end
+
+	local stackSeg = cpu.seg.SS or 0
+	local stackPtr = cpu:getReg16(REG16.SP)
+	local returnIp = cpu:readMem16(stackSeg, stackPtr)
+	cpu:writeMem16(stackSeg, stackPtr, (returnIp - (tonumber(intWidth) or 2)) % 0x10000)
+end
+
 function BiosInterrupts:_setDiskStatus(cpu, status)
-	cpu:setReg8(4, status % 0x100)
+	local normalized = (tonumber(status) or 0) % 0x100
+	self._lastDiskStatus = normalized
+	cpu:setReg8(REG8.AH, normalized)
 end
 
 function BiosInterrupts:_teletype(cpu)
-	local ch = cpu:getReg8(0)
-	self.machine.gpu:biosTeletype(ch == 0 and 32 or ch, 0x07)
+	local ch = cpu:getReg8(REG8.AL)
+	if ch ~= 0 then
+		self.machine.gpu:biosTeletype(ch, 0x07)
+	end
 	self:_setCarry(cpu, false)
 end
 
 function BiosInterrupts:_setVideoMode(cpu)
-	local mode = cpu:getReg8(0)
+	local mode = cpu:getReg8(REG8.AL)
 	self.machine.gpu:biosSetVideoMode(mode)
 	self:_setCarry(cpu, false)
 end
 
 function BiosInterrupts:_getCursorPosition(cpu)
-	local page = bit32.band(cpu:getReg8(2), 0x0F)
+	local page = bit32.band(cpu:getReg8(REG8.BH), 0x0F)
 	local row = 0
 	local col = 0
 	if self.machine.gpu.getCursorPos then
 		row, col = self.machine.gpu:getCursorPos(page)
 	end
-	cpu:setReg8(3, row)
-	cpu:setReg8(2, col)
+	cpu:setReg8(REG8.DH, row)
+	cpu:setReg8(REG8.DL, col)
 	self:_setCarry(cpu, false)
 end
 
 function BiosInterrupts:_setCursorPosition(cpu)
-	local page = bit32.band(cpu:getReg8(2), 0x0F)
-	local row = cpu:getReg8(1)
-	local col = cpu:getReg8(0)
+	local page = bit32.band(cpu:getReg8(REG8.BH), 0x0F)
+	local row = cpu:getReg8(REG8.DH)
+	local col = cpu:getReg8(REG8.DL)
 	if self.machine.gpu.setCursorPos then
 		self.machine.gpu:setCursorPos(page, row, col)
 	end
@@ -75,8 +135,8 @@ function BiosInterrupts:_setCursorPosition(cpu)
 end
 
 function BiosInterrupts:_setCursorType(cpu)
-	local start = cpu:getReg8(1)
-	local endLine = cpu:getReg8(0)
+	local start = cpu:getReg8(REG8.CH)
+	local endLine = cpu:getReg8(REG8.CL)
 	if self.machine.gpu.setCursorType then
 		self.machine.gpu:setCursorType(start, endLine)
 	end
@@ -84,13 +144,13 @@ function BiosInterrupts:_setCursorType(cpu)
 end
 
 function BiosInterrupts:_scrollWindow(cpu)
-	local lines = cpu:getReg8(0)
-	local attr = cpu:getReg8(1)
-	local top = bit32.rshift(bit32.band(cpu:getReg8(2), 0xFF), 8)
-	local left = cpu:getReg8(2)
-	local bottom = bit32.rshift(bit32.band(cpu:getReg8(3), 0xFF), 8)
-	local right = cpu:getReg8(3)
-	local page = bit32.band(cpu:getReg8(4), 0x0F)
+	local lines = cpu:getReg8(REG8.AL)
+	local attr = cpu:getReg8(REG8.BH)
+	local top = cpu:getReg8(REG8.CH)
+	local left = cpu:getReg8(REG8.CL)
+	local bottom = cpu:getReg8(REG8.DH)
+	local right = cpu:getReg8(REG8.DL)
+	local page = 0
 	if self.machine.gpu.scrollWindow then
 		self.machine.gpu:scrollWindow(page, top, left, bottom, right, lines, attr)
 	end
@@ -98,22 +158,22 @@ function BiosInterrupts:_scrollWindow(cpu)
 end
 
 function BiosInterrupts:_readCharAttr(cpu)
-	local page = bit32.band(cpu:getReg8(2), 0x0F)
+	local page = bit32.band(cpu:getReg8(REG8.BH), 0x0F)
 	local char = 0
 	local attr = 0
 	if self.machine.gpu.readCharAttr then
 		char, attr = self.machine.gpu:readCharAttr(page)
 	end
-	cpu:setReg8(0, char)
-	cpu:setReg8(1, attr)
+	cpu:setReg8(REG8.AL, char)
+	cpu:setReg8(REG8.AH, attr)
 	self:_setCarry(cpu, false)
 end
 
 function BiosInterrupts:_writeCharAttr(cpu)
-	local char = cpu:getReg8(0)
-	local attr = cpu:getReg8(1)
-	local count = cpu:getReg16(2)
-	local page = bit32.band(cpu:getReg8(4), 0x0F)
+	local char = cpu:getReg8(REG8.AL)
+	local attr = cpu:getReg8(REG8.BL)
+	local count = cpu:getReg16(REG16.CX)
+	local page = bit32.band(cpu:getReg8(REG8.BH), 0x0F)
 	if self.machine.gpu.writeCharAttr then
 		self.machine.gpu:writeCharAttr(page, char, attr, count)
 	end
@@ -127,9 +187,9 @@ function BiosInterrupts:_getVideoMode(cpu)
 	if self.machine.gpu.getVideoMode then
 		mode, cols, page = self.machine.gpu:getVideoMode()
 	end
-	cpu:setReg8(0, mode)
-	cpu:setReg8(1, cols)
-	cpu:setReg8(2, page)
+	cpu:setReg8(REG8.AL, mode)
+	cpu:setReg8(REG8.AH, cols)
+	cpu:setReg8(REG8.BH, page)
 	self:_setCarry(cpu, false)
 end
 
@@ -142,14 +202,111 @@ function BiosInterrupts:_chsToLba(cylinder, head, sector)
 	return ((cylinder * heads + head) * spt) + (sector - 1)
 end
 
+function BiosInterrupts:_encodeChsFields(cylinders, heads, sectorsPerTrack)
+	local maxCylinder = math.max(0, (tonumber(cylinders) or 1) - 1)
+	local maxHead = math.max(0, (tonumber(heads) or 1) - 1)
+	local sectorCount = math.max(1, tonumber(sectorsPerTrack) or 1)
+	local ch = bit32.band(maxCylinder, 0xFF)
+	local cl = bit32.bor(bit32.band(sectorCount, 0x3F), bit32.lshift(bit32.band(bit32.rshift(maxCylinder, 8), 0x03), 6))
+	return ch, cl, maxHead
+end
+
+function BiosInterrupts:_reportLastDiskStatus(cpu)
+	self:_setDiskStatus(cpu, self._lastDiskStatus or 0x00)
+	cpu:setReg8(REG8.AL, 0x00)
+	self:_setCarry(cpu, (self._lastDiskStatus or 0x00) ~= 0)
+	return true
+end
+
+function BiosInterrupts:_equipmentInterrupt(cpu)
+	local low = cpu:readPhysical8(0x0410)
+	local high = cpu:readPhysical8(0x0411)
+	local equipmentWord = low + high * 0x100
+	if equipmentWord == 0 then
+		equipmentWord = MachineProfile.getEquipmentWord(self.config)
+	end
+	cpu:setReg16(REG16.AX, equipmentWord)
+	self:_setCarry(cpu, false)
+	return true
+end
+
+function BiosInterrupts:_ataGetDriveParameters(cpu, drive)
+	if drive ~= 0x80 or not self.machine.hdd then
+		self:_setCarry(cpu, true)
+		self:_setDiskStatus(cpu, 0x01)
+		return true
+	end
+
+	local totalSectors = self.machine.hdd.getTotalSectors and self.machine.hdd:getTotalSectors()
+		or self.machine.hdd.totalSectors
+		or 0
+	local heads = tonumber(self.x86.HEADS) or 1
+	local sectorsPerTrack = tonumber(self.x86.SECTORS_PER_TRACK) or 18
+	local cylinders = math.max(1, math.floor((tonumber(totalSectors) or 0) / math.max(1, heads * sectorsPerTrack)))
+	local ch, cl, dh = self:_encodeChsFields(cylinders, heads, sectorsPerTrack)
+
+	cpu:setReg8(REG8.CH, ch)
+	cpu:setReg8(REG8.CL, cl)
+	cpu:setReg8(REG8.DH, dh)
+	cpu:setReg8(REG8.DL, 0x01)
+	self:_setCarry(cpu, false)
+	self:_setDiskStatus(cpu, 0x00)
+	self:_traceLog(
+		"DISK",
+		string.format(
+			"INT 13h AH=08 ATA drive=%02Xh ch=%02X cl=%02X dh=%02X",
+			drive,
+			ch,
+			cl,
+			dh
+		)
+	)
+	return true
+end
+
+function BiosInterrupts:_floppyGetDriveParameters(cpu, drive)
+	local fdc = self.machine.fdc
+	local media = fdc and fdc.getMediaType and fdc:getMediaType() or nil
+	local tracks = (media and media.tracks) or self.x86.FLOPPY_TRACKS or 80
+	local heads = (media and media.heads) or self.x86.FLOPPY_HEADS or 2
+	local sectors = (media and media.sectors) or self.x86.FLOPPY_SECTORS or 18
+
+	if drive ~= (self.x86.BOOT_DRIVE or 0x00) or not fdc then
+		self:_setCarry(cpu, true)
+		self:_setDiskStatus(cpu, 0x01)
+		return true
+	end
+
+	local ch, cl, dh = self:_encodeChsFields(tracks, heads, sectors)
+	cpu:setReg8(REG8.CH, ch)
+	cpu:setReg8(REG8.CL, cl)
+	cpu:setReg8(REG8.DH, dh)
+	cpu:setReg8(REG8.DL, 0x01)
+	cpu:setReg8(REG8.BL, MachineProfile.getFloppyDriveA(self.config).nibble)
+	self:_setCarry(cpu, false)
+	self:_setDiskStatus(cpu, 0x00)
+	self:_traceLog(
+		"DISK",
+		string.format(
+			"INT 13h AH=08 floppy drive=%02Xh tracks=%d heads=%d sectors=%d",
+			drive,
+			tracks,
+			heads,
+			sectors
+		)
+	)
+	return true
+end
+
 function BiosInterrupts:_readSectors(cpu)
-	local count = cpu:getReg8(0)
-	local cl = cpu:getReg8(1)
-	local cylinder = bit32.bor(cpu:getReg8(5), bit32.lshift(bit32.band(cl, 0xC0), 2))
+	local count = cpu:getReg8(REG8.AL)
+	local cl = cpu:getReg8(REG8.CL)
+	local ch = cpu:getReg8(REG8.CH)
+	local cylinder = bit32.bor(bit32.band(ch, 0xFF), bit32.lshift(bit32.band(cl, 0xC0), 2))
 	local sector = bit32.band(cl, 0x3F)
-	local head = cpu:getReg8(6)
-	local drive = cpu:getReg8(2)
-	local bufferAddress = cpu:linearAddress(cpu.seg.ES, cpu:getReg16(3))
+	local head = cpu:getReg8(REG8.DH)
+	local drive = cpu:getReg8(REG8.DL)
+	local bufferAddress = cpu:linearAddress(cpu.seg.ES, cpu:getReg16(REG16.BX))
 
 	if drive ~= (self.x86.BOOT_DRIVE or 0x80) then
 		self:_setCarry(cpu, true)
@@ -182,20 +339,25 @@ function BiosInterrupts:_readSectors(cpu)
 		self.runtime:onDiskRead(startLba, count, bufferAddress)
 	end
 
+	self:_traceLog(
+		"DISK",
+		string.format("INT 13h AH=02 ATA drive=%02Xh lba=%d count=%d", drive, startLba, count)
+	)
 	self:_setCarry(cpu, false)
 	self:_setDiskStatus(cpu, 0x00)
-	cpu:setReg8(0, count)
+	cpu:setReg8(REG8.AL, count)
 	return true
 end
 
 function BiosInterrupts:_writeSectors(cpu)
-	local count = cpu:getReg8(0)
-	local cl = cpu:getReg8(1)
-	local cylinder = bit32.bor(cpu:getReg8(5), bit32.lshift(bit32.band(cl, 0xC0), 2))
+	local count = cpu:getReg8(REG8.AL)
+	local cl = cpu:getReg8(REG8.CL)
+	local ch = cpu:getReg8(REG8.CH)
+	local cylinder = bit32.bor(bit32.band(ch, 0xFF), bit32.lshift(bit32.band(cl, 0xC0), 2))
 	local sector = bit32.band(cl, 0x3F)
-	local head = cpu:getReg8(6)
-	local drive = cpu:getReg8(2)
-	local bufferAddress = cpu:linearAddress(cpu.seg.ES, cpu:getReg16(3))
+	local head = cpu:getReg8(REG8.DH)
+	local drive = cpu:getReg8(REG8.DL)
+	local bufferAddress = cpu:linearAddress(cpu.seg.ES, cpu:getReg16(REG16.BX))
 
 	if drive ~= (self.x86.BOOT_DRIVE or 0x80) then
 		self:_setCarry(cpu, true)
@@ -226,14 +388,29 @@ function BiosInterrupts:_writeSectors(cpu)
 		self.machine.hdd:writeSector(startLba + sectorIndex, bytes)
 	end
 
+	self:_traceLog(
+		"DISK",
+		string.format("INT 13h AH=03 ATA drive=%02Xh lba=%d count=%d", drive, startLba, count)
+	)
 	self:_setCarry(cpu, false)
 	self:_setDiskStatus(cpu, 0x00)
-	cpu:setReg8(0, count)
+	cpu:setReg8(REG8.AL, count)
 	return true
 end
 
 function BiosInterrupts:_diskInterrupt(cpu)
-	local service = cpu:getReg8(4)
+	local drive = cpu:getReg8(REG8.DL)
+
+	if drive < 0x80 then
+		return self:_floppyDiskInterrupt(cpu, drive)
+	else
+		return self:_ataDiskInterrupt(cpu, drive)
+	end
+end
+
+function BiosInterrupts:_ataDiskInterrupt(cpu, drive)
+	local service = cpu:getReg8(REG8.AH)
+	self:_traceLog("BIOS_CALLS", string.format("INT 13h ATA service=%02Xh drive=%02Xh", service, drive))
 	if service == 0x00 then
 		self:_setCarry(cpu, false)
 		self:_setDiskStatus(cpu, 0x00)
@@ -245,13 +422,181 @@ function BiosInterrupts:_diskInterrupt(cpu)
 	if service == 0x03 then
 		return self:_writeSectors(cpu)
 	end
+	if service == 0x01 then
+		return self:_reportLastDiskStatus(cpu)
+	end
+	if service == 0x08 then
+		return self:_ataGetDriveParameters(cpu, drive)
+	end
 	self:_setCarry(cpu, true)
 	self:_setDiskStatus(cpu, 0x01)
 	return true
 end
 
+function BiosInterrupts:_floppyDiskInterrupt(cpu, drive)
+	local service = cpu:getReg8(REG8.AH)
+	self:_traceLog("BIOS_CALLS", string.format("INT 13h floppy service=%02Xh drive=%02Xh", service, drive))
+
+	if service == 0x00 then
+		self:_setCarry(cpu, false)
+		self:_setDiskStatus(cpu, 0x00)
+		return true
+	end
+
+	if service == 0x01 then
+		return self:_reportLastDiskStatus(cpu)
+	end
+
+	if service == 0x02 then
+		return self:_floppyReadSectors(cpu, drive)
+	end
+
+	if service == 0x03 then
+		return self:_floppyWriteSectors(cpu, drive)
+	end
+
+	if service == 0x08 then
+		return self:_floppyGetDriveParameters(cpu, drive)
+	end
+
+	self:_setCarry(cpu, true)
+	self:_setDiskStatus(cpu, 0x01)
+	return true
+end
+
+function BiosInterrupts:_floppyReadSectors(cpu, drive)
+	local count = cpu:getReg8(REG8.AL)
+	local cl = cpu:getReg8(REG8.CL)
+	local ch = cpu:getReg8(REG8.CH)
+	local dh = cpu:getReg8(REG8.DH)
+	local cylinder = bit32.bor(bit32.band(ch, 0xFF), bit32.lshift(bit32.band(cl, 0xC0), 2))
+	local sector = bit32.band(cl, 0x3F)
+	local head = dh
+	local bufferAddress = cpu:linearAddress(cpu.seg.ES, cpu:getReg16(REG16.BX))
+
+	local fdc = self.machine.fdc
+	if not fdc then
+		self:_setCarry(cpu, true)
+		self:_setDiskStatus(cpu, 0x04)
+		return true
+	end
+
+	if drive ~= (self.x86.BOOT_DRIVE or 0x00) then
+		self:_setCarry(cpu, true)
+		self:_setDiskStatus(cpu, 0x01)
+		return true
+	end
+
+	local media = fdc.getMediaType and fdc:getMediaType() or nil
+	local spt = (media and media.sectors) or self.x86.FLOPPY_SECTORS or self.x86.SECTORS_PER_TRACK or 18
+	local heads = (media and media.heads) or self.x86.FLOPPY_HEADS or self.x86.HEADS or 2
+	local tracks = (media and media.tracks) or self.x86.FLOPPY_TRACKS or 80
+	if count <= 0 or sector == 0 or sector > spt or head >= heads or cylinder >= tracks then
+		self:_setCarry(cpu, true)
+		self:_setDiskStatus(cpu, 0x04)
+		return true
+	end
+
+	local startLba = ((cylinder * heads + head) * spt) + (sector - 1)
+	local totalSectors = fdc.getTotalSectors and fdc:getTotalSectors() or (tracks * heads * spt)
+	if (startLba + math.max(0, count - 1)) >= totalSectors then
+		self:_setCarry(cpu, true)
+		self:_setDiskStatus(cpu, 0x04)
+		return true
+	end
+
+	for sectorIndex = 0, math.max(0, count - 1) do
+		local bytes = fdc:readSector(startLba + sectorIndex)
+		if not bytes then
+			self:_setCarry(cpu, true)
+			self:_setDiskStatus(cpu, 0x04)
+			return true
+		end
+		for i = 1, #bytes do
+			cpu:writePhysical8(bufferAddress + sectorIndex * 512 + i - 1, bytes[i])
+		end
+	end
+
+	if self.runtime and type(self.runtime.onDiskRead) == "function" then
+		self.runtime:onDiskRead(startLba, count, bufferAddress)
+	end
+
+	self:_traceLog(
+		"DISK",
+		string.format("INT 13h AH=02 floppy drive=%02Xh lba=%d count=%d", drive, startLba, count)
+	)
+	self:_setCarry(cpu, false)
+	self:_setDiskStatus(cpu, 0x00)
+	cpu:setReg8(REG8.AL, count)
+	return true
+end
+
+function BiosInterrupts:_floppyWriteSectors(cpu, drive)
+	local count = cpu:getReg8(REG8.AL)
+	local cl = cpu:getReg8(REG8.CL)
+	local ch = cpu:getReg8(REG8.CH)
+	local dh = cpu:getReg8(REG8.DH)
+	local cylinder = bit32.bor(bit32.band(ch, 0xFF), bit32.lshift(bit32.band(cl, 0xC0), 2))
+	local sector = bit32.band(cl, 0x3F)
+	local head = dh
+	local bufferAddress = cpu:linearAddress(cpu.seg.ES, cpu:getReg16(REG16.BX))
+
+	local fdc = self.machine.fdc
+	if not fdc then
+		self:_setCarry(cpu, true)
+		self:_setDiskStatus(cpu, 0x04)
+		return true
+	end
+
+	if drive ~= (self.x86.BOOT_DRIVE or 0x00) then
+		self:_setCarry(cpu, true)
+		self:_setDiskStatus(cpu, 0x01)
+		return true
+	end
+
+	local media = fdc.getMediaType and fdc:getMediaType() or nil
+	local spt = (media and media.sectors) or self.x86.FLOPPY_SECTORS or self.x86.SECTORS_PER_TRACK or 18
+	local heads = (media and media.heads) or self.x86.FLOPPY_HEADS or self.x86.HEADS or 2
+	local tracks = (media and media.tracks) or self.x86.FLOPPY_TRACKS or 80
+	if count <= 0 or sector == 0 or sector > spt or head >= heads or cylinder >= tracks then
+		self:_setCarry(cpu, true)
+		self:_setDiskStatus(cpu, 0x04)
+		return true
+	end
+
+	local startLba = ((cylinder * heads + head) * spt) + (sector - 1)
+
+	local totalSectors = fdc.getTotalSectors and fdc:getTotalSectors() or (tracks * heads * spt)
+	if (startLba + math.max(0, count - 1)) >= totalSectors then
+		self:_setCarry(cpu, true)
+		self:_setDiskStatus(cpu, 0x04)
+		return true
+	end
+
+	for sectorIndex = 0, math.max(0, count - 1) do
+		local bytes = {}
+		for i = 1, 512 do
+			bytes[i] = cpu:readPhysical8(bufferAddress + sectorIndex * 512 + i - 1)
+		end
+		if not fdc:writeSector(startLba + sectorIndex, bytes) then
+			self:_setCarry(cpu, true)
+			self:_setDiskStatus(cpu, 0x04)
+			return true
+		end
+	end
+
+	self:_traceLog(
+		"DISK",
+		string.format("INT 13h AH=03 floppy drive=%02Xh lba=%d count=%d", drive, startLba, count)
+	)
+	self:_setCarry(cpu, false)
+	self:_setDiskStatus(cpu, 0x00)
+	cpu:setReg8(REG8.AL, count)
+	return true
+end
+
 function BiosInterrupts:_keyboardInterrupt(cpu)
-	local service = cpu:getReg8(4)
+	local service = cpu:getReg8(REG8.AH)
 	if service == 0x00 then
 		local ch = self._keyboardLatch
 		if ch then
@@ -264,14 +609,14 @@ function BiosInterrupts:_keyboardInterrupt(cpu)
 			ch = self.machine.keyboard:readChar()
 		end
 		if not ch then
+			-- INT 16h AH=00 waits for input. Rewind to the interrupt opcode so the
+			-- guest retries instead of treating "no key" as a printable NUL.
+			self:_repeatSoftwareInterrupt(cpu, 2)
 			self:_setCarry(cpu, false)
-			cpu:setFlag(0x0040, true)
-			cpu:setReg8(0, 0)
-			cpu:setReg8(4, 0)
 			return true
 		end
-		cpu:setReg8(0, biosCharValue(ch))
-		cpu:setReg8(4, scanCodeForChar(ch))
+		cpu:setReg8(REG8.AL, biosCharValue(ch))
+		cpu:setReg8(REG8.AH, scanCodeForChar(ch))
 		cpu:setFlag(0x0040, false)
 		self:_setCarry(cpu, false)
 		return true
@@ -280,8 +625,8 @@ function BiosInterrupts:_keyboardInterrupt(cpu)
 		local ch = self._keyboardLatch or self.machine.keyboard:peekChar()
 		if ch then
 			self._keyboardLatch = ch
-			cpu:setReg8(0, biosCharValue(ch))
-			cpu:setReg8(4, scanCodeForChar(ch))
+			cpu:setReg8(REG8.AL, biosCharValue(ch))
+			cpu:setReg8(REG8.AH, scanCodeForChar(ch))
 			cpu:setFlag(0x0040, false)
 		else
 			self._keyboardLatch = nil
@@ -294,13 +639,14 @@ function BiosInterrupts:_keyboardInterrupt(cpu)
 end
 
 function BiosInterrupts:_clockInterrupt(cpu)
-	local service = cpu:getReg8(4)
+	local service = cpu:getReg8(REG8.AH)
+	self:_traceLog("BIOS_CALLS", string.format("INT 1Ah service=%02Xh", service))
 	if service == 0x00 then
 		local rtc = self.machine.rtc
 		local ticks = (rtc and rtc.getBIOSClockTicks and rtc:getBIOSClockTicks())
 			or math.floor((os.clock() - (self.machine._uptimeStart or os.clock())) * 18.2)
-		cpu:setReg16(1, math.floor(ticks / 0x10000))
-		cpu:setReg16(2, ticks % 0x10000)
+		cpu:setReg16(REG16.CX, math.floor(ticks / 0x10000))
+		cpu:setReg16(REG16.DX, ticks % 0x10000)
 		self:_setCarry(cpu, false)
 		return true
 	end
@@ -312,9 +658,10 @@ function BiosInterrupts:_clockInterrupt(cpu)
 		end
 		local isDate = service == 0x04
 		local regs = isDate and { 0x09, 0x08, 0x07 } or { 0x04, 0x02, 0x00 }
-		cpu:setReg8(6, rtc:readRegister(regs[1]))
-		cpu:setReg8(2, rtc:readRegister(regs[2]))
-		cpu:setReg8(0, rtc:readRegister(regs[3]))
+		cpu:setReg8(REG8.CH, rtc:readRegister(regs[1]))
+		cpu:setReg8(REG8.CL, rtc:readRegister(regs[2]))
+		cpu:setReg8(REG8.DH, rtc:readRegister(regs[3]))
+		cpu:setReg8(REG8.DL, 0x00)
 		self:_setCarry(cpu, false)
 		return true
 	end
@@ -324,51 +671,45 @@ end
 function BiosInterrupts:_memorySizeInterrupt(cpu)
 	local x86 = self.x86
 	local baseMemK = x86.LOW_RAM_SIZE and math.floor(x86.LOW_RAM_SIZE / 1024) or 640
-	cpu:setReg16(0, baseMemK)
+	cpu:setReg16(REG16.AX, baseMemK)
 	self:_setCarry(cpu, false)
 	return true
 end
 
 function BiosInterrupts:_systemConfigInterrupt(cpu)
-	local service = cpu:getReg8(4)
+	local service = cpu:getReg8(REG8.AH)
 	if service == 0xC0 then
-		cpu:setReg8(6, 0x00)
-		cpu:setReg16(4, 0xE980)
-		cpu:setReg8(0, 0x00)
-		cpu:setReg8(1, 0x01)
-		cpu:setReg8(2, 0xFC)
-		cpu:setReg8(3, 0x00)
-		cpu:setReg8(4, 0x00)
-		cpu:setReg8(5, 0x70)
-		cpu:setReg8(7, 0x00)
+		cpu:setSeg(SEG.ES, 0xF000)
+		cpu:setReg16(REG16.BX, 0xE980)
+		cpu:setReg8(REG8.AH, 0x00)
 		self:_setCarry(cpu, false)
 		return true
 	end
 	if service == 0xC2 then
-		local sub = cpu:getReg8(5)
+		local sub = cpu:getReg8(REG8.AL)
 		if sub == 0x00 then
-			cpu:setReg8(0, 0x05)
+			cpu:setReg8(REG8.AL, 0x05)
 			self:_setCarry(cpu, false)
 			return true
 		end
 	end
 	if service == 0x87 then
-		local src = cpu:getReg16(2) * 16 + cpu:getReg16(3)
-		local dest = cpu:getReg16(6) * 16 + cpu:getReg16(7)
-		local count = cpu:getReg16(3)
+		local src = cpu:getReg16(REG16.DX) * 16 + cpu:getReg16(REG16.BX)
+		local dest = cpu:getReg16(REG16.SI) * 16 + cpu:getReg16(REG16.DI)
+		local count = cpu:getReg16(REG16.BX)
 		for i = 0, count * 2 - 1 do
 			local byte = cpu:readPhysical8(src + i)
 			cpu:writePhysical8(dest + i, byte)
 		end
-		cpu:setReg8(0, 0x00)
+		cpu:setReg8(REG8.AL, 0x00)
 		self:_setCarry(cpu, false)
 		return true
 	end
 	if service == 0xC5 then
-		cpu:setReg8(0, 0x00)
-		cpu:setReg8(1, 0x00)
-		cpu:setReg8(2, 0x00)
-		cpu:setReg8(3, 0x00)
+		cpu:setReg8(REG8.AL, 0x00)
+		cpu:setReg8(REG8.CL, 0x00)
+		cpu:setReg8(REG8.DL, 0x00)
+		cpu:setReg8(REG8.BL, 0x00)
 		self:_setCarry(cpu, false)
 		return true
 	end
@@ -376,28 +717,35 @@ function BiosInterrupts:_systemConfigInterrupt(cpu)
 end
 
 function BiosInterrupts:_a20Interrupt(cpu)
-	local service = cpu:getReg8(4)
+	local service = cpu:getReg8(REG8.AH)
 	if service == 0x24 then
-		local sub = cpu:getReg8(5)
+		local sub = cpu:getReg8(REG8.AL)
 		if sub == 0x00 then
-			cpu:setReg8(0, 0x00)
-			local a20Enabled = self.machine.bus and self.machine.bus.isA20Enabled()
-			cpu:setReg8(1, a20Enabled and 0x02 or 0x00)
+			if self.machine.bus and self.machine.bus.setA20Enabled then
+				self.machine.bus:setA20Enabled(false)
+			end
+			cpu:setReg16(REG16.AX, 0x0000)
 			self:_setCarry(cpu, false)
 			return true
 		end
 		if sub == 0x01 then
-			local a20Enabled = bit32.band(cpu:getReg8(6), 0x01) ~= 0
 			if self.machine.bus and self.machine.bus.setA20Enabled then
-				self.machine.bus:setA20Enabled(a20Enabled)
+				self.machine.bus:setA20Enabled(true)
 			end
-			cpu:setReg8(0, 0x00)
+			cpu:setReg16(REG16.AX, 0x0000)
 			self:_setCarry(cpu, false)
 			return true
 		end
 		if sub == 0x02 then
-			cpu:setReg8(0, 0x00)
-			cpu:setReg8(1, 0x00)
+			local a20Enabled = self.machine.bus and self.machine.bus.isA20Enabled()
+			cpu:setReg8(REG8.AH, 0x00)
+			cpu:setReg8(REG8.AL, a20Enabled and 0x01 or 0x00)
+			self:_setCarry(cpu, false)
+			return true
+		end
+		if sub == 0x03 then
+			cpu:setReg8(REG8.AH, 0x00)
+			cpu:setReg16(REG16.BX, 0x0003)
 			self:_setCarry(cpu, false)
 			return true
 		end
@@ -420,7 +768,8 @@ end
 
 function BiosInterrupts:handleInterrupt(cpu, vector)
 	if vector == 0x10 then
-		local service = cpu:getReg8(4)
+		local service = cpu:getReg8(REG8.AH)
+		self:_traceLog("BIOS_CALLS", string.format("INT 10h service=%02Xh", service))
 		if service == 0x0E then
 			self:_teletype(cpu)
 			return true
@@ -458,6 +807,9 @@ function BiosInterrupts:handleInterrupt(cpu, vector)
 			return true
 		end
 		return true
+	end
+	if vector == 0x11 then
+		return self:_equipmentInterrupt(cpu)
 	end
 	if vector == 0x12 then
 		return self:_memorySizeInterrupt(cpu)

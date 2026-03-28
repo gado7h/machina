@@ -32,6 +32,13 @@ local REG32 = {
 	"EDI",
 }
 
+local SEGMENT_PREFIX_TO_CODE = {
+	[0x26] = 0,
+	[0x2E] = 1,
+	[0x36] = 2,
+	[0x3E] = 3,
+}
+
 local function signExtend8(value)
 	value = value % 0x100
 	if value >= 0x80 then
@@ -558,7 +565,7 @@ function Cpu80386:_effectiveAddress(decoded)
 	end
 
 	local offset = (base + (tonumber(decoded.disp) or 0)) % 0x100000000
-	return segment, offset
+	return self:_applySegmentOverride(segment), offset
 end
 
 function Cpu80386:_portReadByWidth(port, width)
@@ -1776,14 +1783,17 @@ function Cpu80386:_stepInternal()
 	local operandOverride = false
 	local addressOverride = false
 	local repeatPrefix = nil
+	self._segmentOverride = nil
 	local opcode = self:fetch8()
-	while opcode == 0x66 or opcode == 0x67 or opcode == 0xF2 or opcode == 0xF3 do
+	while opcode == 0x66 or opcode == 0x67 or opcode == 0xF2 or opcode == 0xF3 or SEGMENT_PREFIX_TO_CODE[opcode] ~= nil do
 		if opcode == 0x66 then
 			operandOverride = not operandOverride
 		elseif opcode == 0xF2 or opcode == 0xF3 then
 			repeatPrefix = opcode
-		else
+		elseif opcode == 0x67 then
 			addressOverride = not addressOverride
+		else
+			self._segmentOverride = SEGMENT_PREFIX_TO_CODE[opcode]
 		end
 		opcode = self:fetch8()
 	end
@@ -1856,6 +1866,19 @@ function Cpu80386:_stepInternal()
 		self:setReg8(opcode - 0xB0, self:fetch8())
 	elseif opcode == 0x90 then
 		self:_setInstructionPointer(self:_currentIP())
+	elseif opcode >= 0x91 and opcode <= 0x97 then
+		local reg = opcode - 0x90
+		if operandWidth == 32 then
+			local eax = self:getReg32(0)
+			local other = self:getReg32(reg)
+			self:setReg32(0, other)
+			self:setReg32(reg, eax)
+		else
+			local ax = self:getReg16(0)
+			local other = self:getReg16(reg)
+			self:setReg16(0, other)
+			self:setReg16(reg, ax)
+		end
 	elseif opcode == 0x9E then
 		local ah = self:getReg8(4)
 		local newFlags = bit32.bor(bit32.band(self.flags, 0xFFFFFF00), ah)
@@ -1963,6 +1986,39 @@ function Cpu80386:_stepInternal()
 		else
 			self.flags = bit32.bor(bit32.band(self:pop16(), 0x0FD5), 0x0002)
 		end
+	elseif opcode == 0x06 then
+		if operandWidth == 32 then
+			self:push32(self.seg.ES)
+		else
+			self:push16(self.seg.ES)
+		end
+	elseif opcode == 0x07 then
+		local value = operandWidth == 32 and self:pop32() or self:pop16()
+		self:setSeg(0, value % 0x10000)
+	elseif opcode == 0x0E then
+		if operandWidth == 32 then
+			self:push32(self.seg.CS)
+		else
+			self:push16(self.seg.CS)
+		end
+	elseif opcode == 0x16 then
+		if operandWidth == 32 then
+			self:push32(self.seg.SS)
+		else
+			self:push16(self.seg.SS)
+		end
+	elseif opcode == 0x17 then
+		local value = operandWidth == 32 and self:pop32() or self:pop16()
+		self:setSeg(2, value % 0x10000)
+	elseif opcode == 0x1E then
+		if operandWidth == 32 then
+			self:push32(self.seg.DS)
+		else
+			self:push16(self.seg.DS)
+		end
+	elseif opcode == 0x1F then
+		local value = operandWidth == 32 and self:pop32() or self:pop16()
+		self:setSeg(3, value % 0x10000)
 	elseif opcode == 0xF8 then
 		self:setFlag(FLAG_CF, false)
 	elseif opcode == 0xF9 then
@@ -2001,6 +2057,13 @@ function Cpu80386:_stepInternal()
 		else
 			self:push16(self:fetch16())
 		end
+	elseif opcode == 0x6A then
+		local value = signExtend8(self:fetch8())
+		if operandWidth == 32 then
+			self:push32(value % 0x100000000)
+		else
+			self:push16(value % 0x10000)
+		end
 	elseif opcode == 0x8E then
 		local decoded = self:_decodeModRMForAddressSize(addressOverride)
 		if decoded.reg == 1 then
@@ -2020,12 +2083,12 @@ function Cpu80386:_stepInternal()
 	elseif opcode == 0xC4 then
 		local decoded = self:_decodeModRMForAddressSize(addressOverride)
 		local segment, offset = self:_effectiveAddress(decoded)
-		self:setSeg(3, segment)
+		self:setSeg(0, segment)
 		self:_setRegByWidth(decoded.reg, operandWidth, offset)
 	elseif opcode == 0xC5 then
 		local decoded = self:_decodeModRMForAddressSize(addressOverride)
 		local segment, offset = self:_effectiveAddress(decoded)
-		self:setSeg(0, segment)
+		self:setSeg(3, segment)
 		self:_setRegByWidth(decoded.reg, operandWidth, offset)
 	elseif opcode == 0x89 then
 		local decoded = self:_decodeModRMForAddressSize(addressOverride)
@@ -2044,6 +2107,128 @@ function Cpu80386:_stepInternal()
 		local decoded = self:_decodeModRMForAddressSize(addressOverride)
 		local imm = self:_fetchImmediate(operandWidth)
 		self:_writeRMByWidth(decoded, operandWidth, imm)
+	elseif opcode == 0x00 then
+		local decoded = self:_decodeModRMForAddressSize(addressOverride)
+		self:_writeRM8(decoded, self:_add(8, self:_readRM8(decoded), self:getReg8(decoded.reg)))
+	elseif opcode == 0x01 then
+		local decoded = self:_decodeModRMForAddressSize(addressOverride)
+		self:_writeRMByWidth(
+			decoded,
+			operandWidth,
+			self:_add(operandWidth, self:_readRMByWidth(decoded, operandWidth), self:_getRegByWidth(decoded.reg, operandWidth))
+		)
+	elseif opcode == 0x02 then
+		local decoded = self:_decodeModRMForAddressSize(addressOverride)
+		self:setReg8(decoded.reg, self:_add(8, self:getReg8(decoded.reg), self:_readRM8(decoded)))
+	elseif opcode == 0x03 then
+		local decoded = self:_decodeModRMForAddressSize(addressOverride)
+		self:_setRegByWidth(
+			decoded.reg,
+			operandWidth,
+			self:_add(operandWidth, self:_getRegByWidth(decoded.reg, operandWidth), self:_readRMByWidth(decoded, operandWidth))
+		)
+	elseif opcode == 0x04 then
+		self:setReg8(0, self:_add(8, self:getReg8(0), self:fetch8()))
+	elseif opcode == 0x05 then
+		self:_setRegByWidth(
+			0,
+			operandWidth,
+			self:_add(operandWidth, self:_getRegByWidth(0, operandWidth), self:_fetchImmediate(operandWidth))
+		)
+	elseif opcode == 0x08 then
+		local decoded = self:_decodeModRMForAddressSize(addressOverride)
+		self:_writeRM8(decoded, self:_logicBinary(8, self:_readRM8(decoded), self:getReg8(decoded.reg), "or"))
+	elseif opcode == 0x09 then
+		local decoded = self:_decodeModRMForAddressSize(addressOverride)
+		self:_writeRMByWidth(
+			decoded,
+			operandWidth,
+			self:_logicBinary(operandWidth, self:_readRMByWidth(decoded, operandWidth), self:_getRegByWidth(decoded.reg, operandWidth), "or")
+		)
+	elseif opcode == 0x0A then
+		local decoded = self:_decodeModRMForAddressSize(addressOverride)
+		self:setReg8(decoded.reg, self:_logicBinary(8, self:getReg8(decoded.reg), self:_readRM8(decoded), "or"))
+	elseif opcode == 0x0B then
+		local decoded = self:_decodeModRMForAddressSize(addressOverride)
+		self:_setRegByWidth(
+			decoded.reg,
+			operandWidth,
+			self:_logicBinary(operandWidth, self:_getRegByWidth(decoded.reg, operandWidth), self:_readRMByWidth(decoded, operandWidth), "or")
+		)
+	elseif opcode == 0x0C then
+		self:setReg8(0, self:_logicBinary(8, self:getReg8(0), self:fetch8(), "or"))
+	elseif opcode == 0x0D then
+		self:_setRegByWidth(
+			0,
+			operandWidth,
+			self:_logicBinary(operandWidth, self:_getRegByWidth(0, operandWidth), self:_fetchImmediate(operandWidth), "or")
+		)
+	elseif opcode == 0x20 then
+		local decoded = self:_decodeModRMForAddressSize(addressOverride)
+		self:_writeRM8(decoded, self:_logicBinary(8, self:_readRM8(decoded), self:getReg8(decoded.reg), "and"))
+	elseif opcode == 0x21 then
+		local decoded = self:_decodeModRMForAddressSize(addressOverride)
+		self:_writeRMByWidth(
+			decoded,
+			operandWidth,
+			self:_logicBinary(operandWidth, self:_readRMByWidth(decoded, operandWidth), self:_getRegByWidth(decoded.reg, operandWidth), "and")
+		)
+	elseif opcode == 0x22 then
+		local decoded = self:_decodeModRMForAddressSize(addressOverride)
+		self:setReg8(decoded.reg, self:_logicBinary(8, self:getReg8(decoded.reg), self:_readRM8(decoded), "and"))
+	elseif opcode == 0x23 then
+		local decoded = self:_decodeModRMForAddressSize(addressOverride)
+		self:_setRegByWidth(
+			decoded.reg,
+			operandWidth,
+			self:_logicBinary(operandWidth, self:_getRegByWidth(decoded.reg, operandWidth), self:_readRMByWidth(decoded, operandWidth), "and")
+		)
+	elseif opcode == 0x24 then
+		self:setReg8(0, self:_logicBinary(8, self:getReg8(0), self:fetch8(), "and"))
+	elseif opcode == 0x25 then
+		self:_setRegByWidth(
+			0,
+			operandWidth,
+			self:_logicBinary(operandWidth, self:_getRegByWidth(0, operandWidth), self:_fetchImmediate(operandWidth), "and")
+		)
+	elseif opcode == 0x28 then
+		local decoded = self:_decodeModRMForAddressSize(addressOverride)
+		self:_writeRM8(decoded, self:_sub(8, self:_readRM8(decoded), self:getReg8(decoded.reg)))
+	elseif opcode == 0x29 then
+		local decoded = self:_decodeModRMForAddressSize(addressOverride)
+		self:_writeRMByWidth(
+			decoded,
+			operandWidth,
+			self:_sub(operandWidth, self:_readRMByWidth(decoded, operandWidth), self:_getRegByWidth(decoded.reg, operandWidth))
+		)
+	elseif opcode == 0x2A then
+		local decoded = self:_decodeModRMForAddressSize(addressOverride)
+		self:setReg8(decoded.reg, self:_sub(8, self:getReg8(decoded.reg), self:_readRM8(decoded)))
+	elseif opcode == 0x2B then
+		local decoded = self:_decodeModRMForAddressSize(addressOverride)
+		self:_setRegByWidth(
+			decoded.reg,
+			operandWidth,
+			self:_sub(operandWidth, self:_getRegByWidth(decoded.reg, operandWidth), self:_readRMByWidth(decoded, operandWidth))
+		)
+	elseif opcode == 0x2C then
+		self:setReg8(0, self:_sub(8, self:getReg8(0), self:fetch8()))
+	elseif opcode == 0x2D then
+		self:_setRegByWidth(
+			0,
+			operandWidth,
+			self:_sub(operandWidth, self:_getRegByWidth(0, operandWidth), self:_fetchImmediate(operandWidth))
+		)
+	elseif opcode == 0x30 then
+		local decoded = self:_decodeModRMForAddressSize(addressOverride)
+		self:_writeRM8(decoded, self:_logicBinary(8, self:_readRM8(decoded), self:getReg8(decoded.reg), "xor"))
+	elseif opcode == 0x31 then
+		local decoded = self:_decodeModRMForAddressSize(addressOverride)
+		self:_writeRMByWidth(
+			decoded,
+			operandWidth,
+			self:_logicBinary(operandWidth, self:_readRMByWidth(decoded, operandWidth), self:_getRegByWidth(decoded.reg, operandWidth), "xor")
+		)
 	elseif opcode == 0x33 then
 		local decoded = self:_decodeModRMForAddressSize(addressOverride)
 		local value =
@@ -2055,6 +2240,24 @@ function Cpu80386:_stepInternal()
 		local value = bit32.bxor(self:getReg8(decoded.reg), self:_readRM8(decoded))
 		self:setReg8(decoded.reg, value)
 		self:_updateLogicFlags(8, value)
+	elseif opcode == 0x34 then
+		self:setReg8(0, self:_logicBinary(8, self:getReg8(0), self:fetch8(), "xor"))
+	elseif opcode == 0x35 then
+		self:_setRegByWidth(
+			0,
+			operandWidth,
+			self:_logicBinary(operandWidth, self:_getRegByWidth(0, operandWidth), self:_fetchImmediate(operandWidth), "xor")
+		)
+	elseif opcode == 0x84 then
+		local decoded = self:_decodeModRMForAddressSize(addressOverride)
+		self:_test(8, self:_readRM8(decoded), self:getReg8(decoded.reg))
+	elseif opcode == 0x85 then
+		local decoded = self:_decodeModRMForAddressSize(addressOverride)
+		self:_test(
+			operandWidth,
+			self:_readRMByWidth(decoded, operandWidth),
+			self:_getRegByWidth(decoded.reg, operandWidth)
+		)
 	elseif opcode == 0x80 or opcode == 0x81 or opcode == 0x83 then
 		local decoded = self:_decodeModRMForAddressSize(addressOverride)
 		local width = opcode == 0x80 and 8 or operandWidth
@@ -2173,6 +2376,10 @@ function Cpu80386:_stepInternal()
 			self:_getRegByWidth(decoded.reg, operandWidth),
 			self:_readRMByWidth(decoded, operandWidth)
 		)
+	elseif opcode == 0x3C then
+		self:_sub(8, self:getReg8(0), self:fetch8())
+	elseif opcode == 0x3D then
+		self:_sub(operandWidth, self:_getRegByWidth(0, operandWidth), self:_fetchImmediate(operandWidth))
 	elseif opcode == 0xE8 then
 		local rel = operandWidth == 32 and signExtend32(self:fetch32()) or signExtend16(self:fetch16())
 		local returnIP = self:_currentIP()
@@ -2196,24 +2403,9 @@ function Cpu80386:_stepInternal()
 	elseif opcode == 0xEB then
 		local rel = signExtend8(self:fetch8())
 		self:_setInstructionPointer(self:_currentIP() + rel)
-	elseif opcode == 0x74 then
+	elseif opcode >= 0x70 and opcode <= 0x7F then
 		local rel = signExtend8(self:fetch8())
-		if self:getFlag(FLAG_ZF) then
-			self:_setInstructionPointer(self:_currentIP() + rel)
-		end
-	elseif opcode == 0x75 then
-		local rel = signExtend8(self:fetch8())
-		if not self:getFlag(FLAG_ZF) then
-			self:_setInstructionPointer(self:_currentIP() + rel)
-		end
-	elseif opcode == 0x72 then
-		local rel = signExtend8(self:fetch8())
-		if self:getFlag(FLAG_CF) then
-			self:_setInstructionPointer(self:_currentIP() + rel)
-		end
-	elseif opcode == 0x73 then
-		local rel = signExtend8(self:fetch8())
-		if not self:getFlag(FLAG_CF) then
+		if self:_conditionTrue(opcode) then
 			self:_setInstructionPointer(self:_currentIP() + rel)
 		end
 	elseif opcode == 0xE0 then
@@ -2267,6 +2459,22 @@ function Cpu80386:_stepInternal()
 		elseif self:getReg16(1) == 0 then
 			self:_setInstructionPointer(self:_currentIP() + rel)
 		end
+	elseif opcode == 0xA0 then
+		local offset = self:_address32Enabled(addressOverride) and self:fetch32() or self:fetch16()
+		self:setReg8(0, self:_readMoffsByWidth(offset, 8))
+	elseif opcode == 0xA1 then
+		local offset = self:_address32Enabled(addressOverride) and self:fetch32() or self:fetch16()
+		self:_setRegByWidth(0, operandWidth, self:_readMoffsByWidth(offset, operandWidth))
+	elseif opcode == 0xA2 then
+		local offset = self:_address32Enabled(addressOverride) and self:fetch32() or self:fetch16()
+		self:_writeMoffsByWidth(offset, 8, self:getReg8(0))
+	elseif opcode == 0xA3 then
+		local offset = self:_address32Enabled(addressOverride) and self:fetch32() or self:fetch16()
+		self:_writeMoffsByWidth(offset, operandWidth, self:_getRegByWidth(0, operandWidth))
+	elseif opcode == 0xA8 then
+		self:_test(8, self:getReg8(0), self:fetch8())
+	elseif opcode == 0xA9 then
+		self:_test(operandWidth, self:_getRegByWidth(0, operandWidth), self:_fetchImmediate(operandWidth))
 	elseif
 		opcode == 0xA4
 		or opcode == 0xA5
@@ -2335,11 +2543,27 @@ function Cpu80386:_stepInternal()
 		else
 			self:_setInstructionPointer(self:pop16())
 		end
+	elseif opcode == 0xC2 then
+		local adjust = self:fetch16()
+		if operandWidth == 32 then
+			self:_setInstructionPointer(self:pop32())
+		else
+			self:_setInstructionPointer(self:pop16())
+		end
+		self:_setStackPointer((self:_stackPointer() + adjust) % 0x100000000, self:_stackDefault32())
 	elseif opcode == 0xCB then
 		self:_returnFar(operandWidth, 0, false)
 	elseif opcode == 0xCA then
 		local adjust = self:fetch16()
 		self:_returnFar(operandWidth, adjust, false)
+	elseif opcode == 0xC9 then
+		local use32BitStack = self:_stackDefault32()
+		self:_setStackPointer(use32BitStack and self:getReg32(5) or self:getReg16(5), use32BitStack)
+		if operandWidth == 32 then
+			self:setReg32(5, self:pop32())
+		else
+			self:setReg16(5, self:pop16())
+		end
 	elseif opcode == 0xCF then
 		self:_returnFar(operandWidth, 0, true)
 	elseif opcode == 0xCD then
@@ -2386,6 +2610,7 @@ function Cpu80386:_stepInternal()
 	end
 
 	self.stats.instructions = self.stats.instructions + 1
+	self._segmentOverride = nil
 	return opcode
 end
 
@@ -2395,6 +2620,7 @@ function Cpu80386:step()
 	end, function(err)
 		return err
 	end)
+	self._segmentOverride = nil
 
 	if ok then
 		return result

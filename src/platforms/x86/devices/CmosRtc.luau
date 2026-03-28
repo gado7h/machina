@@ -1,6 +1,15 @@
 local STATUS_A_UIP = 0x80
 local STATUS_B_24H = 0x02
 local STATUS_B_BINARY = 0x04
+local STATUS_B_UIE = 0x10
+local STATUS_B_PIE = 0x40
+local STATUS_B_AIE = 0x20
+
+local STATUS_C_UF = 0x10
+local STATUS_C_AF = 0x20
+local STATUS_C_PF = 0x40
+
+local MachineProfile = require("@src/platforms/x86/MachineProfile")
 
 local REGISTER_SECONDS = 0x00
 local REGISTER_MINUTES = 0x02
@@ -27,8 +36,36 @@ local REGISTER_EXT_MEM_HIGH = 0x18
 local REGISTER_CENTURY = 0x32
 local REGISTER_EXT_MEM_POST = 0x30
 
+local PERIODIC_RATE_SECONDS = {
+	[0x06] = 1 / 976.5625,
+	[0x07] = 1 / 488.28125,
+	[0x08] = 1 / 244.140625,
+	[0x09] = 1 / 122.0703125,
+	[0x0A] = 1 / 61.03515625,
+	[0x0B] = 1 / 30.517578125,
+	[0x0C] = 1 / 15.2587890625,
+	[0x0D] = 1 / 7.8125,
+	[0x0E] = 1 / 3.90625,
+	[0x0F] = 1 / 1.953125,
+}
+
 local CmosRtc = {}
 CmosRtc.__index = CmosRtc
+
+local function baseMemoryKilobytes(config)
+	local x86 = (config and config.X86) or {}
+	local lowRamSize = tonumber(x86.LOW_RAM_SIZE) or 0xA0000
+	return math.floor(math.max(0, lowRamSize) / 1024)
+end
+
+local function extendedMemoryKilobytes(config)
+	local x86 = (config and config.X86) or {}
+	local highRamSize = tonumber(x86.HIGH_RAM_SIZE) or 0
+	if highRamSize <= 0 then
+		return 0
+	end
+	return math.floor(highRamSize / 1024)
+end
 
 local function toBCD(value)
 	local numericValue = tonumber(value) or 0
@@ -51,26 +88,83 @@ function CmosRtc.new(config)
 	self._statusB = STATUS_B_24H
 	self._statusC = 0x00
 	self._statusD = 0x80
+	self._elapsed = 0
+	self._periodicAccum = 0
+	self._lastSecond = nil
+	self._irqLatched = false
 
 	self._cmos = {}
 	self._cmos[REGISTER_DIAGNOSTIC] = 0x00
 	self._cmos[REGISTER_SHUTDOWN] = 0x00
-	self._cmos[REGISTER_FLOPPY_TYPE] = 0x00
-	self._cmos[REGISTER_HD_TYPE] = 0x47
-	self._cmos[REGISTER_EQUIPMENT] = bit32.bor(0x02, 0x40)
-	self._cmos[REGISTER_BASE_MEM_LOW] = 0x00
-	self._cmos[REGISTER_BASE_MEM_HIGH] = 0x02
-	self._cmos[REGISTER_EXT_MEM_LOW] = 0x00
-	self._cmos[REGISTER_EXT_MEM_HIGH] = 0x0A
-	self._cmos[REGISTER_EXT_MEM_POST] = 0x00
-	self._cmos[REGISTER_EXT_MEM_POST + 1] = 0x00
 	self._cmos[REGISTER_CENTURY] = 0x20
+	self:refreshHardwareTable(config)
 
 	self.stats = {
 		reads = 0,
 		writes = 0,
 	}
 	return self
+end
+
+function CmosRtc:_periodicIntervalSeconds()
+	return PERIODIC_RATE_SECONDS[bit32.band(self._statusA, 0x0F)]
+end
+
+function CmosRtc:_currentEpochSecond()
+	return os.time(self:_timeTable())
+end
+
+function CmosRtc:_raiseIRQ(sourceMask)
+	if not self._bus then
+		return
+	end
+	if self._irqLatched then
+		return
+	end
+	local enabled = false
+	if bit32.band(sourceMask, STATUS_C_PF) ~= 0 and bit32.band(self._statusB, STATUS_B_PIE) ~= 0 then
+		enabled = true
+	end
+	if bit32.band(sourceMask, STATUS_C_UF) ~= 0 and bit32.band(self._statusB, STATUS_B_UIE) ~= 0 then
+		enabled = true
+	end
+	if bit32.band(sourceMask, STATUS_C_AF) ~= 0 and bit32.band(self._statusB, STATUS_B_AIE) ~= 0 then
+		enabled = true
+	end
+	if not enabled then
+		return
+	end
+	self._irqLatched = true
+	self._bus:raiseIRQ(self.config.IRQ.RTC, { source = "rtc", status = sourceMask })
+end
+
+function CmosRtc:_setStatusC(bits)
+	if bits == 0 then
+		return
+	end
+	self._statusC = bit32.bor(self._statusC, bit32.band(bits, 0x70))
+	self:_raiseIRQ(bits)
+end
+
+function CmosRtc:refreshHardwareTable(config)
+	if config then
+		self.config = config
+	end
+
+	local profile = MachineProfile.validateConfig(self.config)
+	local floppyNibble = profile.floppy.nibble
+	local baseMemK = baseMemoryKilobytes(self.config)
+	local extMemK = extendedMemoryKilobytes(self.config)
+
+	self._cmos[REGISTER_FLOPPY_TYPE] = bit32.lshift(floppyNibble, 4)
+	self._cmos[REGISTER_HD_TYPE] = profile.ata.present and 0x47 or 0x00
+	self._cmos[REGISTER_EQUIPMENT] = MachineProfile.getCmosEquipmentByte(self.config)
+	self._cmos[REGISTER_BASE_MEM_LOW] = baseMemK % 256
+	self._cmos[REGISTER_BASE_MEM_HIGH] = math.floor(baseMemK / 256) % 256
+	self._cmos[REGISTER_EXT_MEM_LOW] = extMemK % 256
+	self._cmos[REGISTER_EXT_MEM_HIGH] = math.floor(extMemK / 256) % 256
+	self._cmos[REGISTER_EXT_MEM_POST] = extMemK % 256
+	self._cmos[REGISTER_EXT_MEM_POST + 1] = math.floor(extMemK / 256) % 256
 end
 
 function CmosRtc:attachBus(bus)
@@ -148,6 +242,7 @@ function CmosRtc:_readStatusRegister(index)
 	if index == REGISTER_STATUS_C then
 		local value = self._statusC
 		self._statusC = 0
+		self._irqLatched = false
 		return value
 	end
 	if index == REGISTER_STATUS_D then
@@ -197,12 +292,51 @@ function CmosRtc:_writeSelected(value)
 	elseif self._index == REGISTER_STATUS_B then
 		self._statusB = v
 	elseif self._index == REGISTER_STATUS_C then
-		self._statusC = 0
+		self._statusC = bit32.band(self._statusC, bit32.bnot(bit32.band(v, 0x70)))
 	elseif self._index == REGISTER_STATUS_D then
 		self._statusD = bit32.bor(bit32.band(v, 0x7F), 0x80)
 	else
 		self:_writeCmosRegister(self._index, v)
 	end
+end
+
+function CmosRtc:_tickPeriodic(dt)
+	local interval = self:_periodicIntervalSeconds()
+	if not interval or interval <= 0 then
+		return
+	end
+
+	self._periodicAccum = self._periodicAccum + dt
+	while self._periodicAccum >= interval do
+		self._periodicAccum = self._periodicAccum - interval
+		self:_setStatusC(STATUS_C_PF)
+	end
+end
+
+function CmosRtc:_tickUpdateEnded()
+	local currentSecond = self:_currentEpochSecond()
+	if self._lastSecond == nil then
+		self._lastSecond = currentSecond
+		return
+	end
+
+	if currentSecond <= self._lastSecond then
+		return
+	end
+
+	self._lastSecond = currentSecond
+	self:_setStatusC(STATUS_C_UF)
+end
+
+function CmosRtc:tick(dt)
+	dt = tonumber(dt) or 0
+	if dt <= 0 then
+		return
+	end
+
+	self._elapsed = self._elapsed + dt
+	self:_tickUpdateEnded()
+	self:_tickPeriodic(dt)
 end
 
 function CmosRtc:getBIOSClockTicks()

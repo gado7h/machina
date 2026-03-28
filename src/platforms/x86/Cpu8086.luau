@@ -12,6 +12,12 @@ local FLAG_OF = 0x0800
 
 local REG16_NAMES = { "AX", "CX", "DX", "BX", "SP", "BP", "SI", "DI" }
 local SEGMENT_NAMES = { "ES", "CS", "SS", "DS" }
+local SEGMENT_PREFIX_TO_CODE = {
+	[0x26] = 0,
+	[0x2E] = 1,
+	[0x36] = 2,
+	[0x3E] = 3,
+}
 
 local function signExtend8(value)
 	value = value % 0x100
@@ -78,6 +84,7 @@ function Cpu8086.new(bus, config)
 		cs = 0,
 		ip = 0,
 	}
+	self._segmentOverride = nil
 	self.stats = {
 		cycles = 0,
 		instructions = 0,
@@ -110,6 +117,7 @@ function Cpu8086:reset()
 	self._lastStep.opcode = nil
 	self._lastStep.cs = self.seg.CS
 	self._lastStep.ip = self.ip
+	self._segmentOverride = nil
 	for name in pairs(self.stats) do
 		self.stats[name] = 0
 	end
@@ -199,6 +207,58 @@ function Cpu8086:setSeg(code, value)
 
 	local v = (tonumber(value) or 0) % 0x10000
 	self.seg[name] = v
+end
+
+function Cpu8086:_applySegmentOverride(segment)
+	if self._segmentOverride == nil then
+		return segment
+	end
+	return self:getSeg(self._segmentOverride)
+end
+
+function Cpu8086:_conditionTrue(opcode)
+	local cf = self:getFlag(FLAG_CF)
+	local zf = self:getFlag(FLAG_ZF)
+	local sf = self:getFlag(FLAG_SF)
+	local of = self:getFlag(FLAG_OF)
+	local pf = self:getFlag(FLAG_PF)
+	local signedLess = sf ~= of
+
+	if opcode == 0x70 then
+		return of
+	elseif opcode == 0x71 then
+		return not of
+	elseif opcode == 0x72 then
+		return cf
+	elseif opcode == 0x73 then
+		return not cf
+	elseif opcode == 0x74 then
+		return zf
+	elseif opcode == 0x75 then
+		return not zf
+	elseif opcode == 0x76 then
+		return cf or zf
+	elseif opcode == 0x77 then
+		return not cf and not zf
+	elseif opcode == 0x78 then
+		return sf
+	elseif opcode == 0x79 then
+		return not sf
+	elseif opcode == 0x7A then
+		return pf
+	elseif opcode == 0x7B then
+		return not pf
+	elseif opcode == 0x7C then
+		return signedLess
+	elseif opcode == 0x7D then
+		return not signedLess
+	elseif opcode == 0x7E then
+		return signedLess or zf
+	elseif opcode == 0x7F then
+		return not signedLess and not zf
+	end
+
+	return false
 end
 
 function Cpu8086:linearAddress(segment, offset)
@@ -318,7 +378,7 @@ function Cpu8086:_effectiveAddress(decoded)
 		base = base + decoded.disp
 	end
 
-	return segment, base % 0x10000
+	return self:_applySegmentOverride(segment), base % 0x10000
 end
 
 function Cpu8086:_readRM8(decoded)
@@ -363,6 +423,35 @@ function Cpu8086:_updateLogicFlags(width, value)
 	self:setFlag(FLAG_ZF, masked == 0)
 	self:setFlag(FLAG_SF, bit32.band(masked, signBit(width)) ~= 0)
 	self:setFlag(FLAG_PF, self:_computePF(masked))
+end
+
+function Cpu8086:_test(width, a, b)
+	local result = bit32.band(tonumber(a) or 0, tonumber(b) or 0)
+	self:_updateLogicFlags(width, result)
+	return result
+end
+
+function Cpu8086:_readMoffsByWidth(offset, width)
+	local segment = self:_applySegmentOverride(self.seg.DS)
+	if width == 8 then
+		return self:readMem8(segment, offset)
+	elseif width == 16 then
+		return self:readMem16(segment, offset)
+	elseif self.readMem32 then
+		return self:readMem32(segment, offset)
+	end
+	return 0
+end
+
+function Cpu8086:_writeMoffsByWidth(offset, width, value)
+	local segment = self:_applySegmentOverride(self.seg.DS)
+	if width == 8 then
+		self:writeMem8(segment, offset, value)
+	elseif width == 16 then
+		self:writeMem16(segment, offset, value)
+	elseif self.writeMem32 then
+		self:writeMem32(segment, offset, value)
+	end
 end
 
 function Cpu8086:_add(width, a, b)
@@ -841,6 +930,7 @@ end
 
 function Cpu8086:step()
 	self.stats.cycles = self.stats.cycles + 1
+	self._segmentOverride = nil
 
 	if self:_serviceExternalInterrupt() then
 		self.stats.instructions = self.stats.instructions + 1
@@ -855,8 +945,12 @@ function Cpu8086:step()
 	local startCS = self.seg.CS
 	local repeatPrefix = nil
 	local opcode = self:fetch8()
-	while opcode == 0xF2 or opcode == 0xF3 do
-		repeatPrefix = opcode
+	while opcode == 0xF2 or opcode == 0xF3 or SEGMENT_PREFIX_TO_CODE[opcode] ~= nil do
+		if opcode == 0xF2 or opcode == 0xF3 then
+			repeatPrefix = opcode
+		else
+			self._segmentOverride = SEGMENT_PREFIX_TO_CODE[opcode]
+		end
 		opcode = self:fetch8()
 	end
 	self._lastStep.opcode = opcode
@@ -869,6 +963,12 @@ function Cpu8086:step()
 		self:setReg8(opcode - 0xB0, self:fetch8())
 	elseif opcode == 0x90 then
 		self.ip = self.ip % 0x10000
+	elseif opcode >= 0x91 and opcode <= 0x97 then
+		local reg = opcode - 0x90
+		local ax = self:getReg16(0)
+		local other = self:getReg16(reg)
+		self:setReg16(0, other)
+		self:setReg16(reg, ax)
 	elseif opcode == 0xF8 then
 		self:setFlag(FLAG_CF, false)
 	elseif opcode == 0xF9 then
@@ -887,6 +987,20 @@ function Cpu8086:step()
 		self:push16(self.flags)
 	elseif opcode == 0x9D then
 		self.flags = bit32.bor(bit32.band(self:pop16(), 0x0FD5), 0x0002)
+	elseif opcode == 0x06 then
+		self:push16(self.seg.ES)
+	elseif opcode == 0x07 then
+		self:setSeg(0, self:pop16())
+	elseif opcode == 0x0E then
+		self:push16(self.seg.CS)
+	elseif opcode == 0x16 then
+		self:push16(self.seg.SS)
+	elseif opcode == 0x17 then
+		self:setSeg(2, self:pop16())
+	elseif opcode == 0x1E then
+		self:push16(self.seg.DS)
+	elseif opcode == 0x1F then
+		self:setSeg(3, self:pop16())
 	elseif opcode >= 0x40 and opcode <= 0x47 then
 		local reg = opcode - 0x40
 		self:setReg16(reg, self:_inc(16, self:getReg16(reg)))
@@ -899,6 +1013,8 @@ function Cpu8086:step()
 		self:setReg16(opcode - 0x58, self:pop16())
 	elseif opcode == 0x68 then
 		self:push16(self:fetch16())
+	elseif opcode == 0x6A then
+		self:push16(signExtend8(self:fetch8()) % 0x10000)
 	elseif opcode == 0x8E then
 		local decoded = self:_decodeModRM()
 		if decoded.reg == 1 then
@@ -924,12 +1040,12 @@ function Cpu8086:step()
 	elseif opcode == 0xC4 then
 		local decoded = self:_decodeModRM()
 		local segment, offset = self:_effectiveAddress(decoded)
-		self.seg.DS = segment
+		self.seg.ES = segment
 		self:setReg16(decoded.reg, offset % 0x10000)
 	elseif opcode == 0xC5 then
 		local decoded = self:_decodeModRM()
 		local segment, offset = self:_effectiveAddress(decoded)
-		self.seg.ES = segment
+		self.seg.DS = segment
 		self:setReg16(decoded.reg, offset % 0x10000)
 	elseif opcode == 0x88 then
 		local decoded = self:_decodeModRM()
@@ -942,6 +1058,76 @@ function Cpu8086:step()
 		local decoded = self:_decodeModRM()
 		local imm = self:fetch16()
 		self:_writeRM16(decoded, imm)
+	elseif opcode == 0x00 then
+		local decoded = self:_decodeModRM()
+		self:_writeRM8(decoded, self:_add(8, self:_readRM8(decoded), self:getReg8(decoded.reg)))
+	elseif opcode == 0x01 then
+		local decoded = self:_decodeModRM()
+		self:_writeRM16(decoded, self:_add(16, self:_readRM16(decoded), self:getReg16(decoded.reg)))
+	elseif opcode == 0x02 then
+		local decoded = self:_decodeModRM()
+		self:setReg8(decoded.reg, self:_add(8, self:getReg8(decoded.reg), self:_readRM8(decoded)))
+	elseif opcode == 0x03 then
+		local decoded = self:_decodeModRM()
+		self:setReg16(decoded.reg, self:_add(16, self:getReg16(decoded.reg), self:_readRM16(decoded)))
+	elseif opcode == 0x04 then
+		self:setReg8(0, self:_add(8, self:getReg8(0), self:fetch8()))
+	elseif opcode == 0x05 then
+		self:setReg16(0, self:_add(16, self:getReg16(0), self:fetch16()))
+	elseif opcode == 0x08 then
+		local decoded = self:_decodeModRM()
+		self:_writeRM8(decoded, self:_logicBinary(8, self:_readRM8(decoded), self:getReg8(decoded.reg), "or"))
+	elseif opcode == 0x09 then
+		local decoded = self:_decodeModRM()
+		self:_writeRM16(decoded, self:_logicBinary(16, self:_readRM16(decoded), self:getReg16(decoded.reg), "or"))
+	elseif opcode == 0x0A then
+		local decoded = self:_decodeModRM()
+		self:setReg8(decoded.reg, self:_logicBinary(8, self:getReg8(decoded.reg), self:_readRM8(decoded), "or"))
+	elseif opcode == 0x0B then
+		local decoded = self:_decodeModRM()
+		self:setReg16(decoded.reg, self:_logicBinary(16, self:getReg16(decoded.reg), self:_readRM16(decoded), "or"))
+	elseif opcode == 0x0C then
+		self:setReg8(0, self:_logicBinary(8, self:getReg8(0), self:fetch8(), "or"))
+	elseif opcode == 0x0D then
+		self:setReg16(0, self:_logicBinary(16, self:getReg16(0), self:fetch16(), "or"))
+	elseif opcode == 0x20 then
+		local decoded = self:_decodeModRM()
+		self:_writeRM8(decoded, self:_logicBinary(8, self:_readRM8(decoded), self:getReg8(decoded.reg), "and"))
+	elseif opcode == 0x21 then
+		local decoded = self:_decodeModRM()
+		self:_writeRM16(decoded, self:_logicBinary(16, self:_readRM16(decoded), self:getReg16(decoded.reg), "and"))
+	elseif opcode == 0x22 then
+		local decoded = self:_decodeModRM()
+		self:setReg8(decoded.reg, self:_logicBinary(8, self:getReg8(decoded.reg), self:_readRM8(decoded), "and"))
+	elseif opcode == 0x23 then
+		local decoded = self:_decodeModRM()
+		self:setReg16(decoded.reg, self:_logicBinary(16, self:getReg16(decoded.reg), self:_readRM16(decoded), "and"))
+	elseif opcode == 0x24 then
+		self:setReg8(0, self:_logicBinary(8, self:getReg8(0), self:fetch8(), "and"))
+	elseif opcode == 0x25 then
+		self:setReg16(0, self:_logicBinary(16, self:getReg16(0), self:fetch16(), "and"))
+	elseif opcode == 0x28 then
+		local decoded = self:_decodeModRM()
+		self:_writeRM8(decoded, self:_sub(8, self:_readRM8(decoded), self:getReg8(decoded.reg)))
+	elseif opcode == 0x29 then
+		local decoded = self:_decodeModRM()
+		self:_writeRM16(decoded, self:_sub(16, self:_readRM16(decoded), self:getReg16(decoded.reg)))
+	elseif opcode == 0x2A then
+		local decoded = self:_decodeModRM()
+		self:setReg8(decoded.reg, self:_sub(8, self:getReg8(decoded.reg), self:_readRM8(decoded)))
+	elseif opcode == 0x2B then
+		local decoded = self:_decodeModRM()
+		self:setReg16(decoded.reg, self:_sub(16, self:getReg16(decoded.reg), self:_readRM16(decoded)))
+	elseif opcode == 0x2C then
+		self:setReg8(0, self:_sub(8, self:getReg8(0), self:fetch8()))
+	elseif opcode == 0x2D then
+		self:setReg16(0, self:_sub(16, self:getReg16(0), self:fetch16()))
+	elseif opcode == 0x30 then
+		local decoded = self:_decodeModRM()
+		self:_writeRM8(decoded, self:_logicBinary(8, self:_readRM8(decoded), self:getReg8(decoded.reg), "xor"))
+	elseif opcode == 0x31 then
+		local decoded = self:_decodeModRM()
+		self:_writeRM16(decoded, self:_logicBinary(16, self:_readRM16(decoded), self:getReg16(decoded.reg), "xor"))
 	elseif opcode == 0x33 then
 		local decoded = self:_decodeModRM()
 		local value = bit32.bxor(self:getReg16(decoded.reg), self:_readRM16(decoded))
@@ -952,6 +1138,16 @@ function Cpu8086:step()
 		local value = bit32.bxor(self:getReg8(decoded.reg), self:_readRM8(decoded))
 		self:setReg8(decoded.reg, value)
 		self:_updateLogicFlags(8, value)
+	elseif opcode == 0x34 then
+		self:setReg8(0, self:_logicBinary(8, self:getReg8(0), self:fetch8(), "xor"))
+	elseif opcode == 0x35 then
+		self:setReg16(0, self:_logicBinary(16, self:getReg16(0), self:fetch16(), "xor"))
+	elseif opcode == 0x84 then
+		local decoded = self:_decodeModRM()
+		self:_test(8, self:_readRM8(decoded), self:getReg8(decoded.reg))
+	elseif opcode == 0x85 then
+		local decoded = self:_decodeModRM()
+		self:_test(16, self:_readRM16(decoded), self:getReg16(decoded.reg))
 	elseif opcode == 0x80 or opcode == 0x81 then
 		local decoded = self:_decodeModRM()
 		local width = opcode == 0x80 and 8 or 16
@@ -1061,6 +1257,10 @@ function Cpu8086:step()
 	elseif opcode == 0x3B then
 		local decoded = self:_decodeModRM()
 		self:_sub(16, self:getReg16(decoded.reg), self:_readRM16(decoded))
+	elseif opcode == 0x3C then
+		self:_sub(8, self:getReg8(0), self:fetch8())
+	elseif opcode == 0x3D then
+		self:_sub(16, self:getReg16(0), self:fetch16())
 	elseif opcode == 0xE8 then
 		local rel = signExtend16(self:fetch16())
 		self:push16(self.ip)
@@ -1076,24 +1276,9 @@ function Cpu8086:step()
 	elseif opcode == 0xEB then
 		local rel = signExtend8(self:fetch8())
 		self.ip = (self.ip + rel) % 0x10000
-	elseif opcode == 0x74 then
+	elseif opcode >= 0x70 and opcode <= 0x7F then
 		local rel = signExtend8(self:fetch8())
-		if self:getFlag(FLAG_ZF) then
-			self.ip = (self.ip + rel) % 0x10000
-		end
-	elseif opcode == 0x75 then
-		local rel = signExtend8(self:fetch8())
-		if not self:getFlag(FLAG_ZF) then
-			self.ip = (self.ip + rel) % 0x10000
-		end
-	elseif opcode == 0x72 then
-		local rel = signExtend8(self:fetch8())
-		if self:getFlag(FLAG_CF) then
-			self.ip = (self.ip + rel) % 0x10000
-		end
-	elseif opcode == 0x73 then
-		local rel = signExtend8(self:fetch8())
-		if not self:getFlag(FLAG_CF) then
+		if self:_conditionTrue(opcode) then
 			self.ip = (self.ip + rel) % 0x10000
 		end
 	elseif opcode == 0xE0 then
@@ -1119,6 +1304,22 @@ function Cpu8086:step()
 		if self:getReg16(1) == 0 then
 			self.ip = (self.ip + rel) % 0x10000
 		end
+	elseif opcode == 0xA0 then
+		local offset = self:fetch16()
+		self:setReg8(0, self:_readMoffsByWidth(offset, 8))
+	elseif opcode == 0xA1 then
+		local offset = self:fetch16()
+		self:setReg16(0, self:_readMoffsByWidth(offset, 16))
+	elseif opcode == 0xA2 then
+		local offset = self:fetch16()
+		self:_writeMoffsByWidth(offset, 8, self:getReg8(0))
+	elseif opcode == 0xA3 then
+		local offset = self:fetch16()
+		self:_writeMoffsByWidth(offset, 16, self:getReg16(0))
+	elseif opcode == 0xA8 then
+		self:_test(8, self:getReg8(0), self:fetch8())
+	elseif opcode == 0xA9 then
+		self:_test(16, self:getReg16(0), self:fetch16())
 	elseif
 		opcode == 0xA4
 		or opcode == 0xA5
@@ -1151,9 +1352,16 @@ function Cpu8086:step()
 		end
 	elseif opcode == 0xC3 then
 		self.ip = self:pop16()
+	elseif opcode == 0xC2 then
+		local adjust = self:fetch16()
+		self.ip = self:pop16()
+		self.reg16.SP = (self.reg16.SP + adjust) % 0x10000
 	elseif opcode == 0xCB then
 		self.ip = self:pop16()
 		self.seg.CS = self:pop16()
+	elseif opcode == 0xC9 then
+		self.reg16.SP = self.reg16.BP
+		self.reg16.BP = self:pop16()
 	elseif opcode == 0xCF then
 		self.ip = self:pop16()
 		self.seg.CS = self:pop16()
@@ -1253,6 +1461,7 @@ function Cpu8086:step()
 	end
 
 	self.stats.instructions = self.stats.instructions + 1
+	self._segmentOverride = nil
 	return opcode
 end
 

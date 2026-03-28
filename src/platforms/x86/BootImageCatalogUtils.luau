@@ -1,5 +1,6 @@
 local Assembler8086 = require("@src/platforms/x86/Assembler8086")
 local BiosRom = require("@src/platforms/x86/BiosRom")
+local MachineProfile = require("@src/platforms/x86/MachineProfile")
 
 local BootImageCatalogUtils = {}
 
@@ -72,6 +73,8 @@ function BootImageCatalogUtils.concatBytes(first, second)
 end
 
 function BootImageCatalogUtils.buildStandaloneBootImage(config, name, bootSource)
+	MachineProfile.validateConfig(config)
+
 	local biosArtifact = BiosRom.buildArtifact(config)
 	local bootArtifact = Assembler8086.compile(bootSource)
 	assert(#bootArtifact.bytes <= 512, name .. " boot sector exceeds 512 bytes")
@@ -134,6 +137,8 @@ function BootImageCatalogUtils.buildTextValidationBootSource(passText)
 end
 
 function BootImageCatalogUtils.buildLoadedBootImage(config, name, kernelSource, options)
+	MachineProfile.validateConfig(config)
+
 	options = options or {}
 	local kernelOrigin = options.kernelOrigin or 0x0500
 	local kernelAssemblerOptions = {

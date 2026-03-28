@@ -5,7 +5,7 @@ local ImageCatalogUtils = require("@src/platforms/x86/ImageCatalogUtils")
 local RawImageCatalog = {}
 
 local function buildCatalogImage(entryName, config)
-	local cfg = config or DefaultConfiguration()
+	local cfg = config or DefaultConfiguration
 	local entry = BootImageCatalog[entryName]
 	assert(entry, "unknown x86 raw image entry: " .. tostring(entryName))
 
@@ -27,6 +27,8 @@ local function snapshotImage(image)
 		layout = ImageCatalogUtils.deepCopy(image.layout or {}),
 		files = ImageCatalogUtils.deepCopy(image.files or {}),
 		symbols = ImageCatalogUtils.deepCopy(image.symbols or {}),
+		configOverride = ImageCatalogUtils.deepCopy(image.configOverride),
+		meta = ImageCatalogUtils.deepCopy(image.meta),
 	}
 end
 
@@ -34,7 +36,8 @@ local function buildRawImage(entryName, config)
 	return snapshotImage(buildCatalogImage(entryName, config))
 end
 
-RawImageCatalog.ProtectedModeBringUp = buildRawImage("ProtectedModeBringUp")
+RawImageCatalog.ProtectedModeBringUp = buildRawImage("bootOS")
+RawImageCatalog.bootOS = buildRawImage("bootOS")
 
 function RawImageCatalog.get(name)
 	return RawImageCatalog[name]
