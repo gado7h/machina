@@ -68,6 +68,8 @@ local function buildBoardConfig(config)
 	board.ROM_SIZE = x86.ROM_SIZE or board.ROM_SIZE
 	board.RAM_BASE = x86.LOW_RAM_BASE or 0
 	board.RAM_SIZE = x86.LOW_RAM_SIZE or board.RAM_SIZE
+	board.HIGH_RAM_BASE = x86.HIGH_RAM_BASE or board.HIGH_RAM_BASE or 0x00100000
+	board.HIGH_RAM_SIZE = x86.HIGH_RAM_SIZE or board.HIGH_RAM_SIZE or 0
 	board.VRAM_BASE = x86.VIDEO_BASE or board.VRAM_BASE
 	board.VRAM_SIZE = x86.VIDEO_SIZE or board.VRAM_SIZE
 	board.PIC_VECTOR_BASE_MASTER = x86.PIC_VECTOR_BASE_MASTER or board.PIC_VECTOR_BASE_MASTER
@@ -143,9 +145,15 @@ function PcSystem:_buildHardware()
 	local Uart8250 = require("@src/platforms/x86/devices/Uart8250")
 	local CmosRtc = require("@src/platforms/x86/devices/CmosRtc")
 	local Cpu80386 = require("@src/platforms/x86/Cpu80386")
+	local highRamBase = self.boardConfig.HIGH_RAM_BASE or 0x00100000
+	local highRamSize = self.boardConfig.HIGH_RAM_SIZE or 0
+	local ramCapacity = math.max(
+		(self.boardConfig.RAM_BASE or 0) + (self.boardConfig.RAM_SIZE or 0),
+		highRamBase + highRamSize
+	)
 
 	self.bus = SystemBus.new(self.boardConfig)
-	self.ram = PhysicalMemory.new(self.boardConfig)
+	self.ram = PhysicalMemory.new(self.boardConfig, { size = ramCapacity })
 	self.rom = FirmwareRom.new(self.boardConfig)
 	self.gpu = VgaAdapter.new(self.boardConfig)
 	self.hdd = AtaController.new(self.boardConfig)
@@ -166,7 +174,14 @@ function PcSystem:_buildHardware()
 	self.bus:registerDevice("rtc", self.rtc)
 	self.fdc = self.bus.fdc
 
-	self.bus:mapMemory(self.boardConfig.RAM_BASE, self.boardConfig.RAM_SIZE, self.ram, "LOW-RAM")
+	self.bus:mapMemory(self.boardConfig.RAM_BASE, self.boardConfig.RAM_SIZE, self.ram, "LOW-RAM", {
+		deviceOffset = self.boardConfig.RAM_BASE,
+	})
+	if highRamSize > 0 then
+		self.bus:mapMemory(highRamBase, highRamSize, self.ram, "HIGH-RAM", {
+			deviceOffset = highRamBase,
+		})
+	end
 	self.bus:mapMemory(self.boardConfig.VRAM_BASE, self.boardConfig.VRAM_SIZE, self.gpu, "VGA-TEXT")
 	self.bus:mapMemory(self.boardConfig.ROM_BASE, self.boardConfig.ROM_SIZE, self.rom, "BIOS-ROM", {
 		readOnly = true,
@@ -348,6 +363,7 @@ function PcSystem:_powerDown(clearScreen)
 
 	if self.ram then
 		self.ram._mem = {}
+		self.ram._dirty = {}
 	end
 
 	if clearScreen and self.gpu then

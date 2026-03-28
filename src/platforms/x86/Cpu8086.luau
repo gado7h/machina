@@ -11,7 +11,13 @@ local FLAG_DF = 0x0400
 local FLAG_OF = 0x0800
 
 local REG16_NAMES = { "AX", "CX", "DX", "BX", "SP", "BP", "SI", "DI" }
-local SEGMENT_NAMES = { "ES", "CS", "SS", "DS" }
+local SEGMENT_NAMES = { "ES", "CS", "SS", "DS", "FS", "GS" }
+local SEGMENT_PREFIXES = {
+	[0x26] = "ES",
+	[0x2E] = "CS",
+	[0x36] = "SS",
+	[0x3E] = "DS",
+}
 
 local function signExtend8(value)
 	value = value % 0x100
@@ -67,12 +73,15 @@ function Cpu8086.new(bus, config)
 		CS = 0,
 		SS = 0,
 		DS = 0,
+		FS = 0,
+		GS = 0,
 	}
 	self.ip = 0
 	self.flags = 0x0002
 	self.halted = false
 	self._bios = nil
 	self._lastError = nil
+	self._segmentOverride = nil
 	self._lastStep = {
 		opcode = nil,
 		cs = 0,
@@ -102,11 +111,14 @@ function Cpu8086:reset()
 	self.seg.ES = 0
 	self.seg.DS = 0
 	self.seg.SS = 0
+	self.seg.FS = 0
+	self.seg.GS = 0
 	self.seg.CS = self.x86.RESET_VECTOR_SEG or 0xF000
 	self.ip = self.x86.RESET_VECTOR_OFF or 0xFFF0
 	self.flags = 0x0002
 	self.halted = false
 	self._lastError = nil
+	self._segmentOverride = nil
 	self._lastStep.opcode = nil
 	self._lastStep.cs = self.seg.CS
 	self._lastStep.ip = self.ip
@@ -291,7 +303,7 @@ function Cpu8086:_effectiveAddress(decoded)
 	end
 
 	local base = 0
-	local segment = self.seg.DS
+	local segmentName = "DS"
 	if decoded.mod == 0 and decoded.rm == 6 then
 		base = decoded.disp
 	else
@@ -301,24 +313,39 @@ function Cpu8086:_effectiveAddress(decoded)
 			base = self.reg16.BX + self.reg16.DI
 		elseif decoded.rm == 2 then
 			base = self.reg16.BP + self.reg16.SI
-			segment = self.seg.SS
+			segmentName = "SS"
 		elseif decoded.rm == 3 then
 			base = self.reg16.BP + self.reg16.DI
-			segment = self.seg.SS
+			segmentName = "SS"
 		elseif decoded.rm == 4 then
 			base = self.reg16.SI
 		elseif decoded.rm == 5 then
 			base = self.reg16.DI
 		elseif decoded.rm == 6 then
 			base = self.reg16.BP
-			segment = self.seg.SS
+			segmentName = "SS"
 		elseif decoded.rm == 7 then
 			base = self.reg16.BX
 		end
 		base = base + decoded.disp
 	end
 
+	local segment = self.seg[self._segmentOverride] or self.seg[segmentName] or 0
 	return segment, base % 0x10000
+end
+
+function Cpu8086:_stringSourceSegment()
+	return self.seg[self._segmentOverride] or self.seg.DS
+end
+
+function Cpu8086:_readFarPointer(decoded)
+	if decoded.mod == 3 then
+		error("far pointer operand must be in memory")
+	end
+	local segment, offset = self:_effectiveAddress(decoded)
+	local pointerOffset = self:readMem16(segment, offset)
+	local selector = self:readMem16(segment, (offset + 2) % 0x10000)
+	return pointerOffset, selector
 end
 
 function Cpu8086:_readRM8(decoded)
@@ -715,9 +742,10 @@ function Cpu8086:_executeStringOp(opcode, repeatPrefix)
 	local remaining = count
 	while remaining > 0 do
 		local delta = self:_stringDelta(width)
+		local sourceSegment = self:_stringSourceSegment()
 		if opcode == 0xA4 or opcode == 0xA5 then
-			local value = width == 8 and self:readMem8(self.seg.DS, self.reg16.SI)
-				or self:readMem16(self.seg.DS, self.reg16.SI)
+			local value = width == 8 and self:readMem8(sourceSegment, self.reg16.SI)
+				or self:readMem16(sourceSegment, self.reg16.SI)
 			if width == 8 then
 				self:writeMem8(self.seg.ES, self.reg16.DI, value)
 			else
@@ -725,8 +753,8 @@ function Cpu8086:_executeStringOp(opcode, repeatPrefix)
 			end
 			self:_applyStringDelta(delta)
 		elseif opcode == 0xA6 or opcode == 0xA7 then
-			local left = width == 8 and self:readMem8(self.seg.DS, self.reg16.SI)
-				or self:readMem16(self.seg.DS, self.reg16.SI)
+			local left = width == 8 and self:readMem8(sourceSegment, self.reg16.SI)
+				or self:readMem16(sourceSegment, self.reg16.SI)
 			local right = width == 8 and self:readMem8(self.seg.ES, self.reg16.DI)
 				or self:readMem16(self.seg.ES, self.reg16.DI)
 			self:_sub(width, left, right)
@@ -740,8 +768,8 @@ function Cpu8086:_executeStringOp(opcode, repeatPrefix)
 			end
 			self.reg16.DI = (self.reg16.DI + delta) % 0x10000
 		elseif opcode == 0xAC or opcode == 0xAD then
-			local value = width == 8 and self:readMem8(self.seg.DS, self.reg16.SI)
-				or self:readMem16(self.seg.DS, self.reg16.SI)
+			local value = width == 8 and self:readMem8(sourceSegment, self.reg16.SI)
+				or self:readMem16(sourceSegment, self.reg16.SI)
 			if width == 8 then
 				self:setReg8(0, value)
 			else
@@ -764,8 +792,8 @@ function Cpu8086:_executeStringOp(opcode, repeatPrefix)
 			end
 			self.reg16.DI = (self.reg16.DI + delta) % 0x10000
 		elseif opcode == 0x6E or opcode == 0x6F then
-			local value = width == 8 and self:readMem8(self.seg.DS, self.reg16.SI)
-				or self:readMem16(self.seg.DS, self.reg16.SI)
+			local value = width == 8 and self:readMem8(sourceSegment, self.reg16.SI)
+				or self:readMem16(sourceSegment, self.reg16.SI)
 			self.stats.portWrites = self.stats.portWrites + 1
 			if width == 8 then
 				self.bus:portWrite(self.reg16.DX, value)
@@ -854,9 +882,14 @@ function Cpu8086:step()
 	local startIP = self.ip
 	local startCS = self.seg.CS
 	local repeatPrefix = nil
+	self._segmentOverride = nil
 	local opcode = self:fetch8()
-	while opcode == 0xF2 or opcode == 0xF3 do
-		repeatPrefix = opcode
+	while opcode == 0xF2 or opcode == 0xF3 or SEGMENT_PREFIXES[opcode] ~= nil do
+		if opcode == 0xF2 or opcode == 0xF3 then
+			repeatPrefix = opcode
+		else
+			self._segmentOverride = SEGMENT_PREFIXES[opcode]
+		end
 		opcode = self:fetch8()
 	end
 	self._lastStep.opcode = opcode
@@ -923,14 +956,14 @@ function Cpu8086:step()
 		self:setReg16(decoded.reg, offset % 0x10000)
 	elseif opcode == 0xC4 then
 		local decoded = self:_decodeModRM()
-		local segment, offset = self:_effectiveAddress(decoded)
-		self.seg.DS = segment
-		self:setReg16(decoded.reg, offset % 0x10000)
+		local pointerOffset, selector = self:_readFarPointer(decoded)
+		self.seg.DS = selector
+		self:setReg16(decoded.reg, pointerOffset)
 	elseif opcode == 0xC5 then
 		local decoded = self:_decodeModRM()
-		local segment, offset = self:_effectiveAddress(decoded)
-		self.seg.ES = segment
-		self:setReg16(decoded.reg, offset % 0x10000)
+		local pointerOffset, selector = self:_readFarPointer(decoded)
+		self.seg.ES = selector
+		self:setReg16(decoded.reg, pointerOffset)
 	elseif opcode == 0x88 then
 		local decoded = self:_decodeModRM()
 		self:_writeRM8(decoded, self:getReg8(decoded.reg))
@@ -1157,7 +1190,7 @@ function Cpu8086:step()
 	elseif opcode == 0xCF then
 		self.ip = self:pop16()
 		self.seg.CS = self:pop16()
-		self.flags = self:pop16()
+		self.flags = bit32.bor(bit32.band(self:pop16(), 0x0FD5), 0x0002)
 	elseif opcode == 0x9E then
 		local ah = self:getReg8(4)
 		local newFlags = bit32.bor(bit32.band(self.flags, 0xFFFFFF00), ah)
@@ -1204,7 +1237,7 @@ function Cpu8086:step()
 		if bit32.band(self.flags, FLAG_CF) ~= 0 then
 			newFlags = bit32.bor(newFlags, 0x01)
 		end
-		self:setReg8(7, newFlags)
+		self:setReg8(4, bit32.bor(newFlags, 0x02))
 	elseif opcode == 0xCC then
 		self:_invokeInterrupt(3, false)
 	elseif opcode == 0xCE then

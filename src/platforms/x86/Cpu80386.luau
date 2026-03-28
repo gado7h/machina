@@ -31,6 +31,16 @@ local REG32 = {
 	"ESI",
 	"EDI",
 }
+local SEGMENT_PREFIXES = {
+	[0x26] = "ES",
+	[0x2E] = "CS",
+	[0x36] = "SS",
+	[0x3E] = "DS",
+	[0x64] = "FS",
+	[0x65] = "GS",
+}
+local FLAGS_MASK_16 = 0x00000FD5
+local FLAGS_MASK_32 = 0x003F7FD5
 
 local function signExtend8(value)
 	value = value % 0x100
@@ -162,7 +172,7 @@ function Cpu80386.new(bus, config)
 end
 
 function Cpu80386:_segmentName(code)
-	return ({ "ES", "CS", "SS", "DS" })[code + 1]
+	return ({ "ES", "CS", "SS", "DS", "FS", "GS" })[code + 1]
 end
 
 function Cpu80386:_syncRealModeSegment(name)
@@ -181,6 +191,8 @@ function Cpu80386:_syncRealModeCaches()
 	self:_syncRealModeSegment("CS")
 	self:_syncRealModeSegment("SS")
 	self:_syncRealModeSegment("DS")
+	self:_syncRealModeSegment("FS")
+	self:_syncRealModeSegment("GS")
 end
 
 function Cpu80386:reset()
@@ -304,11 +316,7 @@ function Cpu80386:getStats()
 end
 
 function Cpu80386:_physicalAddress(address)
-	local value = tonumber(address) or 0
-	if self.protectedMode then
-		return value
-	end
-	return bit32.band(value, 0xFFFFF)
+	return (tonumber(address) or 0) % 0x100000000
 end
 
 function Cpu80386:readPhysical8(address)
@@ -482,6 +490,16 @@ function Cpu80386:_setRegByWidth(code, width, value)
 	end
 end
 
+function Cpu80386:_writeFlags(width, value)
+	local flagsValue = tonumber(value) or 0
+	if width == 32 then
+		self.flags = bit32.bor(bit32.band(flagsValue, FLAGS_MASK_32), 0x00000002)
+		return
+	end
+	local lowFlags = bit32.bor(bit32.band(flagsValue, FLAGS_MASK_16), 0x00000002)
+	self.flags = bit32.bor(bit32.band(self.flags, 0xFFFF0000), lowFlags)
+end
+
 function Cpu80386:_decodeModRMForAddressSize(addressOverride)
 	if not self:_address32Enabled(addressOverride) then
 		local decoded = self:_decodeModRM()
@@ -555,6 +573,9 @@ function Cpu80386:_effectiveAddress(decoded)
 
 	if usesStackSegment then
 		segment = self.seg.SS
+	end
+	if self._segmentOverride ~= nil and self.seg[self._segmentOverride] ~= nil then
+		segment = self.seg[self._segmentOverride]
 	end
 
 	local offset = (base + (tonumber(decoded.disp) or 0)) % 0x100000000
@@ -654,22 +675,34 @@ function Cpu80386:_segmentFaultVector(segment)
 	return VECTOR_GP
 end
 
-function Cpu80386:_linearFromDescriptor(descriptor, selector, offset, faultVector)
+function Cpu80386:_linearFromDescriptor(descriptor, selector, offset, faultVector, widthBytes)
 	if not descriptor then
-		self:_raiseException(faultVector or VECTOR_GP, selector or 0, "missing segment descriptor")
+		local selectorValue = (tonumber(selector) or 0) % 0x10000
+		self:_raiseException(
+			faultVector or VECTOR_GP,
+			selector or 0,
+			selectorValue == 0 and "null selector" or "missing segment descriptor"
+		)
 	end
 	if descriptor.present == false then
 		self:_raiseException(VECTOR_NP, selector or 0, "segment not present")
 	end
 	local logical = tonumber(offset) or 0
-	if logical < 0 or logical > (descriptor.limit or 0xFFFFFFFF) then
+	local byteWidth = math.max(1, tonumber(widthBytes) or 1)
+	local lastLogical = logical + byteWidth - 1
+	if descriptor.expandDown then
+		local maxOffset = descriptor.default32 and 0xFFFFFFFF or 0xFFFF
+		if logical < 0 or logical <= (descriptor.limit or 0xFFFFFFFF) or lastLogical > maxOffset then
+			self:_raiseException(faultVector or VECTOR_GP, selector or 0, "segment limit exceeded")
+		end
+	elseif logical < 0 or lastLogical > (descriptor.limit or 0xFFFFFFFF) then
 		self:_raiseException(faultVector or VECTOR_GP, selector or 0, "segment limit exceeded")
 	end
 	return (descriptor.base or 0) + logical
 end
 
 function Cpu80386:_readDescriptorMemory(selector, descriptor, offset, width, faultVector)
-	local linear = self:_linearFromDescriptor(descriptor, selector, offset, faultVector)
+	local linear = self:_linearFromDescriptor(descriptor, selector, offset, faultVector, width / 8)
 	if width == 8 then
 		return self:readPhysical8(linear)
 	elseif width == 16 then
@@ -679,7 +712,7 @@ function Cpu80386:_readDescriptorMemory(selector, descriptor, offset, width, fau
 end
 
 function Cpu80386:_writeDescriptorMemory(selector, descriptor, offset, width, value, faultVector)
-	local linear = self:_linearFromDescriptor(descriptor, selector, offset, faultVector)
+	local linear = self:_linearFromDescriptor(descriptor, selector, offset, faultVector, width / 8)
 	if width == 8 then
 		self:writePhysical8(linear, value)
 	elseif width == 16 then
@@ -715,8 +748,10 @@ function Cpu80386:_readTss32Field(offset, width)
 end
 
 function Cpu80386:_commitDescriptorLoad(name, selector, descriptor)
-	local code = ({ ES = 0, CS = 1, SS = 2, DS = 3 })[name]
-	Cpu8086.setSeg(self, code, selector)
+	local code = ({ ES = 0, CS = 1, SS = 2, DS = 3, FS = 4, GS = 5 })[name]
+	if code ~= nil then
+		Cpu8086.setSeg(self, code, selector)
+	end
 	self.segCache[name] = descriptor
 end
 
@@ -1275,13 +1310,14 @@ function Cpu80386:_executeStringOp(opcode, repeatPrefix, operandWidth, addressOv
 		local delta = self:_stringDelta(width)
 		local si = self:_stringAddressRegister(6, use32Addresses)
 		local di = self:_stringAddressRegister(7, use32Addresses)
+		local sourceSegment = self:_stringSourceSegment()
 		if opcode == 0xA4 or opcode == 0xA5 then
-			local value = self:_readMemByWidth(self.seg.DS, si, width)
+			local value = self:_readMemByWidth(sourceSegment, si, width)
 			self:_writeMemByWidth(self.seg.ES, di, width, value)
 			self:_setStringAddressRegister(6, si + delta, use32Addresses)
 			self:_setStringAddressRegister(7, di + delta, use32Addresses)
 		elseif opcode == 0xA6 or opcode == 0xA7 then
-			local left = self:_readMemByWidth(self.seg.DS, si, width)
+			local left = self:_readMemByWidth(sourceSegment, si, width)
 			local right = self:_readMemByWidth(self.seg.ES, di, width)
 			self:_sub(width, left, right)
 			self:_setStringAddressRegister(6, si + delta, use32Addresses)
@@ -1291,7 +1327,7 @@ function Cpu80386:_executeStringOp(opcode, repeatPrefix, operandWidth, addressOv
 			self:_writeMemByWidth(self.seg.ES, di, width, value)
 			self:_setStringAddressRegister(7, di + delta, use32Addresses)
 		elseif opcode == 0xAC or opcode == 0xAD then
-			local value = self:_readMemByWidth(self.seg.DS, si, width)
+			local value = self:_readMemByWidth(sourceSegment, si, width)
 			self:_setRegByWidth(0, width, value)
 			self:_setStringAddressRegister(6, si + delta, use32Addresses)
 		elseif opcode == 0xAE or opcode == 0xAF then
@@ -1305,7 +1341,7 @@ function Cpu80386:_executeStringOp(opcode, repeatPrefix, operandWidth, addressOv
 			self:_writeMemByWidth(self.seg.ES, di, width, value)
 			self:_setStringAddressRegister(7, di + delta, use32Addresses)
 		elseif opcode == 0x6E or opcode == 0x6F then
-			local value = self:_readMemByWidth(self.seg.DS, si, width)
+			local value = self:_readMemByWidth(sourceSegment, si, width)
 			self.stats.portWrites = self.stats.portWrites + 1
 			self:_portWriteByWidth(self:_getRegByWidth(2, width), width, value)
 			self:_setStringAddressRegister(6, si + delta, use32Addresses)
@@ -1436,6 +1472,12 @@ function Cpu80386:_segmentCacheFor(segment)
 	if value == self.seg.ES then
 		return self.segCache.ES
 	end
+	if value == self.seg.FS then
+		return self.segCache.FS
+	end
+	if value == self.seg.GS then
+		return self.segCache.GS
+	end
 
 	local descriptor = self:_decodeDescriptor(value)
 	if descriptor then
@@ -1446,12 +1488,12 @@ end
 
 function Cpu80386:linearAddress(segment, offset)
 	if not self.protectedMode then
-		return bit32.band(((tonumber(segment) or 0) % 0x10000) * 16 + ((tonumber(offset) or 0) % 0x10000), 0xFFFFF)
+		return (((tonumber(segment) or 0) % 0x10000) * 16 + ((tonumber(offset) or 0) % 0x10000)) % 0x100000000
 	end
 
 	local descriptor = self:_segmentCacheFor(segment)
 	local selector = type(segment) == "string" and self.seg[segment] or segment
-	return self:_linearFromDescriptor(descriptor, selector, offset, self:_segmentFaultVector(segment))
+	return self:_linearFromDescriptor(descriptor, selector, offset, self:_segmentFaultVector(segment), 1)
 end
 
 function Cpu80386:setSeg(code, value)
@@ -1461,11 +1503,17 @@ function Cpu80386:setSeg(code, value)
 	end
 
 	if self.protectedMode then
-		local descriptor, err = self:_decodeDescriptor(value)
+		local selector = (tonumber(value) or 0) % 0x10000
+		if selector == 0 and name ~= "CS" and name ~= "SS" then
+			Cpu8086.setSeg(self, code, selector)
+			self.segCache[name] = nil
+			return
+		end
+		local descriptor, err = self:_decodeDescriptor(selector)
 		if not descriptor then
 			self:_raiseException(self:_segmentFaultVector(name), value or 0, err or "invalid protected-mode selector")
 		end
-		local loadedSelector = self:_loadDataSegmentDescriptor(value, descriptor, name)
+		local loadedSelector = self:_loadDataSegmentDescriptor(selector, descriptor, name)
 		self:_commitDescriptorLoad(name, loadedSelector, descriptor)
 	else
 		Cpu8086.setSeg(self, code, value)
@@ -1616,7 +1664,7 @@ function Cpu80386:_returnFar(operandWidth, stackAdjust, isInterruptReturn)
 		local nextIP = operandWidth == 32 and self:pop32() or self:pop16()
 		local nextCS = (operandWidth == 32 and self:pop32() or self:pop16()) % 0x10000
 		if isInterruptReturn then
-			self.flags = (operandWidth == 32 and self:pop32() or self:pop16()) % 0x10000
+			self:_writeFlags(operandWidth, operandWidth == 32 and self:pop32() or self:pop16())
 		end
 		Cpu8086.setSeg(self, 1, nextCS)
 		self:_syncRealModeSegment("CS")
@@ -1656,7 +1704,7 @@ function Cpu80386:_returnFar(operandWidth, stackAdjust, isInterruptReturn)
 
 	self:_applyCodeTransfer(nextCS, descriptor, nextIP, isInterruptReturn and "iret" or "retf", returnCPL)
 	if isInterruptReturn then
-		self.flags = nextFlags % 0x10000
+		self:_writeFlags(operandWidth, nextFlags)
 	end
 	if not samePrivilege then
 		self:_commitDescriptorLoad("SS", restoredSS, ssDescriptor)
@@ -1776,12 +1824,21 @@ function Cpu80386:_stepInternal()
 	local operandOverride = false
 	local addressOverride = false
 	local repeatPrefix = nil
+	self._segmentOverride = nil
 	local opcode = self:fetch8()
-	while opcode == 0x66 or opcode == 0x67 or opcode == 0xF2 or opcode == 0xF3 do
+	while
+		opcode == 0x66
+		or opcode == 0x67
+		or opcode == 0xF2
+		or opcode == 0xF3
+		or SEGMENT_PREFIXES[opcode] ~= nil
+	do
 		if opcode == 0x66 then
 			operandOverride = not operandOverride
 		elseif opcode == 0xF2 or opcode == 0xF3 then
 			repeatPrefix = opcode
+		elseif SEGMENT_PREFIXES[opcode] ~= nil then
+			self._segmentOverride = SEGMENT_PREFIXES[opcode]
 		else
 			addressOverride = not addressOverride
 		end
@@ -1823,31 +1880,17 @@ function Cpu80386:_stepInternal()
 			else
 				self:_raiseException(VECTOR_UD, 0, string.format("unsupported 0F 01 group /%d", decoded.reg))
 			end
+		elseif extended == 0xB2 or extended == 0xB4 or extended == 0xB5 then
+			local decoded = self:_decodeModRMForAddressSize(addressOverride)
+			local pointerOffset, selector = self:_readFarPointer(decoded, operandWidth)
+			local segmentCode = extended == 0xB2 and 2 or (extended == 0xB4 and 4 or 5)
+			self:setSeg(segmentCode, selector)
+			self:_setRegByWidth(decoded.reg, operandWidth, pointerOffset)
 		else
 			self:_raiseException(VECTOR_UD, 0, string.format("unsupported 0F opcode 0x%02X", extended))
 		end
 		self.stats.instructions = self.stats.instructions + 1
 		return self._lastStep.opcode
-	end
-
-	if opcode == 0x0F then
-		local extended = self:fetch8()
-		if extended == 0xB2 then
-			local decoded = self:_decodeModRMForAddressSize(addressOverride)
-			local segment, offset = self:_effectiveAddress(decoded)
-			self:setSeg(2, segment)
-			self:_setRegByWidth(decoded.reg, operandWidth, offset)
-		elseif extended == 0xB4 then
-			local decoded = self:_decodeModRMForAddressSize(addressOverride)
-			local segment, offset = self:_effectiveAddress(decoded)
-			self:setSeg(4, segment)
-			self:_setRegByWidth(decoded.reg, operandWidth, offset)
-		elseif extended == 0xB5 then
-			local decoded = self:_decodeModRMForAddressSize(addressOverride)
-			local segment, offset = self:_effectiveAddress(decoded)
-			self:setSeg(5, segment)
-			self:_setRegByWidth(decoded.reg, operandWidth, offset)
-		end
 	end
 
 	if opcode >= 0xB8 and opcode <= 0xBF then
@@ -1902,7 +1945,7 @@ function Cpu80386:_stepInternal()
 		if bit32.band(self.flags, FLAG_CF) ~= 0 then
 			newFlags = bit32.bor(newFlags, 0x01)
 		end
-		self:_setReg8(7, newFlags)
+		self:setReg8(4, bit32.bor(newFlags, 0x02))
 	elseif opcode == 0xCC then
 		self:_invokeInterrupt(3, false)
 	elseif opcode == 0xCE then
@@ -1958,11 +2001,7 @@ function Cpu80386:_stepInternal()
 			self:push16(self.flags)
 		end
 	elseif opcode == 0x9D then
-		if operandWidth == 32 then
-			self.flags = bit32.bor(bit32.band(self:pop32(), 0x3F7FD5), 0x0002)
-		else
-			self.flags = bit32.bor(bit32.band(self:pop16(), 0x0FD5), 0x0002)
-		end
+		self:_writeFlags(operandWidth, operandWidth == 32 and self:pop32() or self:pop16())
 	elseif opcode == 0xF8 then
 		self:setFlag(FLAG_CF, false)
 	elseif opcode == 0xF9 then
@@ -2019,14 +2058,14 @@ function Cpu80386:_stepInternal()
 		self:_setRegByWidth(decoded.reg, operandWidth, offset)
 	elseif opcode == 0xC4 then
 		local decoded = self:_decodeModRMForAddressSize(addressOverride)
-		local segment, offset = self:_effectiveAddress(decoded)
-		self:setSeg(3, segment)
-		self:_setRegByWidth(decoded.reg, operandWidth, offset)
+		local pointerOffset, selector = self:_readFarPointer(decoded, operandWidth)
+		self:setSeg(3, selector)
+		self:_setRegByWidth(decoded.reg, operandWidth, pointerOffset)
 	elseif opcode == 0xC5 then
 		local decoded = self:_decodeModRMForAddressSize(addressOverride)
-		local segment, offset = self:_effectiveAddress(decoded)
-		self:setSeg(0, segment)
-		self:_setRegByWidth(decoded.reg, operandWidth, offset)
+		local pointerOffset, selector = self:_readFarPointer(decoded, operandWidth)
+		self:setSeg(0, selector)
+		self:_setRegByWidth(decoded.reg, operandWidth, pointerOffset)
 	elseif opcode == 0x89 then
 		local decoded = self:_decodeModRMForAddressSize(addressOverride)
 		self:_writeRMByWidth(decoded, operandWidth, self:_getRegByWidth(decoded.reg, operandWidth))

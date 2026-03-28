@@ -21,10 +21,11 @@ local function markDirtyRange(self, offset, length)
 	end
 end
 
-function PhysicalMemory.new(config)
+function PhysicalMemory.new(config, opts)
+	opts = opts or {}
 	local self = setmetatable({}, PhysicalMemory)
 	self.config = config
-	self.size = config.RAM_SIZE or config.LOW_RAM_SIZE or 0
+	self.size = tonumber(opts.size) or config.RAM_SIZE or config.LOW_RAM_SIZE or 0
 	self._mem = {}
 	self._dirty = {}
 	self.stats = { reads = 0, writes = 0, eccCorrections = 0 }

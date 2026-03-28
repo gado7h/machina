@@ -72,8 +72,15 @@ function SystemBus:isA20Enabled()
 	return self._a20Enabled
 end
 
-local function maskA20(addr)
-	return bit32.band(addr, 0xFFFFF)
+local function normalizePhysicalAddress(self, addr)
+	local normalized = (tonumber(addr) or 0) % 0x100000000
+	if self._a20Enabled then
+		return normalized
+	end
+	if math.floor(normalized / 0x100000) % 2 == 1 then
+		return normalized - 0x100000
+	end
+	return normalized
 end
 
 -- Device Registration
@@ -106,6 +113,7 @@ function SystemBus:mapMemory(base, size, device, tag, opts)
 		base = base,
 		size = size,
 		device = device,
+		deviceOffset = tonumber(opts.deviceOffset) or 0,
 		tag = tag or "?",
 		readOnly = readOnly,
 	})
@@ -211,7 +219,7 @@ function SystemBus:consumeFault()
 end
 
 function SystemBus:memRead(addr)
-	addr = maskA20(addr)
+	addr = normalizePhysicalAddress(self, addr)
 	self.stats.memReads = self.stats.memReads + 1
 	local m = findMapping(self, addr)
 	if not m then
@@ -219,7 +227,7 @@ function SystemBus:memRead(addr)
 		return 0xFF
 	end
 	local ok, value = pcall(function()
-		return m.device:memRead(addr - m.base)
+		return m.device:memRead((addr - m.base) + (m.deviceOffset or 0))
 	end)
 	if not ok then
 		self:_setFault("device-read-fault", addr, "read8", value)
@@ -233,7 +241,7 @@ function SystemBus:memRead(addr)
 end
 
 function SystemBus:memWrite(addr, value)
-	addr = maskA20(addr)
+	addr = normalizePhysicalAddress(self, addr)
 	self.stats.memWrites = self.stats.memWrites + 1
 	local m = findMapping(self, addr)
 	if not m then
@@ -245,7 +253,7 @@ function SystemBus:memWrite(addr, value)
 		return false
 	end
 	local ok, err = pcall(function()
-		m.device:memWrite(addr - m.base, (tonumber(value) or 0) % 256)
+		m.device:memWrite((addr - m.base) + (m.deviceOffset or 0), (tonumber(value) or 0) % 256)
 	end)
 	if not ok then
 		self:_setFault("device-write-fault", addr, "write8", err)
