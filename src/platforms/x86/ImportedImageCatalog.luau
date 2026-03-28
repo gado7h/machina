@@ -5,7 +5,7 @@ local ImportedImageCatalog = {}
 
 local FROZEN_IMPORT_CONFIG = {
 	X86 = {
-		BOOT_DRIVE = 0x80,
+		BOOT_DRIVE = 0x00,
 		BIOS_ENTRY_OFFSET = 0x0100,
 		RESET_VECTOR_SEG = 0xF000,
 		RESET_VECTOR_OFF = 0xFFF0,
@@ -16,7 +16,7 @@ local FROZEN_IMPORT_CONFIG = {
 		TEXT_BUFFER_BASE = 0x000B8000,
 		TEXT_BUFFER_SIZE = 0x8000,
 		SECTORS_PER_TRACK = 18,
-		HEADS = 1,
+		HEADS = 2,
 	},
 }
 
@@ -40,6 +40,8 @@ local function snapshotImage(image)
 		layout = ImageCatalogUtils.deepCopy(image.layout or {}),
 		files = ImageCatalogUtils.deepCopy(image.files or {}),
 		symbols = ImageCatalogUtils.deepCopy(image.symbols or {}),
+		configOverride = ImageCatalogUtils.deepCopy(image.configOverride),
+		meta = ImageCatalogUtils.deepCopy(image.meta),
 	}
 end
 
@@ -49,7 +51,8 @@ local function buildImportedImage(entryName)
 	return snapshotImage(image)
 end
 
-ImportedImageCatalog.ProtectedModeBringUp = buildImportedImage("ProtectedModeBringUp")
+ImportedImageCatalog.ProtectedModeBringUp = buildImportedImage("bootOS")
+ImportedImageCatalog.bootOS = buildImportedImage("bootOS")
 
 function ImportedImageCatalog.get(name)
 	return ImportedImageCatalog[name]

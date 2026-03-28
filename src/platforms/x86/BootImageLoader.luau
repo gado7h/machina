@@ -40,6 +40,7 @@ local function normalizeImage(image, meta)
 		layout = normalizeLayout(image.layout, files),
 		files = files,
 		symbols = image.symbols or {},
+		configOverride = ImageCatalogUtils.deepCopy(image.configOverride),
 	}
 
 	normalized.meta = {

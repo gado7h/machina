@@ -37,12 +37,16 @@ function SystemBus.new(config)
 
 	local Pic8259Module = require("@src/platforms/x86/devices/Pic8259")
 	local Pit8254Module = require("@src/platforms/x86/devices/Pit8254")
+	local Fdc765Module = require("@src/platforms/x86/devices/Fdc765")
 	self.pic = Pic8259Module.new(config)
 	self.timer = Pit8254Module.new(config)
+	self.fdc = Fdc765Module.new(config)
 	self._devices.pic = self.pic
 	self._devices.timer = self.timer
+	self._devices.fdc = self.fdc
 	self.pic:attachBus(self)
 	self.timer:attachBus(self)
+	self.fdc:attachBus(self)
 
 	self:registerPort(0x80, function()
 		return self._postCode or 0xFF

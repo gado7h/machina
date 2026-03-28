@@ -30,6 +30,47 @@ local REGISTER_EXT_MEM_POST = 0x30
 local CmosRtc = {}
 CmosRtc.__index = CmosRtc
 
+local function floppyTypeNibble(config)
+	local x86 = (config and config.X86) or {}
+	local tracks = tonumber(x86.FLOPPY_TRACKS) or 0
+	local heads = tonumber(x86.FLOPPY_HEADS) or 0
+	local sectors = tonumber(x86.FLOPPY_SECTORS) or 0
+	if tracks <= 0 or heads <= 0 or sectors <= 0 then
+		return 0x00
+	end
+	if sectors == 9 and tracks <= 40 then
+		return 0x01
+	end
+	if sectors == 15 then
+		return 0x02
+	end
+	if sectors == 9 then
+		return 0x03
+	end
+	if sectors == 18 then
+		return 0x04
+	end
+	if sectors == 36 then
+		return 0x05
+	end
+	return 0x00
+end
+
+local function baseMemoryKilobytes(config)
+	local x86 = (config and config.X86) or {}
+	local lowRamSize = tonumber(x86.LOW_RAM_SIZE) or 0xA0000
+	return math.floor(math.max(0, lowRamSize) / 1024)
+end
+
+local function extendedMemoryKilobytes(config)
+	local x86 = (config and config.X86) or {}
+	local highRamSize = tonumber(x86.HIGH_RAM_SIZE) or 0
+	if highRamSize <= 0 then
+		return 0
+	end
+	return math.floor(highRamSize / 1024)
+end
+
 local function toBCD(value)
 	local numericValue = tonumber(value) or 0
 	return ((math.floor(numericValue / 10) % 10) * 16) + (numericValue % 10)
@@ -55,22 +96,35 @@ function CmosRtc.new(config)
 	self._cmos = {}
 	self._cmos[REGISTER_DIAGNOSTIC] = 0x00
 	self._cmos[REGISTER_SHUTDOWN] = 0x00
-	self._cmos[REGISTER_FLOPPY_TYPE] = 0x00
 	self._cmos[REGISTER_HD_TYPE] = 0x47
-	self._cmos[REGISTER_EQUIPMENT] = bit32.bor(0x02, 0x40)
-	self._cmos[REGISTER_BASE_MEM_LOW] = 0x00
-	self._cmos[REGISTER_BASE_MEM_HIGH] = 0x02
-	self._cmos[REGISTER_EXT_MEM_LOW] = 0x00
-	self._cmos[REGISTER_EXT_MEM_HIGH] = 0x0A
-	self._cmos[REGISTER_EXT_MEM_POST] = 0x00
-	self._cmos[REGISTER_EXT_MEM_POST + 1] = 0x00
 	self._cmos[REGISTER_CENTURY] = 0x20
+	self:refreshHardwareTable(config)
 
 	self.stats = {
 		reads = 0,
 		writes = 0,
 	}
 	return self
+end
+
+function CmosRtc:refreshHardwareTable(config)
+	if config then
+		self.config = config
+	end
+
+	local floppyNibble = floppyTypeNibble(self.config)
+	local baseMemK = baseMemoryKilobytes(self.config)
+	local extMemK = extendedMemoryKilobytes(self.config)
+	local hasFloppy = floppyNibble ~= 0
+
+	self._cmos[REGISTER_FLOPPY_TYPE] = bit32.lshift(floppyNibble, 4)
+	self._cmos[REGISTER_EQUIPMENT] = bit32.bor(hasFloppy and 0x01 or 0x00, 0x40)
+	self._cmos[REGISTER_BASE_MEM_LOW] = baseMemK % 256
+	self._cmos[REGISTER_BASE_MEM_HIGH] = math.floor(baseMemK / 256) % 256
+	self._cmos[REGISTER_EXT_MEM_LOW] = extMemK % 256
+	self._cmos[REGISTER_EXT_MEM_HIGH] = math.floor(extMemK / 256) % 256
+	self._cmos[REGISTER_EXT_MEM_POST] = extMemK % 256
+	self._cmos[REGISTER_EXT_MEM_POST + 1] = math.floor(extMemK / 256) % 256
 end
 
 function CmosRtc:attachBus(bus)

@@ -1336,6 +1336,90 @@ function VgaAdapter:biosTeletype(ch, attr)
 	self:print(string.char((tonumber(ch) or 32) % 256), attr or 0x07)
 end
 
+function VgaAdapter:setCursorPos(_page, row, col)
+	self:moveCursor(tonumber(col) or 0, tonumber(row) or 0)
+end
+
+function VgaAdapter:getCursorPos(_page)
+	local col, row = self:getCursor()
+	return row, col
+end
+
+function VgaAdapter:setCursorType(startLine, endLine)
+	self._crtc[0x0A] = bit32.band(tonumber(startLine) or 0, 0x1F)
+	self._crtc[0x0B] = bit32.band(tonumber(endLine) or (self.CH - 1), 0x1F)
+	markCellDirty(self, self._cursorCol, self._cursorRow)
+	self._dirty = true
+end
+
+function VgaAdapter:getVideoMode()
+	return self._biosMode or 0x03, self.config.TEXT_COLS, 0
+end
+
+function VgaAdapter:readCharAttr(_page)
+	local idx = (textStartCell(self) + (self._cursorRow * self.config.TEXT_COLS) + self._cursorCol)
+		% math.max(1, self._textCellCount)
+	local cell = self._textBuf[idx] or { char = 32, attr = 0x07 }
+	return cell.char or 32, cell.attr or 0x07
+end
+
+function VgaAdapter:writeCharAttr(_page, ch, attr, count)
+	local repetitions = math.max(0, tonumber(count) or 0)
+	for _ = 1, repetitions do
+		self:putChar(self._cursorCol, self._cursorRow, ch, attr)
+		self._cursorCol = self._cursorCol + 1
+		if self._cursorCol >= self.config.TEXT_COLS then
+			self._cursorCol = 0
+			self._cursorRow = self._cursorRow + 1
+		end
+		if self._cursorRow >= self.config.TEXT_ROWS then
+			self:_scrollUp()
+			self._cursorRow = self.config.TEXT_ROWS - 1
+		end
+	end
+	updateCursorRegisters(self)
+	self._dirty = true
+end
+
+function VgaAdapter:scrollWindow(_page, top, left, bottom, right, lines, attr)
+	local cols = self.config.TEXT_COLS
+	local rows = self.config.TEXT_ROWS
+	local x0 = clamp(tonumber(left) or 0, 0, cols - 1)
+	local y0 = clamp(tonumber(top) or 0, 0, rows - 1)
+	local x1 = clamp(tonumber(right) or (cols - 1), x0, cols - 1)
+	local y1 = clamp(tonumber(bottom) or (rows - 1), y0, rows - 1)
+	local fillAttr = (tonumber(attr) or 0x07) % 256
+	local distance = math.max(0, tonumber(lines) or 0)
+
+	if distance == 0 or distance >= (y1 - y0 + 1) then
+		for row = y0, y1 do
+			for col = x0, x1 do
+				self:putChar(col, row, 32, fillAttr)
+			end
+		end
+		updateCursorRegisters(self)
+		self._dirty = true
+		return
+	end
+
+	for row = y0, y1 - distance do
+		for col = x0, x1 do
+			local srcIdx = (textStartCell(self) + ((row + distance) * cols) + col) % math.max(1, self._textCellCount)
+			local cell = self._textBuf[srcIdx] or { char = 32, attr = fillAttr }
+			self:putChar(col, row, cell.char, cell.attr)
+		end
+	end
+
+	for row = y1 - distance + 1, y1 do
+		for col = x0, x1 do
+			self:putChar(col, row, 32, fillAttr)
+		end
+	end
+
+	updateCursorRegisters(self)
+	self._dirty = true
+end
+
 function VgaAdapter:hostClear(attr)
 	local overlayAttr = (tonumber(attr) or self._hostOverlay.defaultAttr or 0x0C) % 256
 	self._hostOverlay.active = true
@@ -1639,14 +1723,12 @@ function VgaAdapter:print(str, attr)
 	for i = 1, #str do
 		local c = string.byte(str, i)
 		if c == 10 then
-			self._cursorCol = 0
 			self._cursorRow = self._cursorRow + 1
 		elseif c == 13 then
 			self._cursorCol = 0
 		elseif c == 8 then
 			if self._cursorCol > 0 then
 				self._cursorCol = self._cursorCol - 1
-				self:putChar(self._cursorCol, self._cursorRow, 32, attr)
 			end
 		else
 			self:putChar(self._cursorCol, self._cursorRow, c, attr)

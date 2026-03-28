@@ -164,6 +164,7 @@ function PcSystem:_buildHardware()
 	self.bus:registerDevice("keyboard", self.keyboard)
 	self.bus:registerDevice("serial", self.serial)
 	self.bus:registerDevice("rtc", self.rtc)
+	self.fdc = self.bus.fdc
 
 	self.bus:mapMemory(self.boardConfig.RAM_BASE, self.boardConfig.RAM_SIZE, self.ram, "LOW-RAM")
 	self.bus:mapMemory(self.boardConfig.VRAM_BASE, self.boardConfig.VRAM_SIZE, self.gpu, "VGA-TEXT")

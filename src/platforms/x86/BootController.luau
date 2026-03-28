@@ -5,6 +5,22 @@ local BootImageLoader = require("@src/platforms/x86/BootImageLoader")
 local BootController = {}
 BootController.__index = BootController
 
+local function sectorsToBytes(sectors)
+	local maxLba = -1
+	for lba in pairs(sectors or {}) do
+		maxLba = math.max(maxLba, tonumber(lba) or -1)
+	end
+
+	local bytes = {}
+	for lba = 0, maxLba do
+		local sector = sectors[lba] or {}
+		for i = 1, 512 do
+			bytes[#bytes + 1] = sector[i] or 0
+		end
+	end
+	return bytes
+end
+
 function BootController.new(machine)
 	local self = setmetatable({}, BootController)
 	self.machine = machine
@@ -15,7 +31,39 @@ function BootController.new(machine)
 	self._kernelLinear = ((self.x86.KERNEL_LOAD_SEG or 0x1000) * 16) + (self.x86.KERNEL_LOAD_OFF or 0)
 	self._bootLinear = ((self.x86.BOOT_SECTOR_LOAD_SEG or 0) * 16) + (self.x86.BOOT_SECTOR_LOAD_OFF or 0x7C00)
 	self._readyFlagLinear = nil
+
+	if self.x86.BOOT_DRIVE == nil then
+		self.x86.BOOT_DRIVE = 0x00
+	end
+
 	return self
+end
+
+function BootController:applyConfigOverride(override)
+	if not override then
+		return
+	end
+
+	for k, v in pairs(override) do
+		self.x86[k] = v
+		self.machine.config.X86[k] = v
+		self.machine.boardConfig.X86 = self.machine.boardConfig.X86 or {}
+		self.machine.boardConfig.X86[k] = v
+	end
+
+	if override.KERNEL_LOAD_SEG then
+		self._kernelLinear = override.KERNEL_LOAD_SEG * 16
+	end
+	if override.KERNEL_LOAD_OFF then
+		self._kernelLinear = self._kernelLinear + override.KERNEL_LOAD_OFF
+	end
+	if override.BOOT_SECTOR_LOAD_SEG or override.BOOT_SECTOR_LOAD_OFF then
+		self._bootLinear = ((self.x86.BOOT_SECTOR_LOAD_SEG or 0) * 16) + (self.x86.BOOT_SECTOR_LOAD_OFF or 0x7C00)
+	end
+
+	if self.machine.rtc and type(self.machine.rtc.refreshHardwareTable) == "function" then
+		self.machine.rtc:refreshHardwareTable(self.machine.boardConfig)
+	end
 end
 
 function BootController:startBoot()
@@ -40,6 +88,21 @@ function BootController:startBoot()
 	end
 
 	self.image = imageOrErr
+
+	if self.image.configOverride then
+		self:applyConfigOverride(self.image.configOverride)
+	end
+
+	if self.machine.fdc then
+		if type(self.machine.fdc.loadImage) == "function" then
+			self.machine.fdc:loadImage(sectorsToBytes(self.image.sectors))
+		else
+			for lba, sector in pairs(self.image.sectors) do
+				self.machine.fdc:writeSector(lba, sector)
+			end
+		end
+	end
+
 	self.machine.hdd._sectors = {}
 	for lba, sector in pairs(self.image.sectors) do
 		self.machine.hdd:writeSector(lba, sector)
@@ -101,19 +164,23 @@ end
 function BootController:onDiskRead(startLba, _count, bufferAddress)
 	if startLba == 0 and bufferAddress == self._bootLinear then
 		self.machine:_setBootStage("BOOT")
-	elseif startLba == (self.image.layout.kernelSectorStart - 1) and bufferAddress == self._kernelLinear then
+	elseif startLba >= (self.image.layout.kernelSectorStart - 1) and bufferAddress == self._kernelLinear then
 		self.machine:_setBootStage("KERNEL")
 	end
 end
 
 function BootController:tick(_dt)
-	if self.machine:getBootStage() ~= "KERNEL" then
+	local stage = self.machine:getBootStage()
+
+	if stage ~= "KERNEL" then
 		return
 	end
+
 	if self._readyFlagLinear and self.machine.cpu:readPhysical16(self._readyFlagLinear) == 1 then
 		self.machine:_setBootStage("RUNNING")
 		return
 	end
+
 	local pc = self.machine.cpu:getLinearPC()
 	if not self._readyFlagLinear and pc >= self._kernelLinear then
 		self.machine:_setBootStage("RUNNING")
@@ -123,17 +190,22 @@ end
 function BootController:_initializeIVT()
 	local cpu = self.machine.cpu
 	local romBase = self.x86.ROM_BASE or 0xF0000
+	local biosEntry = self.x86.BIOS_ENTRY_OFFSET or 0x0100
+	local romSegment = math.floor(romBase / 16) % 0x10000
 	for vector = 0, 0xFF do
-		local offset = vector * 4
-		cpu:writePhysical8(offset, 0x00)
-		cpu:writePhysical8(offset + 1, 0x00)
-		cpu:writePhysical8(offset + 2, bit32.band(romBase, 0xFF))
-		cpu:writePhysical8(offset + 3, bit32.rshift(romBase, 8) % 0x100)
+		local ivtOffset = vector * 4
+		local offsetLow = biosEntry % 256
+		local offsetHigh = math.floor(biosEntry / 256) % 256
+		cpu:writePhysical8(ivtOffset, offsetLow)
+		cpu:writePhysical8(ivtOffset + 1, offsetHigh)
+		cpu:writePhysical8(ivtOffset + 2, bit32.band(romSegment, 0xFF))
+		cpu:writePhysical8(ivtOffset + 3, bit32.rshift(romSegment, 8) % 0x100)
 	end
 end
 
 function BootController:_initializeBDA()
 	local cpu = self.machine.cpu
+
 	cpu:writePhysical8(0x0400, 0x50)
 	cpu:writePhysical8(0x0401, 0x14)
 	cpu:writePhysical8(0x0402, 0x00)
@@ -150,7 +222,8 @@ function BootController:_initializeBDA()
 	cpu:writePhysical8(0x040D, 0x00)
 	cpu:writePhysical8(0x040E, 0x00)
 	cpu:writePhysical8(0x040F, 0x00)
-	cpu:writePhysical8(0x0410, 0x00)
+
+	cpu:writePhysical8(0x0410, 0x21)
 	cpu:writePhysical8(0x0411, 0x00)
 	cpu:writePhysical8(0x0412, 0x80)
 	cpu:writePhysical8(0x0413, 0x02)
@@ -166,6 +239,10 @@ function BootController:_initializeBDA()
 	cpu:writePhysical8(0x041D, 0x00)
 	cpu:writePhysical8(0x041E, 0x00)
 	cpu:writePhysical8(0x041F, 0x00)
+
+	cpu:writePhysical8(0x047E, 0x00)
+	cpu:writePhysical8(0x047F, 0x00)
+
 	cpu:writePhysical8(0x0480, 0x00)
 	cpu:writePhysical8(0x0481, 0x0C)
 	cpu:writePhysical8(0x0482, 0x00)

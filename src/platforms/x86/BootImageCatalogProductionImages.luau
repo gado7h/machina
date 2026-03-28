@@ -1,706 +1,114 @@
-local Assembler8086 = require("@src/platforms/x86/Assembler8086")
+local BootOSHex = require("@src/platforms/x86/BootOSHex")
 local BiosRom = require("@src/platforms/x86/BiosRom")
-local Utils = require("@src/platforms/x86/BootImageCatalogUtils")
 
 local ProductionImages = {}
 
-local function buildProtectedModeMonitorSource()
-	return table.concat({
-		"PM_ENTRY:",
-		"  MOV AX, 0x0010",
-		"  MOV DS, AX",
-		"  MOV SS, AX",
-		"  MOV ESP, 0x00007B00",
-		"  MOV AX, 0x0018",
-		"  MOV ES, AX",
-		"  CALL MONITOR_INIT",
-		"PM_LOOP:",
-		"  IN AL, 0x60",
-		"  CMP AL, 0",
-		"  JE PM_LOOP",
-		"  CMP AL, 0x80",
-		"  JNC PM_LOOP",
-		"  CALL TRANSLATE_SCAN",
-		"  CMP AL, 0",
-		"  JE PM_LOOP",
-		"  CALL HANDLE_CHAR",
-		"  JMP PM_LOOP",
-		"MONITOR_INIT:",
-		"  CALL CLEAR_SCREEN",
-		"  MOV DWORD [BOOT_READY_FLAG], 1",
-		"  MOV ESI, PM_READY_MSG",
-		"  CALL PRINT_STRING_PM",
-		"  CALL SHOW_PROMPT",
-		"  RET",
-		"SHOW_PROMPT:",
-		"  MOV ESI, PROMPT",
-		"  CALL PRINT_STRING_PM",
-		"  MOV ESI, COMMAND_BUFFER",
-		"  MOV DWORD [COMMAND_LEN], 0",
-		"  MOV BYTE [SI], 0",
-		"  RET",
-		"HANDLE_CHAR:",
-		"  CMP AL, 0x08",
-		"  JE HANDLE_BACKSPACE",
-		"  CMP AL, 0x0A",
-		"  JE HANDLE_ENTER",
-		"  MOV [INPUT_CHAR], AL",
-		"  MOV EAX, [COMMAND_LEN]",
-		"  CMP EAX, 63",
-		"  JNC HANDLE_CHAR_DONE",
-		"  MOV AL, [INPUT_CHAR]",
-		"  CALL PUTC",
-		"  MOV AL, [INPUT_CHAR]",
-		"  MOV [SI], AL",
-		"  INC SI",
-		"  MOV BYTE [SI], 0",
-		"  MOV EAX, [COMMAND_LEN]",
-		"  INC EAX",
-		"  MOV [COMMAND_LEN], EAX",
-		"HANDLE_CHAR_DONE:",
-		"  RET",
-		"HANDLE_BACKSPACE:",
-		"  MOV EAX, [COMMAND_LEN]",
-		"  CMP EAX, 0",
-		"  JE HANDLE_CHAR_DONE",
-		"  DEC SI",
-		"  DEC EAX",
-		"  MOV [COMMAND_LEN], EAX",
-		"  MOV BYTE [SI], 0",
-		"  MOV AL, 0x08",
-		"  CALL PUTC",
-		"  RET",
-		"HANDLE_ENTER:",
-		"  MOV BYTE [SI], 0",
-		"  MOV AL, 0x0A",
-		"  CALL PUTC",
-		"  CALL EXECUTE_COMMAND",
-		"  CALL SHOW_PROMPT",
-		"  RET",
-		"EXECUTE_COMMAND:",
-		"  CMP BYTE [COMMAND_BUFFER], 0",
-		"  JE EXECUTE_DONE",
-		"CHECK_HELP:",
-		"  CMP BYTE [COMMAND_BUFFER], 'h'",
-		"  JNE CHECK_CLEAR",
-		"  CMP BYTE [COMMAND_BUFFER+1], 'e'",
-		"  JNE CHECK_CLEAR",
-		"  CMP BYTE [COMMAND_BUFFER+2], 'l'",
-		"  JNE CHECK_CLEAR",
-		"  CMP BYTE [COMMAND_BUFFER+3], 'p'",
-		"  JNE CHECK_CLEAR",
-		"  CMP BYTE [COMMAND_BUFFER+4], 0",
-		"  JNE CHECK_CLEAR",
-		"  CALL CMD_HELP",
-		"  RET",
-		"CHECK_CLEAR:",
-		"  CMP BYTE [COMMAND_BUFFER], 'c'",
-		"  JNE CHECK_CLS",
-		"  CMP BYTE [COMMAND_BUFFER+1], 'l'",
-		"  JNE CHECK_CLS",
-		"  CMP BYTE [COMMAND_BUFFER+2], 'e'",
-		"  JNE CHECK_CLS",
-		"  CMP BYTE [COMMAND_BUFFER+3], 'a'",
-		"  JNE CHECK_CLS",
-		"  CMP BYTE [COMMAND_BUFFER+4], 'r'",
-		"  JNE CHECK_CLS",
-		"  CMP BYTE [COMMAND_BUFFER+5], 0",
-		"  JNE CHECK_CLS",
-		"  CALL CLEAR_SCREEN",
-		"  RET",
-		"CHECK_CLS:",
-		"  CMP BYTE [COMMAND_BUFFER], 'c'",
-		"  JNE CHECK_ECHO",
-		"  CMP BYTE [COMMAND_BUFFER+1], 'l'",
-		"  JNE CHECK_ECHO",
-		"  CMP BYTE [COMMAND_BUFFER+2], 's'",
-		"  JNE CHECK_ECHO",
-		"  CMP BYTE [COMMAND_BUFFER+3], 0",
-		"  JNE CHECK_ECHO",
-		"  CALL CLEAR_SCREEN",
-		"  RET",
-		"CHECK_ECHO:",
-		"  CMP BYTE [COMMAND_BUFFER], 'e'",
-		"  JNE CHECK_UNAME",
-		"  CMP BYTE [COMMAND_BUFFER+1], 'c'",
-		"  JNE CHECK_UNAME",
-		"  CMP BYTE [COMMAND_BUFFER+2], 'h'",
-		"  JNE CHECK_UNAME",
-		"  CMP BYTE [COMMAND_BUFFER+3], 'o'",
-		"  JNE CHECK_UNAME",
-		"  CMP BYTE [COMMAND_BUFFER+4], 0",
-		"  JE CMD_ECHO_EMPTY",
-		"  CMP BYTE [COMMAND_BUFFER+4], ' '",
-		"  JNE CHECK_UNAME",
-		"  MOV ESI, COMMAND_BUFFER+5",
-		"  CALL PRINT_STRING_PM",
-		"  MOV ESI, NEWLINE",
-		"  CALL PRINT_STRING_PM",
-		"  RET",
-		"CMD_ECHO_EMPTY:",
-		"  MOV ESI, NEWLINE",
-		"  CALL PRINT_STRING_PM",
-		"  RET",
-		"CHECK_UNAME:",
-		"  CMP BYTE [COMMAND_BUFFER], 'u'",
-		"  JNE CHECK_REBOOT",
-		"  CMP BYTE [COMMAND_BUFFER+1], 'n'",
-		"  JNE CHECK_REBOOT",
-		"  CMP BYTE [COMMAND_BUFFER+2], 'a'",
-		"  JNE CHECK_REBOOT",
-		"  CMP BYTE [COMMAND_BUFFER+3], 'm'",
-		"  JNE CHECK_REBOOT",
-		"  CMP BYTE [COMMAND_BUFFER+4], 'e'",
-		"  JNE CHECK_REBOOT",
-		"  CMP BYTE [COMMAND_BUFFER+5], 0",
-		"  JNE CHECK_REBOOT",
-		"  MOV ESI, UNAME_MSG",
-		"  CALL PRINT_STRING_PM",
-		"  RET",
-		"CHECK_REBOOT:",
-		"  CMP BYTE [COMMAND_BUFFER], 'r'",
-		"  JNE CHECK_UNKNOWN",
-		"  CMP BYTE [COMMAND_BUFFER+1], 'e'",
-		"  JNE CHECK_UNKNOWN",
-		"  CMP BYTE [COMMAND_BUFFER+2], 'b'",
-		"  JNE CHECK_UNKNOWN",
-		"  CMP BYTE [COMMAND_BUFFER+3], 'o'",
-		"  JNE CHECK_UNKNOWN",
-		"  CMP BYTE [COMMAND_BUFFER+4], 'o'",
-		"  JNE CHECK_UNKNOWN",
-		"  CMP BYTE [COMMAND_BUFFER+5], 't'",
-		"  JNE CHECK_UNKNOWN",
-		"  CMP BYTE [COMMAND_BUFFER+6], 0",
-		"  JNE CHECK_UNKNOWN",
-		"  JMP SOFT_RESET",
-		"CHECK_UNKNOWN:",
-		"  MOV ESI, UNKNOWN_PREFIX",
-		"  CALL PRINT_STRING_PM",
-		"  MOV ESI, COMMAND_BUFFER",
-		"  CALL PRINT_STRING_PM",
-		"  MOV ESI, UNKNOWN_SUFFIX",
-		"  CALL PRINT_STRING_PM",
-		"EXECUTE_DONE:",
-		"  RET",
-		"CMD_HELP:",
-		"  MOV ESI, HELP_MSG",
-		"  CALL PRINT_STRING_PM",
-		"  RET",
-		"SOFT_RESET:",
-		"  CALL MONITOR_INIT",
-		"  JMP PM_LOOP",
-		"TRANSLATE_SCAN:",
-		"  CMP AL, 0x02",
-		"  JE SCAN_1",
-		"  CMP AL, 0x03",
-		"  JE SCAN_2",
-		"  CMP AL, 0x04",
-		"  JE SCAN_3",
-		"  CMP AL, 0x05",
-		"  JE SCAN_4",
-		"  CMP AL, 0x06",
-		"  JE SCAN_5",
-		"  CMP AL, 0x07",
-		"  JE SCAN_6",
-		"  CMP AL, 0x08",
-		"  JE SCAN_7",
-		"  CMP AL, 0x09",
-		"  JE SCAN_8",
-		"  CMP AL, 0x0A",
-		"  JE SCAN_9",
-		"  CMP AL, 0x0B",
-		"  JE SCAN_0",
-		"  CMP AL, 0x0E",
-		"  JE SCAN_BACKSPACE",
-		"  CMP AL, 0x10",
-		"  JE SCAN_Q",
-		"  CMP AL, 0x11",
-		"  JE SCAN_W",
-		"  CMP AL, 0x12",
-		"  JE SCAN_E",
-		"  CMP AL, 0x13",
-		"  JE SCAN_R",
-		"  CMP AL, 0x14",
-		"  JE SCAN_T",
-		"  CMP AL, 0x15",
-		"  JE SCAN_Y",
-		"  CMP AL, 0x16",
-		"  JE SCAN_U",
-		"  CMP AL, 0x17",
-		"  JE SCAN_I",
-		"  CMP AL, 0x18",
-		"  JE SCAN_O",
-		"  CMP AL, 0x19",
-		"  JE SCAN_P",
-		"  CMP AL, 0x1C",
-		"  JE SCAN_ENTER",
-		"  CMP AL, 0x1E",
-		"  JE SCAN_A",
-		"  CMP AL, 0x1F",
-		"  JE SCAN_S",
-		"  CMP AL, 0x20",
-		"  JE SCAN_D",
-		"  CMP AL, 0x21",
-		"  JE SCAN_F",
-		"  CMP AL, 0x22",
-		"  JE SCAN_G",
-		"  CMP AL, 0x23",
-		"  JE SCAN_H",
-		"  CMP AL, 0x24",
-		"  JE SCAN_J",
-		"  CMP AL, 0x25",
-		"  JE SCAN_K",
-		"  CMP AL, 0x26",
-		"  JE SCAN_L",
-		"  CMP AL, 0x2C",
-		"  JE SCAN_Z",
-		"  CMP AL, 0x2D",
-		"  JE SCAN_X",
-		"  CMP AL, 0x2E",
-		"  JE SCAN_C",
-		"  CMP AL, 0x2F",
-		"  JE SCAN_V",
-		"  CMP AL, 0x30",
-		"  JE SCAN_B",
-		"  CMP AL, 0x31",
-		"  JE SCAN_N",
-		"  CMP AL, 0x32",
-		"  JE SCAN_M",
-		"  CMP AL, 0x39",
-		"  JE SCAN_SPACE",
-		"  XOR AX, AX",
-		"  RET",
-		"SCAN_1: MOV AL, '1'",
-		"  RET",
-		"SCAN_2: MOV AL, '2'",
-		"  RET",
-		"SCAN_3: MOV AL, '3'",
-		"  RET",
-		"SCAN_4: MOV AL, '4'",
-		"  RET",
-		"SCAN_5: MOV AL, '5'",
-		"  RET",
-		"SCAN_6: MOV AL, '6'",
-		"  RET",
-		"SCAN_7: MOV AL, '7'",
-		"  RET",
-		"SCAN_8: MOV AL, '8'",
-		"  RET",
-		"SCAN_9: MOV AL, '9'",
-		"  RET",
-		"SCAN_0: MOV AL, '0'",
-		"  RET",
-		"SCAN_Q: MOV AL, 'q'",
-		"  RET",
-		"SCAN_W: MOV AL, 'w'",
-		"  RET",
-		"SCAN_E: MOV AL, 'e'",
-		"  RET",
-		"SCAN_R: MOV AL, 'r'",
-		"  RET",
-		"SCAN_T: MOV AL, 't'",
-		"  RET",
-		"SCAN_Y: MOV AL, 'y'",
-		"  RET",
-		"SCAN_U: MOV AL, 'u'",
-		"  RET",
-		"SCAN_I: MOV AL, 'i'",
-		"  RET",
-		"SCAN_O: MOV AL, 'o'",
-		"  RET",
-		"SCAN_P: MOV AL, 'p'",
-		"  RET",
-		"SCAN_A: MOV AL, 'a'",
-		"  RET",
-		"SCAN_S: MOV AL, 's'",
-		"  RET",
-		"SCAN_D: MOV AL, 'd'",
-		"  RET",
-		"SCAN_F: MOV AL, 'f'",
-		"  RET",
-		"SCAN_G: MOV AL, 'g'",
-		"  RET",
-		"SCAN_H: MOV AL, 'h'",
-		"  RET",
-		"SCAN_J: MOV AL, 'j'",
-		"  RET",
-		"SCAN_K: MOV AL, 'k'",
-		"  RET",
-		"SCAN_L: MOV AL, 'l'",
-		"  RET",
-		"SCAN_Z: MOV AL, 'z'",
-		"  RET",
-		"SCAN_X: MOV AL, 'x'",
-		"  RET",
-		"SCAN_C: MOV AL, 'c'",
-		"  RET",
-		"SCAN_V: MOV AL, 'v'",
-		"  RET",
-		"SCAN_B: MOV AL, 'b'",
-		"  RET",
-		"SCAN_N: MOV AL, 'n'",
-		"  RET",
-		"SCAN_M: MOV AL, 'm'",
-		"  RET",
-		"SCAN_SPACE: MOV AL, ' '",
-		"  RET",
-		"SCAN_BACKSPACE: MOV AL, 0x08",
-		"  RET",
-		"SCAN_ENTER: MOV AL, 0x0A",
-		"  RET",
-		"PRINT_STRING_PM:",
-		"  MOV AL, [SI]",
-		"  CMP AL, 0",
-		"  JE PRINT_STRING_PM_DONE",
-		"  CALL PUTC",
-		"  INC SI",
-		"  JMP PRINT_STRING_PM",
-		"PRINT_STRING_PM_DONE:",
-		"  RET",
-		"PUTC:",
-		"  CMP AL, 0x0D",
-		"  JE PUTC_NEWLINE",
-		"  CMP AL, 0x0A",
-		"  JE PUTC_NEWLINE",
-		"  CMP AL, 0x08",
-		"  JE PUTC_BACKSPACE",
-		"  CMP ECX, 80",
-		"  JE PUTC_NEWLINE",
-		"  MOV DX, DS",
-		"  PUSH EAX",
-		"  MOV AX, 0x0018",
-		"  MOV DS, AX",
-		"  POP EAX",
-		"  MOV [DI], AL",
-		"  INC DI",
-		"  MOV BYTE [DI], 0x07",
-		"  INC DI",
-		"  MOV DS, DX",
-		"  INC EBX",
-		"  INC ECX",
-		"  CMP DI, 0x0FA0",
-		"  JC PUTC_DONE",
-		"  CALL SCROLL_SCREEN",
-		"PUTC_DONE:",
-		"  CALL UPDATE_CURSOR",
-		"  RET",
-		"PUTC_BACKSPACE:",
-		"  CMP ECX, 0",
-		"  JE PUTC_DONE",
-		"  SUB DI, 2",
-		"  DEC EBX",
-		"  DEC ECX",
-		"  MOV DX, DS",
-		"  MOV AX, 0x0018",
-		"  MOV DS, AX",
-		"  MOV BYTE [DI], ' '",
-		"  INC DI",
-		"  MOV BYTE [DI], 0x07",
-		"  DEC DI",
-		"  MOV DS, DX",
-		"  RET",
-		"PUTC_NEWLINE:",
-		"PUTC_NEWLINE_ADVANCE:",
-		"  ADD DI, 2",
-		"  INC EBX",
-		"  INC ECX",
-		"  CMP ECX, 80",
-		"  JNE PUTC_NEWLINE_ADVANCE",
-		"PUTC_NEWLINE_RESET:",
-		"  XOR ECX, ECX",
-		"  CMP DI, 0x0FA0",
-		"  JC PUTC_DONE",
-		"  CALL SCROLL_SCREEN",
-		"  RET",
-		"SCROLL_SCREEN:",
-		"  PUSH EAX",
-		"  PUSH EDX",
-		"  PUSH ESI",
-		"  PUSH EDI",
-		"  MOV DX, DS",
-		"  MOV AX, 0x0018",
-		"  MOV DS, AX",
-		"  XOR SI, SI",
-		"  MOV DI, 0x00A0",
-		"SCROLL_COPY_LOOP:",
-		"  MOV AL, [DI]",
-		"  MOV [SI], AL",
-		"  INC DI",
-		"  INC SI",
-		"  CMP SI, 0x0F00",
-		"  JNE SCROLL_COPY_LOOP",
-		"  MOV DI, 0x0F00",
-		"SCROLL_CLEAR_LAST_LINE:",
-		"  MOV BYTE [DI], ' '",
-		"  INC DI",
-		"  MOV BYTE [DI], 0x07",
-		"  INC DI",
-		"  CMP DI, 0x0FA0",
-		"  JNE SCROLL_CLEAR_LAST_LINE",
-		"  MOV DS, DX",
-		"  POP EDI",
-		"  POP ESI",
-		"  POP EDX",
-		"  POP EAX",
-		"  MOV DI, 0x0F00",
-		"  MOV EBX, 0x00000780",
-		"  XOR ECX, ECX",
-		"  RET",
-		"CLEAR_SCREEN:",
-		"  MOV DX, DS",
-		"  MOV AX, 0x0018",
-		"  MOV DS, AX",
-		"  XOR DI, DI",
-		"CLEAR_SCREEN_LOOP:",
-		"  MOV BYTE [DI], ' '",
-		"  INC DI",
-		"  MOV BYTE [DI], 0x07",
-		"  INC DI",
-		"  CMP DI, 0x0FA0",
-		"  JNE CLEAR_SCREEN_LOOP",
-		"  MOV DS, DX",
-		"  XOR DI, DI",
-		"  XOR EBX, EBX",
-		"  XOR ECX, ECX",
-		"  RET",
-		"UPDATE_CURSOR:",
-		"  MOV DX, 0x03D4",
-		"  MOV AL, 0x0E",
-		"  OUT DX, AL",
-		"  INC DX",
-		"  MOV AL, BH",
-		"  OUT DX, AL",
-		"  DEC DX",
-		"  MOV AL, 0x0F",
-		"  OUT DX, AL",
-		"  INC DX",
-		"  MOV AL, BL",
-		"  OUT DX, AL",
-		"  RET",
-		"PM_READY_MSG:",
-		'  DB "machina protected-mode monitor", 13, 10, "type help for commands", 13, 10, 0',
-		"PROMPT:",
-		'  DB "root@machina:~# ", 0',
-		"NEWLINE:",
-		"  DB 13, 10, 0",
-		"HELP_MSG:",
-		'  DB "help    show available commands", 13, 10, "clear   clear the screen", 13, 10, "cls     alias for clear", 13, 10, "echo    print arguments", 13, 10, "uname   show system identity", 13, 10, "reboot  reset the monitor", 13, 10, 0',
-		"UNAME_MSG:",
-		'  DB "Linux machina 0.1 i386 bring-up", 13, 10, 0',
-		"UNKNOWN_PREFIX:",
-		'  DB "pmsh: ", 0',
-		"UNKNOWN_SUFFIX:",
-		'  DB ": command not found", 13, 10, 0',
-		"INPUT_CHAR:",
-		"  DB 0",
-		"COMMAND_LEN:",
-		"  DD 0",
-		"COMMAND_BUFFER:",
-		"  DB 0",
-		"  DB 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0",
-		"  DB 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0",
-		"  DB 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0",
-		"  DB 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0",
-		"BOOT_READY_FLAG:",
-		"  DD 0",
-	}, "\n")
-end
+local function parseHexString(hexStr)
+	local bytes = {}
 
-local function buildProtectedModeStubSource(config, pmOffset, kernelBaseLinear, gdtLinear)
-	local x86 = config.X86 or {}
-	local codeDesc = Utils.descriptorWords(kernelBaseLinear, 0x9A, 0x000FFFFF, 0x0C)
-	local dataDesc = Utils.descriptorWords(kernelBaseLinear, 0x92, 0x000FFFFF, 0x0C)
-	local videoDesc = Utils.descriptorWords(
-		x86.TEXT_BUFFER_BASE or 0xB8000,
-		0x92,
-		math.max(0, (x86.TEXT_BUFFER_SIZE or 0x8000) - 1),
-		0x04
-	)
-	return table.concat({
-		"ORG 0x0000",
-		"START:",
-		"  CLI",
-		"  MOV AX, " .. Utils.hex16(x86.KERNEL_LOAD_SEG or 0x1000),
-		"  MOV DS, AX",
-		"  MOV ES, AX",
-		"  MOV SS, AX",
-		"  MOV SP, 0x7B00",
-		"  MOV SI, REALMODE_MSG",
-		"  CALL PRINT_STRING",
-		"  LGDT [GDT_DESC]",
-		"  MOV AX, 1",
-		"  LMSW AX",
-		"  DB 0xEA",
-		"  DW " .. Utils.hex16(pmOffset),
-		"  DW 0x0008",
-		"PRINT_STRING:",
-		"  MOV AL, [SI]",
-		"  CMP AL, 0",
-		"  JE PRINT_DONE",
-		"  MOV AH, 0x0E",
-		"  INT 0x10",
-		"  INC SI",
-		"  JMP PRINT_STRING",
-		"PRINT_DONE:",
-		"  RET",
-		"REALMODE_MSG:",
-		'  DB "IA-32 protected-mode bring-up", 13, 10, 0',
-		"GDT:",
-		"  DW 0x0000, 0x0000, 0x0000, 0x0000",
-		"  DW " .. Utils.hex16(codeDesc.limitLow) .. ", " .. Utils.hex16(codeDesc.baseLow) .. ", " .. Utils.hex16(
-			codeDesc.accessBaseMid
-		) .. ", " .. Utils.hex16(codeDesc.flagsBaseHigh),
-		"  DW " .. Utils.hex16(dataDesc.limitLow) .. ", " .. Utils.hex16(dataDesc.baseLow) .. ", " .. Utils.hex16(
-			dataDesc.accessBaseMid
-		) .. ", " .. Utils.hex16(dataDesc.flagsBaseHigh),
-		"  DW " .. Utils.hex16(videoDesc.limitLow) .. ", " .. Utils.hex16(videoDesc.baseLow) .. ", " .. Utils.hex16(
-			videoDesc.accessBaseMid
-		) .. ", " .. Utils.hex16(videoDesc.flagsBaseHigh),
-		"GDT_DESC:",
-		"  DW GDT_END - GDT - 1",
-		"  DW " .. Utils.hex16(gdtLinear % 0x10000),
-		"  DW " .. Utils.hex16(math.floor(gdtLinear / 0x10000) % 0x10000),
-		"GDT_END:",
-	}, "\n")
-end
+	-- Handle 0x31,0xC0 format
+	for hexByte in hexStr:gmatch("0[xX]([0-9A-Fa-f][0-9A-Fa-f])") do
+		bytes[#bytes + 1] = tonumber(hexByte, 16)
+	end
 
-local function buildProtectedModeBringUp(config)
-	local x86 = config.X86 or {}
-	local layout = {
-		kernelSectorStart = 2,
-		kernelSectorCount = 1,
-		fsSuperSector = 0,
-		rootDirSector = 0,
-		rootDirSectorCount = 0,
-		dataStartSector = 0,
-		fileCount = 0,
-	}
-
-	local stubArtifact
-	local monitorArtifact
-	local kernelBytes
-	local kernelSymbols
-	local bootSource
-	local kernelLoadLinear = (x86.KERNEL_LOAD_SEG or 0x1000) * 16
-	for _ = 1, 4 do
-		local placeholderStub =
-			Assembler8086.compile(buildProtectedModeStubSource(config, 0, kernelLoadLinear, kernelLoadLinear))
-		local pmOffset = #placeholderStub.bytes
-		local provisionalStub =
-			Assembler8086.compile(buildProtectedModeStubSource(config, pmOffset, kernelLoadLinear, kernelLoadLinear))
-		local gdtOffset = provisionalStub.symbols and provisionalStub.symbols.GDT or 0
-		local gdtLinear = kernelLoadLinear + gdtOffset
-		stubArtifact =
-			Assembler8086.compile(buildProtectedModeStubSource(config, pmOffset, kernelLoadLinear, gdtLinear))
-		pmOffset = #stubArtifact.bytes
-		if pmOffset ~= #placeholderStub.bytes then
-			stubArtifact = Assembler8086.compile(
-				buildProtectedModeStubSource(
-					config,
-					pmOffset,
-					kernelLoadLinear,
-					kernelLoadLinear + (stubArtifact.symbols and stubArtifact.symbols.GDT or 0)
-				)
-			)
-			pmOffset = #stubArtifact.bytes
-		end
-		monitorArtifact = Assembler8086.compile(buildProtectedModeMonitorSource(), {
-			origin = pmOffset,
-			defaultOperand32 = true,
-		})
-		kernelBytes = Utils.concatBytes(stubArtifact.bytes, monitorArtifact.bytes)
-		kernelSymbols = Utils.mergeSymbols(stubArtifact.symbols, monitorArtifact.symbols)
-		layout.kernelSectorCount = Utils.sectorCountForBytes(kernelBytes)
-
-		local kernelCHS = Utils.encodeCHSWord(x86, layout.kernelSectorStart)
-		local _, kernelHead = Utils.sectorToCHS(x86, layout.kernelSectorStart)
-		bootSource = table.concat({
-			"ORG 0x7C00",
-			"START:",
-			"  CLI",
-			"  XOR AX, AX",
-			"  MOV DS, AX",
-			"  MOV SS, AX",
-			"  MOV SP, 0x7C00",
-			"  MOV [BOOT_DRIVE], DL",
-			"  MOV SI, BOOT_MSG",
-			"  CALL PRINT_STRING",
-			"  MOV AX, " .. Utils.hex16(x86.KERNEL_LOAD_SEG or 0x1000),
-			"  MOV ES, AX",
-			"  MOV BX, 0x0000",
-			"  MOV AX, " .. Utils.hex16(bit32.bor(0x0200, layout.kernelSectorCount)),
-			"  MOV CX, " .. Utils.hex16(kernelCHS),
-			"  MOV DX, " .. Utils.hex16(bit32.bor((x86.BOOT_DRIVE or 0x80), bit32.lshift(kernelHead, 8))),
-			"  MOV DL, [BOOT_DRIVE]",
-			"  INT 0x13",
-			"  JC LOAD_FAIL",
-			"  PUSH " .. Utils.hex16(x86.KERNEL_LOAD_SEG or 0x1000),
-			"  PUSH 0x0000",
-			"  RETF",
-			"LOAD_FAIL:",
-			"  MOV SI, LOAD_FAIL_MSG",
-			"  CALL PRINT_STRING",
-			"BOOT_HANG:",
-			"  HLT",
-			"  JMP BOOT_HANG",
-			"PRINT_STRING:",
-			"  MOV AL, [SI]",
-			"  CMP AL, 0",
-			"  JE PRINT_DONE",
-			"  MOV AH, 0x0E",
-			"  INT 0x10",
-			"  INC SI",
-			"  JMP PRINT_STRING",
-			"PRINT_DONE:",
-			"  RET",
-			"BOOT_DRIVE:",
-			"  DB 0",
-			"BOOT_MSG:",
-			'  DB "Loading boot image...", 13, 10, 0',
-			"LOAD_FAIL_MSG:",
-			'  DB "Boot image read failure", 13, 10, 0',
-			"PADTO 0x7DFE, 0",
-			"DW 0xAA55",
-		}, "\n")
-		local bootArtifact = Assembler8086.compile(bootSource)
-		if #bootArtifact.bytes <= 512 then
-			break
+	-- If no 0x format found, handle raw hex (31C08E...)
+	if #bytes == 0 then
+		local cleaned = hexStr:gsub("[^0-9A-Fa-f]", "")
+		for i = 1, #cleaned, 2 do
+			local hexByte = cleaned:sub(i, i + 1)
+			bytes[#bytes + 1] = tonumber(hexByte, 16) or 0
 		end
 	end
 
-	local biosArtifact = BiosRom.buildArtifact(config)
-	assert(type(bootSource) == "string", "external boot sector source was not generated")
-	assert(type(kernelBytes) == "table", "external kernel image was not generated")
-	local bootArtifact = Assembler8086.compile(bootSource)
-	assert(#bootArtifact.bytes <= 512, "external boot sector exceeds 512 bytes")
+	return bytes
+end
+
+local function detectFloppyGeometry(byteCount)
+	if byteCount <= (360 * 1024) then
+		return 40, 2, 9
+	end
+	if byteCount <= (720 * 1024) then
+		return 80, 2, 9
+	end
+	return 80, 2, 18
+end
+
+local function buildBootOS(config)
+	local hexStr = BootOSHex
+	local bytes = parseHexString(hexStr)
+
+	local sectorSize = 512
+	local byteCount = #bytes
+	local totalSectors = math.max(1, math.ceil(byteCount / sectorSize))
+	local tracks, heads, sectorsPerTrack = detectFloppyGeometry(byteCount)
+	local expectedSize = totalSectors * sectorSize
+
+	while #bytes < expectedSize do
+		table.insert(bytes, 0)
+	end
 
 	local sectors = {}
-	local bootSector = {}
-	for index = 1, 512 do
-		bootSector[index] = bootArtifact.bytes[index] or 0
+	for sectorIndex = 0, totalSectors - 1 do
+		local sectorData = {}
+		for byteIndex = 1, sectorSize do
+			local offset = sectorIndex * sectorSize + byteIndex
+			sectorData[byteIndex] = bytes[offset] or 0
+		end
+		sectors[sectorIndex] = sectorData
 	end
-	sectors[0] = bootSector
-	Utils.writeChunk(sectors, layout.kernelSectorStart - 1, kernelBytes or {})
+
+	local bootOSConfig = {}
+	for k, v in pairs(config) do
+		bootOSConfig[k] = v
+	end
+	bootOSConfig.X86 = bootOSConfig.X86 or {}
+	for k, v in pairs(config.X86 or {}) do
+		bootOSConfig.X86[k] = v
+	end
+	bootOSConfig.X86.KERNEL_LOAD_SEG = 0x0780
+
+	local biosArtifact = BiosRom.buildArtifact(bootOSConfig)
+
+	local configOverride = {
+		KERNEL_LOAD_SEG = 0x0780,
+		FLOPPY_TRACKS = tracks,
+		FLOPPY_HEADS = heads,
+		FLOPPY_SECTORS = sectorsPerTrack,
+		HEADS = heads,
+		SECTORS_PER_TRACK = sectorsPerTrack,
+	}
 
 	return {
-		name = "ProtectedModeBringUp",
-		romBytes = BiosRom.buildROMBytes(config, biosArtifact),
+		name = "bootOS",
+		romBytes = BiosRom.buildROMBytes(bootOSConfig, biosArtifact),
 		sectors = sectors,
-		layout = layout,
+		layout = {
+			kernelSectorStart = 1,
+			kernelSectorCount = math.max(0, totalSectors - 1),
+			kernelLoadSeg = 0x0780,
+			fsSuperSector = 0,
+			rootDirSector = 0,
+			rootDirSectorCount = 0,
+			dataStartSector = 0,
+			fileCount = 0,
+			totalSectors = totalSectors,
+		},
+		configOverride = configOverride,
 		files = {},
 		symbols = {
 			bios = biosArtifact.symbols,
-			bootSector = bootArtifact.symbols,
-			stub = stubArtifact and stubArtifact.symbols or {},
-			monitor = monitorArtifact and monitorArtifact.symbols or {},
-			kernel = kernelSymbols or {},
+		},
+		meta = {
+			source = "embedded",
+			provider = "bootOS",
+			name = "bootOS",
 		},
 	}
 end
 
-ProductionImages.ProtectedModeBringUp = {
-	name = "ProtectedModeBringUp",
-	build = buildProtectedModeBringUp,
+ProductionImages.bootOS = {
+	name = "bootOS",
+	build = buildBootOS,
 }
 
 return ProductionImages
