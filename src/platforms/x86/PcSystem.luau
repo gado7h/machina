@@ -70,6 +70,8 @@ local function buildBoardConfig(config)
 	board.ROM_SIZE = x86.ROM_SIZE or board.ROM_SIZE
 	board.RAM_BASE = x86.LOW_RAM_BASE or 0
 	board.RAM_SIZE = x86.LOW_RAM_SIZE or board.RAM_SIZE
+	board.HIGH_RAM_BASE = x86.HIGH_RAM_BASE or board.HIGH_RAM_BASE or 0x00100000
+	board.HIGH_RAM_SIZE = x86.HIGH_RAM_SIZE or board.HIGH_RAM_SIZE or 0
 	board.VRAM_BASE = x86.VIDEO_BASE or board.VRAM_BASE
 	board.VRAM_SIZE = x86.VIDEO_SIZE or board.VRAM_SIZE
 	board.PIC_VECTOR_BASE_MASTER = x86.PIC_VECTOR_BASE_MASTER or board.PIC_VECTOR_BASE_MASTER
@@ -171,6 +173,12 @@ function PcSystem:_buildHardware()
 
 	self.bus = SystemBus.new(self.boardConfig)
 	self.ram = PhysicalMemory.new(self.boardConfig)
+	self.highRam = nil
+	if (tonumber(self.boardConfig.HIGH_RAM_SIZE) or 0) > 0 then
+		local highRamConfig = copyConfig(self.boardConfig)
+		highRamConfig.RAM_SIZE = tonumber(self.boardConfig.HIGH_RAM_SIZE) or 0
+		self.highRam = PhysicalMemory.new(highRamConfig)
+	end
 	self.rom = FirmwareRom.new(self.boardConfig)
 	self.gpu = VgaAdapter.new(self.boardConfig)
 	self.hdd = AtaController.new(self.boardConfig)
@@ -183,6 +191,9 @@ function PcSystem:_buildHardware()
 
 	self.bus:registerDevice("cpu", self.cpu)
 	self.bus:registerDevice("ram", self.ram)
+	if self.highRam then
+		self.bus:registerDevice("high_ram", self.highRam)
+	end
 	self.bus:registerDevice("rom", self.rom)
 	self.bus:registerDevice("gpu", self.gpu)
 	self.bus:registerDevice("hdd", self.hdd)
@@ -192,6 +203,9 @@ function PcSystem:_buildHardware()
 	self.fdc = self.bus.fdc
 
 	self.bus:mapMemory(self.boardConfig.RAM_BASE, self.boardConfig.RAM_SIZE, self.ram, "LOW-RAM")
+	if self.highRam then
+		self.bus:mapMemory(self.boardConfig.HIGH_RAM_BASE, self.boardConfig.HIGH_RAM_SIZE, self.highRam, "HIGH-RAM")
+	end
 	self.bus:mapMemory(self.boardConfig.VRAM_BASE, self.boardConfig.VRAM_SIZE, self.gpu, "VGA-TEXT")
 	self.bus:mapMemory(self.boardConfig.ROM_BASE, self.boardConfig.ROM_SIZE, self.rom, "BIOS-ROM", {
 		readOnly = true,
@@ -375,6 +389,9 @@ function PcSystem:_powerDown(clearScreen)
 	if self.ram then
 		self.ram._mem = {}
 	end
+	if self.highRam then
+		self.highRam._mem = {}
+	end
 
 	if clearScreen and self.gpu then
 		self.gpu:clearHostOverlay()
@@ -445,6 +462,7 @@ end
 function PcSystem:getStats()
 	local cpuStats = getHardwareStats(self.cpu)
 	local ramStats = getHardwareStats(self.ram)
+	local highRamStats = getHardwareStats(self.highRam)
 	local hddStats = getHardwareStats(self.hdd)
 	local gpuStats = getHardwareStats(self.gpu)
 	local busStats = getHardwareStats(self.bus)
@@ -460,12 +478,14 @@ function PcSystem:getStats()
 		bootRecord = self._bootRecord,
 		cpuStats = cpuStats,
 		ramStats = ramStats,
+		highRamStats = highRamStats,
 		hddStats = hddStats,
 		gpuStats = gpuStats,
 		busStats = busStats,
 		hardware = {
 			cpu = cpuStats,
 			ram = ramStats,
+			highRam = highRamStats,
 			hdd = hddStats,
 			gpu = gpuStats,
 			bus = busStats,

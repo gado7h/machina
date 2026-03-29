@@ -211,6 +211,22 @@ function BiosInterrupts:_encodeChsFields(cylinders, heads, sectorsPerTrack)
 	return ch, cl, maxHead
 end
 
+function BiosInterrupts:_hasAtaDrive()
+	return self.machine.hdd ~= nil
+end
+
+function BiosInterrupts:_hasFloppyDrive()
+	return MachineProfile.getFloppyDriveA(self.config).present and self.machine.fdc ~= nil
+end
+
+function BiosInterrupts:_isSupportedAtaDrive(drive)
+	return drive == 0x80 and self:_hasAtaDrive()
+end
+
+function BiosInterrupts:_isSupportedFloppyDrive(drive)
+	return drive == 0x00 and self:_hasFloppyDrive()
+end
+
 function BiosInterrupts:_reportLastDiskStatus(cpu)
 	self:_setDiskStatus(cpu, self._lastDiskStatus or 0x00)
 	cpu:setReg8(REG8.AL, 0x00)
@@ -231,7 +247,7 @@ function BiosInterrupts:_equipmentInterrupt(cpu)
 end
 
 function BiosInterrupts:_ataGetDriveParameters(cpu, drive)
-	if drive ~= 0x80 or not self.machine.hdd then
+	if not self:_isSupportedAtaDrive(drive) then
 		self:_setCarry(cpu, true)
 		self:_setDiskStatus(cpu, 0x01)
 		return true
@@ -271,7 +287,7 @@ function BiosInterrupts:_floppyGetDriveParameters(cpu, drive)
 	local heads = (media and media.heads) or self.x86.FLOPPY_HEADS or 2
 	local sectors = (media and media.sectors) or self.x86.FLOPPY_SECTORS or 18
 
-	if drive ~= (self.x86.BOOT_DRIVE or 0x00) or not fdc then
+	if not self:_isSupportedFloppyDrive(drive) then
 		self:_setCarry(cpu, true)
 		self:_setDiskStatus(cpu, 0x01)
 		return true
@@ -308,7 +324,7 @@ function BiosInterrupts:_readSectors(cpu)
 	local drive = cpu:getReg8(REG8.DL)
 	local bufferAddress = cpu:linearAddress(cpu.seg.ES, cpu:getReg16(REG16.BX))
 
-	if drive ~= (self.x86.BOOT_DRIVE or 0x80) then
+	if not self:_isSupportedAtaDrive(drive) then
 		self:_setCarry(cpu, true)
 		self:_setDiskStatus(cpu, 0x01)
 		return true
@@ -359,7 +375,7 @@ function BiosInterrupts:_writeSectors(cpu)
 	local drive = cpu:getReg8(REG8.DL)
 	local bufferAddress = cpu:linearAddress(cpu.seg.ES, cpu:getReg16(REG16.BX))
 
-	if drive ~= (self.x86.BOOT_DRIVE or 0x80) then
+	if not self:_isSupportedAtaDrive(drive) then
 		self:_setCarry(cpu, true)
 		self:_setDiskStatus(cpu, 0x01)
 		return true
@@ -481,7 +497,7 @@ function BiosInterrupts:_floppyReadSectors(cpu, drive)
 		return true
 	end
 
-	if drive ~= (self.x86.BOOT_DRIVE or 0x00) then
+	if not self:_isSupportedFloppyDrive(drive) then
 		self:_setCarry(cpu, true)
 		self:_setDiskStatus(cpu, 0x01)
 		return true
@@ -548,7 +564,7 @@ function BiosInterrupts:_floppyWriteSectors(cpu, drive)
 		return true
 	end
 
-	if drive ~= (self.x86.BOOT_DRIVE or 0x00) then
+	if not self:_isSupportedFloppyDrive(drive) then
 		self:_setCarry(cpu, true)
 		self:_setDiskStatus(cpu, 0x01)
 		return true

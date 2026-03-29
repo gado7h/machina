@@ -311,6 +311,7 @@ end
 function State.snapshotMachine(machine)
 	local bus = machine.bus
 	local ram = machine.ram
+	local highRam = machine.highRam
 	local rom = machine.rom
 	local hdd = machine.hdd
 	local fdc = machine.fdc
@@ -335,6 +336,11 @@ function State.snapshotMachine(machine)
 			_mem = State.deepCopy(ram._mem),
 			_dirty = State.deepCopy(ram._dirty),
 			stats = State.copyStats(ram),
+		} or nil,
+		highRam = highRam and {
+			_mem = State.deepCopy(highRam._mem),
+			_dirty = State.deepCopy(highRam._dirty),
+			stats = State.copyStats(highRam),
 		} or nil,
 		rom = rom and {
 			_data = State.deepCopy(rom._data),
@@ -435,6 +441,11 @@ function State.restoreMachine(machine, snapshot)
 		machine.ram._mem = State.deepCopy(snapshot.ram._mem)
 		machine.ram._dirty = State.deepCopy(snapshot.ram._dirty)
 		State.restoreStats(machine.ram, snapshot.ram.stats)
+	end
+	if machine.highRam and snapshot.highRam then
+		machine.highRam._mem = State.deepCopy(snapshot.highRam._mem)
+		machine.highRam._dirty = State.deepCopy(snapshot.highRam._dirty)
+		State.restoreStats(machine.highRam, snapshot.highRam.stats)
 	end
 
 	if machine.rom and snapshot.rom then

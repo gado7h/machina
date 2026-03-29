@@ -772,6 +772,13 @@ local function runValidationImage(machine, config, imageName, expectedPassText, 
 			or MachineProfile.resolveBootDevice(buildConfig, {
 				imageByteCount = math.max(0, ((image.layout and image.layout.kernelSectorCount) or 0) + 1) * 512,
 			})
+		local installTargets = {}
+		if type(options.installImageTo) == "table" then
+			for _, device in ipairs(options.installImageTo) do
+				installTargets[tostring(device)] = true
+			end
+		end
+		installTargets[tostring(bootDevice)] = true
 
 		if machine.hdd then
 			machine.hdd._sectors = {}
@@ -784,14 +791,14 @@ local function runValidationImage(machine, config, imageName, expectedPassText, 
 		end
 
 		if machine.hdd then
-			if bootDevice == "ata" then
+			if installTargets.ata then
 				for lba, sector in pairs(image.sectors or {}) do
 					machine.hdd:writeSector(lba, sector)
 				end
 			end
 		end
 
-		if machine.fdc and bootDevice == "floppy" then
+		if machine.fdc and installTargets.floppy then
 			local bytes = {}
 			for lba = 0, math.max(0, (((image.layout and image.layout.kernelSectorCount) or 0) + 1) - 1) do
 				local sector = (image.sectors or {})[lba] or {}
@@ -973,6 +980,26 @@ local CPU_VALIDATIONS = {
 			timerIrqEnabled = false,
 		},
 	},
+	{
+		name = "cpu_real_mode_fidelity_validation",
+		image = "CpuRealModeFidelityValidation",
+		passText = "cpu real mode fidelity PASS",
+		options = {
+			maxSteps = 32000,
+			timerEnabled = false,
+			timerIrqEnabled = false,
+		},
+	},
+	{
+		name = "protected_mode_segment_validation",
+		image = "ProtectedModeSegmentValidation",
+		passText = "pm segment validation PASS",
+		options = {
+			maxSteps = 32000,
+			timerEnabled = false,
+			timerIrqEnabled = false,
+		},
+	},
 }
 
 local COMPATIBILITY_VALIDATIONS = {
@@ -1073,6 +1100,50 @@ local COMPATIBILITY_VALIDATIONS = {
 			maxSteps = 12000,
 			timerEnabled = false,
 			timerIrqEnabled = false,
+		},
+	},
+	{
+		name = "compat_a20_high_ram",
+		suite = "compatibility",
+		image = "A20HighRamValidation",
+		passText = "a20 high ram validation PASS",
+		options = {
+			bootDevice = "floppy",
+			maxSteps = 24000,
+			timerEnabled = false,
+			timerIrqEnabled = false,
+			x86Override = {
+				HIGH_RAM_SIZE = 0x00020000,
+			},
+		},
+	},
+	{
+		name = "compat_disk_selection_from_floppy",
+		suite = "compatibility",
+		image = "DiskDriveSelectionValidation",
+		passText = "disk drive selection PASS",
+		options = {
+			bootDevice = "floppy",
+			installImageTo = { "floppy", "ata" },
+			maxSteps = 16000,
+			timerEnabled = false,
+			timerIrqEnabled = false,
+		},
+	},
+	{
+		name = "compat_disk_selection_from_ata",
+		suite = "compatibility",
+		image = "DiskDriveSelectionValidation",
+		passText = "disk drive selection PASS",
+		options = {
+			bootDevice = "ata",
+			installImageTo = { "floppy", "ata" },
+			maxSteps = 16000,
+			timerEnabled = false,
+			timerIrqEnabled = false,
+			x86Override = {
+				BOOT_ORDER = { "ata", "floppy" },
+			},
 		},
 	},
 }

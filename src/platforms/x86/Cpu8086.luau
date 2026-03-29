@@ -9,6 +9,7 @@ local FLAG_SF = 0x0080
 local FLAG_IF = 0x0200
 local FLAG_DF = 0x0400
 local FLAG_OF = 0x0800
+local FLAGS16_WRITE_MASK = 0x0FD5
 
 local REG16_NAMES = { "AX", "CX", "DX", "BX", "SP", "BP", "SI", "DI" }
 local SEGMENT_NAMES = { "ES", "CS", "SS", "DS" }
@@ -262,17 +263,17 @@ function Cpu8086:_conditionTrue(opcode)
 end
 
 function Cpu8086:linearAddress(segment, offset)
-	return bit32.band((segment % 0x10000) * 16 + (offset % 0x10000), 0xFFFFF)
+	return ((segment % 0x10000) * 16 + (offset % 0x10000)) % 0x100000000
 end
 
 function Cpu8086:readPhysical8(address)
 	self.stats.memReads = self.stats.memReads + 1
-	return self.bus:memRead(bit32.band(address, 0xFFFFF))
+	return self.bus:memRead(address)
 end
 
 function Cpu8086:writePhysical8(address, value)
 	self.stats.memWrites = self.stats.memWrites + 1
-	self.bus:memWrite(bit32.band(address, 0xFFFFF), value % 0x100)
+	self.bus:memWrite(address, value % 0x100)
 end
 
 function Cpu8086:readPhysical16(address)
@@ -784,6 +785,27 @@ function Cpu8086:_storeRepeatCount(active, count)
 	end
 end
 
+function Cpu8086:_stringSourceSegment()
+	if self._segmentOverride ~= nil then
+		return self:getSeg(self._segmentOverride)
+	end
+	return self.seg.DS
+end
+
+function Cpu8086:_readFarPointer16(decoded)
+	if decoded.mod == 3 then
+		error("far pointer operand must be in memory")
+	end
+	local segment, offset = self:_effectiveAddress(decoded)
+	return self:readMem16(segment, offset), self:readMem16(segment, offset + 2)
+end
+
+function Cpu8086:_loadFarPointerRegister16(decoded, segmentCode)
+	local offset, selector = self:_readFarPointer16(decoded)
+	self:setSeg(segmentCode, selector)
+	self:setReg16(decoded.reg, offset)
+end
+
 function Cpu8086:_executeStringOp(opcode, repeatPrefix)
 	local width = (
 		opcode == 0xA4
@@ -802,11 +824,12 @@ function Cpu8086:_executeStringOp(opcode, repeatPrefix)
 	end
 
 	local remaining = count
+	local sourceSegment = self:_stringSourceSegment()
 	while remaining > 0 do
 		local delta = self:_stringDelta(width)
 		if opcode == 0xA4 or opcode == 0xA5 then
-			local value = width == 8 and self:readMem8(self.seg.DS, self.reg16.SI)
-				or self:readMem16(self.seg.DS, self.reg16.SI)
+			local value = width == 8 and self:readMem8(sourceSegment, self.reg16.SI)
+				or self:readMem16(sourceSegment, self.reg16.SI)
 			if width == 8 then
 				self:writeMem8(self.seg.ES, self.reg16.DI, value)
 			else
@@ -814,8 +837,8 @@ function Cpu8086:_executeStringOp(opcode, repeatPrefix)
 			end
 			self:_applyStringDelta(delta)
 		elseif opcode == 0xA6 or opcode == 0xA7 then
-			local left = width == 8 and self:readMem8(self.seg.DS, self.reg16.SI)
-				or self:readMem16(self.seg.DS, self.reg16.SI)
+			local left = width == 8 and self:readMem8(sourceSegment, self.reg16.SI)
+				or self:readMem16(sourceSegment, self.reg16.SI)
 			local right = width == 8 and self:readMem8(self.seg.ES, self.reg16.DI)
 				or self:readMem16(self.seg.ES, self.reg16.DI)
 			self:_sub(width, left, right)
@@ -829,8 +852,8 @@ function Cpu8086:_executeStringOp(opcode, repeatPrefix)
 			end
 			self.reg16.DI = (self.reg16.DI + delta) % 0x10000
 		elseif opcode == 0xAC or opcode == 0xAD then
-			local value = width == 8 and self:readMem8(self.seg.DS, self.reg16.SI)
-				or self:readMem16(self.seg.DS, self.reg16.SI)
+			local value = width == 8 and self:readMem8(sourceSegment, self.reg16.SI)
+				or self:readMem16(sourceSegment, self.reg16.SI)
 			if width == 8 then
 				self:setReg8(0, value)
 			else
@@ -853,8 +876,8 @@ function Cpu8086:_executeStringOp(opcode, repeatPrefix)
 			end
 			self.reg16.DI = (self.reg16.DI + delta) % 0x10000
 		elseif opcode == 0x6E or opcode == 0x6F then
-			local value = width == 8 and self:readMem8(self.seg.DS, self.reg16.SI)
-				or self:readMem16(self.seg.DS, self.reg16.SI)
+			local value = width == 8 and self:readMem8(sourceSegment, self.reg16.SI)
+				or self:readMem16(sourceSegment, self.reg16.SI)
 			self.stats.portWrites = self.stats.portWrites + 1
 			if width == 8 then
 				self.bus:portWrite(self.reg16.DX, value)
@@ -1038,15 +1061,9 @@ function Cpu8086:step()
 		local _segment, offset = self:_effectiveAddress(decoded)
 		self:setReg16(decoded.reg, offset % 0x10000)
 	elseif opcode == 0xC4 then
-		local decoded = self:_decodeModRM()
-		local segment, offset = self:_effectiveAddress(decoded)
-		self.seg.ES = segment
-		self:setReg16(decoded.reg, offset % 0x10000)
+		self:_loadFarPointerRegister16(self:_decodeModRM(), 0)
 	elseif opcode == 0xC5 then
-		local decoded = self:_decodeModRM()
-		local segment, offset = self:_effectiveAddress(decoded)
-		self.seg.DS = segment
-		self:setReg16(decoded.reg, offset % 0x10000)
+		self:_loadFarPointerRegister16(self:_decodeModRM(), 3)
 	elseif opcode == 0x88 then
 		local decoded = self:_decodeModRM()
 		self:_writeRM8(decoded, self:getReg8(decoded.reg))
@@ -1365,7 +1382,7 @@ function Cpu8086:step()
 	elseif opcode == 0xCF then
 		self.ip = self:pop16()
 		self.seg.CS = self:pop16()
-		self.flags = self:pop16()
+		self.flags = bit32.bor(bit32.band(self:pop16(), FLAGS16_WRITE_MASK), 0x0002)
 	elseif opcode == 0x9E then
 		local ah = self:getReg8(4)
 		local newFlags = bit32.bor(bit32.band(self.flags, 0xFFFFFF00), ah)
@@ -1396,7 +1413,7 @@ function Cpu8086:step()
 		end
 		self.flags = bit32.bor(newFlags, 0x0002)
 	elseif opcode == 0x9F then
-		local newFlags = 0
+		local newFlags = 0x02
 		if bit32.band(self.flags, FLAG_SF) ~= 0 then
 			newFlags = bit32.bor(newFlags, 0x80)
 		end

@@ -972,6 +972,98 @@ local function encodeInstruction(inst, bytes, symbols, currentAddress, origin, d
 			return
 		end
 	end
+	if name == "OR" then
+		local dst = operands[1]
+		local src = operands[2]
+		if src.kind == "imm" then
+			encodeGroupImm(bytes, 0x80, 0x81, 1, dst, src, symbols, currentAddress, origin, default32)
+			return
+		end
+		if (dst.kind == "reg16" or dst.kind == "reg32") and (src.kind == "reg16" or src.kind == "reg32") then
+			local width = operandWidth(dst, default32)
+			emitPrefixes(bytes, nil, width, default32)
+			bytes[#bytes + 1] = 0x0B
+			bytes[#bytes + 1] = modrm(3, dst.code, src.code)
+			return
+		end
+		if dst.kind == "reg8" and src.kind == "reg8" then
+			bytes[#bytes + 1] = 0x0A
+			bytes[#bytes + 1] = modrm(3, dst.code, src.code)
+			return
+		end
+		if (dst.kind == "reg16" or dst.kind == "reg32") and src.kind == "mem" then
+			local width = operandWidth(dst, default32)
+			emitPrefixes(bytes, src, width, default32)
+			bytes[#bytes + 1] = 0x0B
+			encodeMem(bytes, src, dst.code, symbols, currentAddress, origin)
+			return
+		end
+		if dst.kind == "reg8" and src.kind == "mem" then
+			emitPrefixes(bytes, src, 8, default32)
+			bytes[#bytes + 1] = 0x0A
+			encodeMem(bytes, src, dst.code, symbols, currentAddress, origin)
+			return
+		end
+		if dst.kind == "mem" and (src.kind == "reg16" or src.kind == "reg32") then
+			local width = operandWidth(src, default32)
+			emitPrefixes(bytes, dst, width, default32)
+			bytes[#bytes + 1] = 0x09
+			encodeMem(bytes, dst, src.code, symbols, currentAddress, origin)
+			return
+		end
+		if dst.kind == "mem" and src.kind == "reg8" then
+			emitPrefixes(bytes, dst, 8, default32)
+			bytes[#bytes + 1] = 0x08
+			encodeMem(bytes, dst, src.code, symbols, currentAddress, origin)
+			return
+		end
+	end
+	if name == "AND" then
+		local dst = operands[1]
+		local src = operands[2]
+		if src.kind == "imm" then
+			encodeGroupImm(bytes, 0x80, 0x81, 4, dst, src, symbols, currentAddress, origin, default32)
+			return
+		end
+		if (dst.kind == "reg16" or dst.kind == "reg32") and (src.kind == "reg16" or src.kind == "reg32") then
+			local width = operandWidth(dst, default32)
+			emitPrefixes(bytes, nil, width, default32)
+			bytes[#bytes + 1] = 0x23
+			bytes[#bytes + 1] = modrm(3, dst.code, src.code)
+			return
+		end
+		if dst.kind == "reg8" and src.kind == "reg8" then
+			bytes[#bytes + 1] = 0x22
+			bytes[#bytes + 1] = modrm(3, dst.code, src.code)
+			return
+		end
+		if (dst.kind == "reg16" or dst.kind == "reg32") and src.kind == "mem" then
+			local width = operandWidth(dst, default32)
+			emitPrefixes(bytes, src, width, default32)
+			bytes[#bytes + 1] = 0x23
+			encodeMem(bytes, src, dst.code, symbols, currentAddress, origin)
+			return
+		end
+		if dst.kind == "reg8" and src.kind == "mem" then
+			emitPrefixes(bytes, src, 8, default32)
+			bytes[#bytes + 1] = 0x22
+			encodeMem(bytes, src, dst.code, symbols, currentAddress, origin)
+			return
+		end
+		if dst.kind == "mem" and (src.kind == "reg16" or src.kind == "reg32") then
+			local width = operandWidth(src, default32)
+			emitPrefixes(bytes, dst, width, default32)
+			bytes[#bytes + 1] = 0x21
+			encodeMem(bytes, dst, src.code, symbols, currentAddress, origin)
+			return
+		end
+		if dst.kind == "mem" and src.kind == "reg8" then
+			emitPrefixes(bytes, dst, 8, default32)
+			bytes[#bytes + 1] = 0x20
+			encodeMem(bytes, dst, src.code, symbols, currentAddress, origin)
+			return
+		end
+	end
 	if name == "ADD" then
 		local dst = operands[1]
 		local src = operands[2]

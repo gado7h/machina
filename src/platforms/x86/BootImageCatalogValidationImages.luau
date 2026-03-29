@@ -115,6 +115,52 @@ local function buildProtectedModeValidationKernel(config, passText, options)
 	return table.concat(lines, "\n")
 end
 
+local function buildRealModeValidationKernel(passText, bodyLines, options)
+	options = options or {}
+	local origin = options.origin or 0x0500
+	local lines = {
+		"ORG " .. Utils.hex16(origin),
+		"START:",
+		"  CLI",
+		"  XOR AX, AX",
+		"  MOV DS, AX",
+		"  MOV ES, AX",
+		"  MOV SS, AX",
+		"  MOV SP, 0x7B00",
+	}
+
+	for _, line in ipairs(bodyLines or {}) do
+		lines[#lines + 1] = line
+	end
+
+	lines[#lines + 1] = "  MOV SI, PASS_MSG"
+	lines[#lines + 1] = "  CALL PRINT_STRING"
+	lines[#lines + 1] = "PASS_HANG:"
+	lines[#lines + 1] = "  HLT"
+	lines[#lines + 1] = "  JMP PASS_HANG"
+	lines[#lines + 1] = "FAIL:"
+	lines[#lines + 1] = "  MOV SI, FAIL_MSG"
+	lines[#lines + 1] = "  CALL PRINT_STRING"
+	lines[#lines + 1] = "FAIL_HANG:"
+	lines[#lines + 1] = "  HLT"
+	lines[#lines + 1] = "  JMP FAIL_HANG"
+	lines[#lines + 1] = "PRINT_STRING:"
+	lines[#lines + 1] = "  MOV AL, [SI]"
+	lines[#lines + 1] = "  CMP AL, 0"
+	lines[#lines + 1] = "  JE PRINT_DONE"
+	lines[#lines + 1] = "  MOV AH, 0x0E"
+	lines[#lines + 1] = "  INT 0x10"
+	lines[#lines + 1] = "  INC SI"
+	lines[#lines + 1] = "  JMP PRINT_STRING"
+	lines[#lines + 1] = "PRINT_DONE:"
+	lines[#lines + 1] = "  RET"
+	lines[#lines + 1] = "PASS_MSG:"
+	lines[#lines + 1] = string.format('  DB "%s", 13, 10, 0', passText)
+	lines[#lines + 1] = "FAIL_MSG:"
+	lines[#lines + 1] = string.format('  DB "FAIL %s", 13, 10, 0', passText)
+	return table.concat(lines, "\n")
+end
+
 local function buildCpuProtectedModeValidation(config)
 	local kernelSource = buildProtectedModeValidationKernel(config, "cpu pm validation PASS", {
 		interruptVector = 0x30,
@@ -1014,6 +1060,438 @@ local function buildPitProgrammingValidation(config)
 	return Utils.buildStandaloneBootImage(config, "PitProgrammingValidation", source)
 end
 
+local function buildA20HighRamValidation(config)
+	local kernelSource = buildRealModeValidationKernel("a20 high ram validation PASS", {
+		"  MOV AX, 0x2400",
+		"  INT 0x15",
+		"  JC FAIL",
+		"  MOV AX, 0x2402",
+		"  INT 0x15",
+		"  JC FAIL",
+		"  CMP AL, 0x00",
+		"  JNE FAIL",
+		"  XOR AX, AX",
+		"  MOV DS, AX",
+		"  MOV BYTE [0x2000], 0x11",
+		"  MOV AX, 0xFFFF",
+		"  MOV DS, AX",
+		"  MOV BYTE [0x3010], 0x22",
+		"  XOR AX, AX",
+		"  MOV DS, AX",
+		"  CMP BYTE [0x2000], 0x22",
+		"  JNE FAIL",
+		"  MOV AX, 0x2401",
+		"  INT 0x15",
+		"  JC FAIL",
+		"  MOV AX, 0x2402",
+		"  INT 0x15",
+		"  JC FAIL",
+		"  CMP AL, 0x01",
+		"  JNE FAIL",
+		"  MOV AL, 0x17",
+		"  OUT 0x70, AL",
+		"  IN AL, 0x71",
+		"  MOV BL, AL",
+		"  MOV AL, 0x18",
+		"  OUT 0x70, AL",
+		"  IN AL, 0x71",
+		"  OR AL, BL",
+		"  JZ FAIL",
+		"  XOR AX, AX",
+		"  MOV DS, AX",
+		"  MOV BYTE [0x2000], 0x33",
+		"  MOV AX, 0xFFFF",
+		"  MOV DS, AX",
+		"  MOV BYTE [0x3010], 0x44",
+		"  XOR AX, AX",
+		"  MOV DS, AX",
+		"  CMP BYTE [0x2000], 0x33",
+		"  JNE FAIL",
+		"  MOV AX, 0xFFFF",
+		"  MOV DS, AX",
+		"  CMP BYTE [0x3010], 0x44",
+		"  JNE FAIL",
+	})
+	return Utils.buildLoadedBootImage(config, "A20HighRamValidation", kernelSource, {
+		kernelOrigin = 0x0500,
+		bootMessage = "a20 high ram validation",
+	})
+end
+
+local function buildDiskDriveSelectionValidation(config)
+	local source = table.concat({
+		"ORG 0x7C00",
+		"START:",
+		"  CLI",
+		"  XOR AX, AX",
+		"  MOV DS, AX",
+		"  MOV ES, AX",
+		"  MOV SS, AX",
+		"  MOV SP, 0x7C00",
+		"  MOV DL, 0x00",
+		"  MOV AH, 0x08",
+		"  INT 0x13",
+		"  JC FAIL",
+		"  MOV AX, 0x0201",
+		"  MOV BX, 0x0600",
+		"  MOV CX, 0x0001",
+		"  XOR DX, DX",
+		"  INT 0x13",
+		"  JC FAIL",
+		"  CMP WORD [0x07FE], 0xAA55",
+		"  JNE FAIL",
+		"  MOV DL, 0x80",
+		"  MOV AH, 0x08",
+		"  INT 0x13",
+		"  JC FAIL",
+		"  MOV AX, 0x0201",
+		"  MOV BX, 0x0800",
+		"  MOV CX, 0x0001",
+		"  MOV DX, 0x0080",
+		"  INT 0x13",
+		"  JC FAIL",
+		"  CMP WORD [0x09FE], 0xAA55",
+		"  JNE FAIL",
+		"  MOV SI, PASS_MSG",
+		"  CALL PRINT_STRING",
+		"HANG:",
+		"  HLT",
+		"  JMP HANG",
+		"FAIL:",
+		"  MOV SI, FAIL_MSG",
+		"  CALL PRINT_STRING",
+		"  HLT",
+		"  JMP FAIL",
+		"PRINT_STRING:",
+		"  MOV AL, [SI]",
+		"  CMP AL, 0",
+		"  JE PRINT_DONE",
+		"  MOV AH, 0x0E",
+		"  INT 0x10",
+		"  INC SI",
+		"  JMP PRINT_STRING",
+		"PRINT_DONE:",
+		"  RET",
+		"PASS_MSG:",
+		'  DB "disk drive selection PASS", 13, 10, 0',
+		"FAIL_MSG:",
+		'  DB "FAIL disk drive selection", 13, 10, 0',
+		"PADTO 0x7DFE, 0",
+		"DW 0xAA55",
+	}, "\n")
+	return Utils.buildStandaloneBootImage(config, "DiskDriveSelectionValidation", source)
+end
+
+local function buildCpuRealModeFidelityValidation(config)
+	local kernelSource = buildRealModeValidationKernel("cpu real mode fidelity PASS", {
+		"  MOV AX, 0x1400",
+		"  MOV DS, AX",
+		"  MOV BYTE [0], 0x5A",
+		"  MOV AX, 0x1500",
+		"  MOV DS, AX",
+		"  MOV BYTE [0], 0xA5",
+		"  MOV AX, 0x1600",
+		"  MOV DS, AX",
+		"  MOV BYTE [0x0100], 0x22",
+		"  XOR AX, AX",
+		"  MOV DS, AX",
+		"  DB 0xC4, 0x06",
+		"  DW PTR_LES",
+		"  CMP AX, 0x0040",
+		"  JNE FAIL",
+		"  MOV BX, ES",
+		"  CMP BX, 0x1200",
+		"  JNE FAIL",
+		"  DB 0xC5, 0x16",
+		"  DW PTR_LDS",
+		"  CMP DX, 0x0050",
+		"  JNE FAIL",
+		"  MOV BX, DS",
+		"  CMP BX, 0x1300",
+		"  JNE FAIL",
+		"  XOR AX, AX",
+		"  MOV DS, AX",
+		"  DB 0x0F, 0xB4, 0x06",
+		"  DW PTR_LFS",
+		"  CMP AX, 0x0000",
+		"  JNE FAIL",
+		"  DB 0x64, 0xA0",
+		"  DW 0x0000",
+		"  CMP AL, 0x5A",
+		"  JNE FAIL",
+		"  DB 0x0F, 0xB5, 0x1E",
+		"  DW PTR_LGS",
+		"  CMP BX, 0x0000",
+		"  JNE FAIL",
+		"  DB 0x65, 0xA0",
+		"  DW 0x0000",
+		"  CMP AL, 0xA5",
+		"  JNE FAIL",
+		"  MOV AX, 0x1700",
+		"  MOV ES, AX",
+		"  MOV AX, 0x1600",
+		"  MOV SS, AX",
+		"  MOV SI, 0x0100",
+		"  XOR DI, DI",
+		"  DB 0x36, 0xA4",
+		"  MOV AX, 0x1700",
+		"  MOV DS, AX",
+		"  CMP BYTE [0], 0x22",
+		"  JNE FAIL",
+		"  XOR AX, AX",
+		"  MOV DS, AX",
+		"  MOV SS, AX",
+		"  MOV AH, 0x00",
+		"  SAHF",
+		"  DB 0x9F",
+		"  MOV BL, AH",
+		"  AND BL, 0x02",
+		"  CMP BL, 0x02",
+		"  JNE FAIL",
+		"  PUSH 0x0001",
+		"  MOV AX, CS",
+		"  PUSH AX",
+		"  PUSH IRET16_TARGET",
+		"  DB 0xCF",
+		"IRET16_TARGET:",
+		"  DB 0x9C",
+		"  POP AX",
+		"  AND AX, 0x0003",
+		"  CMP AX, 0x0003",
+		"  JNE FAIL",
+		"  MOV EAX, 0x00040001",
+		"  PUSH EAX",
+		"  XOR EAX, EAX",
+		"  MOV AX, CS",
+		"  PUSH EAX",
+		"  MOV EAX, IRETD_TARGET",
+		"  PUSH EAX",
+		"  DB 0x66, 0xCF",
+		"IRETD_TARGET:",
+		"  DB 0x66, 0x9C",
+		"  POP EAX",
+		"  AND EAX, 0x00040003",
+		"  CMP EAX, 0x00040003",
+		"  JNE FAIL",
+		"  DB 0x0F, 0xB2, 0x16",
+		"  DW PTR_LSS",
+		"  CMP DX, 0x2222",
+		"  JNE FAIL",
+		"  MOV AX, SS",
+		"  CMP AX, 0x1800",
+		"  JNE FAIL",
+		"  XOR AX, AX",
+		"  MOV SS, AX",
+		"PTR_LES:",
+		"  DW 0x0040, 0x1200",
+		"PTR_LDS:",
+		"  DW 0x0050, 0x1300",
+		"PTR_LFS:",
+		"  DW 0x0000, 0x1400",
+		"PTR_LGS:",
+		"  DW 0x0000, 0x1500",
+		"PTR_LSS:",
+		"  DW 0x2222, 0x1800",
+	})
+	return Utils.buildLoadedBootImage(config, "CpuRealModeFidelityValidation", kernelSource, {
+		kernelOrigin = 0x0500,
+		defaultOperand32 = false,
+		bootMessage = "cpu real mode fidelity",
+	})
+end
+
+local function buildProtectedModeSegmentValidation(config)
+	local x86 = config.X86 or {}
+	local codeDescriptor = Utils.descriptorWords(0, 0x9A, 0x000FFFFF, 0x0C)
+	local dataDescriptor = Utils.descriptorWords(0, 0x92, 0x000FFFFF, 0x0C)
+	local videoDescriptor = Utils.descriptorWords(
+		x86.TEXT_BUFFER_BASE or 0xB8000,
+		0x92,
+		math.max(0, (x86.TEXT_BUFFER_SIZE or 0x8000) - 1),
+		0x04
+	)
+	local expandDownDescriptor = Utils.descriptorWords(0, 0x96, 0x00000FFF, 0x04)
+	local idtEntries = {
+		[13] = {
+			offset = "GP_HANDLER",
+			selector = "0x0008",
+			typeWord = "0x8E00",
+		},
+	}
+	local lines = {
+		"ORG 0x0500",
+		"START:",
+		"  CLI",
+		"  LGDT [GDT_DESC]",
+		"  LIDT [IDT_DESC]",
+		"  MOV AX, 1",
+		"  LMSW AX",
+		"  DB 0xEA",
+		"  DW PM_ENTRY",
+		"  DW 0x0008",
+		"PM_ENTRY:",
+		"  MOV AX, 0x0010",
+		"  MOV DS, AX",
+		"  MOV SS, AX",
+		"  MOV ESP, 0x00007B00",
+		"  MOV AX, 0x0018",
+		"  MOV ES, AX",
+		"  XOR EDI, EDI",
+		"  MOV BYTE [0x2000], 0x66",
+		"  XOR AX, AX",
+		"  MOV ES, AX",
+		"  DB 0x8E, 0xE0",
+		"  DB 0x8E, 0xE8",
+		"  MOV AX, ES",
+		"  CMP AX, 0x0000",
+		"  JNE PM_FAIL",
+		"  DB 0x8C, 0xE0",
+		"  CMP AX, 0x0000",
+		"  JNE PM_FAIL",
+		"  DB 0x8C, 0xE8",
+		"  CMP AX, 0x0000",
+		"  JNE PM_FAIL",
+		"  MOV BYTE [FAULT_PHASE], 1",
+		"  XOR EAX, EAX",
+		"  MOV [FAULT_SKIP], EAX",
+		"  ADD DWORD [FAULT_SKIP], 4",
+		"  XOR AX, AX",
+		"  MOV DS, AX",
+		"  MOV AX, DS",
+		"  CMP AX, 0x0000",
+		"  JNE PM_FAIL",
+		"  DB 0x67, 0xA0",
+		"  DW 0x2000",
+		"  CMP BYTE [NULL_DS_FLAG], 1",
+		"  JNE PM_FAIL",
+		"  MOV AX, 0x0010",
+		"  MOV DS, AX",
+		"  XOR AX, AX",
+		"  DB 0x8E, 0xE0",
+		"  MOV BYTE [FAULT_PHASE], 2",
+		"  XOR EAX, EAX",
+		"  MOV [FAULT_SKIP], EAX",
+		"  ADD DWORD [FAULT_SKIP], 5",
+		"  DB 0x64, 0x67, 0xA0",
+		"  DW 0x2000",
+		"  CMP BYTE [NULL_FS_FLAG], 1",
+		"  JNE PM_FAIL",
+		"  MOV AX, 0x0020",
+		"  MOV DS, AX",
+		"  DB 0x67, 0xA0",
+		"  DW 0x2000",
+		"  CMP AL, 0x66",
+		"  JNE PM_FAIL",
+		"  MOV BYTE [FAULT_PHASE], 3",
+		"  XOR EAX, EAX",
+		"  MOV [FAULT_SKIP], EAX",
+		"  ADD DWORD [FAULT_SKIP], 4",
+		"  DB 0x67, 0xA0",
+		"  DW 0x0100",
+		"  CMP BYTE [EXPAND_GP_FLAG], 1",
+		"  JNE PM_FAIL",
+		"  MOV AX, 0x0010",
+		"  MOV DS, AX",
+		"  MOV ESI, PASS_MSG",
+		"  CALL PRINT_STRING_PM",
+		"PM_HANG:",
+		"  HLT",
+		"  JMP PM_HANG",
+		"GP_HANDLER:",
+		"  MOV AX, 0x0010",
+		"  MOV DS, AX",
+		"  POP EAX",
+		"  POP EAX",
+		"  CMP BYTE [FAULT_PHASE], 2",
+		"  JE GP_SKIP_FIVE",
+		"  ADD EAX, 4",
+		"  JMP GP_STORE_IP",
+		"GP_SKIP_FIVE:",
+		"  ADD EAX, 5",
+		"GP_STORE_IP:",
+		"  PUSH EAX",
+		"  CMP BYTE [FAULT_PHASE], 1",
+		"  JE GP_SET_NULL_DS",
+		"  CMP BYTE [FAULT_PHASE], 2",
+		"  JE GP_SET_NULL_FS",
+		"  CMP BYTE [FAULT_PHASE], 3",
+		"  JE GP_SET_EXPAND",
+		"  JMP PM_FAIL",
+		"GP_SET_NULL_DS:",
+		"  MOV BYTE [NULL_DS_FLAG], 1",
+		"  JMP GP_DONE",
+		"GP_SET_NULL_FS:",
+		"  MOV BYTE [NULL_FS_FLAG], 1",
+		"  JMP GP_DONE",
+		"GP_SET_EXPAND:",
+		"  MOV BYTE [EXPAND_GP_FLAG], 1",
+		"GP_DONE:",
+		"  MOV BYTE [FAULT_PHASE], 0",
+		"  IRET",
+		"PM_FAIL:",
+		"  MOV AX, 0x0010",
+		"  MOV DS, AX",
+		"  MOV ESI, FAIL_MSG",
+		"  CALL PRINT_STRING_PM",
+		"  HLT",
+		"  JMP PM_FAIL",
+	}
+
+	for _, line in ipairs(Utils.buildProtectedModeKernelRoutines("pm segment validation PASS")) do
+		lines[#lines + 1] = line
+	end
+
+	lines[#lines + 1] = "FAULT_PHASE:"
+	lines[#lines + 1] = "  DB 0"
+	lines[#lines + 1] = "FAULT_SKIP:"
+	lines[#lines + 1] = "  DD 0"
+	lines[#lines + 1] = "NULL_DS_FLAG:"
+	lines[#lines + 1] = "  DB 0"
+	lines[#lines + 1] = "NULL_FS_FLAG:"
+	lines[#lines + 1] = "  DB 0"
+	lines[#lines + 1] = "EXPAND_GP_FLAG:"
+	lines[#lines + 1] = "  DB 0"
+	lines[#lines + 1] = "GDT:"
+	lines[#lines + 1] = "  DW 0x0000, 0x0000, 0x0000, 0x0000"
+	lines[#lines + 1] = "  DW " .. Utils.hex16(codeDescriptor.limitLow)
+	lines[#lines + 1] = "  DW " .. Utils.hex16(codeDescriptor.baseLow)
+	lines[#lines + 1] = "  DW " .. Utils.hex16(codeDescriptor.accessBaseMid)
+	lines[#lines + 1] = "  DW " .. Utils.hex16(codeDescriptor.flagsBaseHigh)
+	lines[#lines + 1] = "  DW " .. Utils.hex16(dataDescriptor.limitLow)
+	lines[#lines + 1] = "  DW " .. Utils.hex16(dataDescriptor.baseLow)
+	lines[#lines + 1] = "  DW " .. Utils.hex16(dataDescriptor.accessBaseMid)
+	lines[#lines + 1] = "  DW " .. Utils.hex16(dataDescriptor.flagsBaseHigh)
+	lines[#lines + 1] = "  DW " .. Utils.hex16(videoDescriptor.limitLow)
+	lines[#lines + 1] = "  DW " .. Utils.hex16(videoDescriptor.baseLow)
+	lines[#lines + 1] = "  DW " .. Utils.hex16(videoDescriptor.accessBaseMid)
+	lines[#lines + 1] = "  DW " .. Utils.hex16(videoDescriptor.flagsBaseHigh)
+	lines[#lines + 1] = "  DW " .. Utils.hex16(expandDownDescriptor.limitLow)
+	lines[#lines + 1] = "  DW " .. Utils.hex16(expandDownDescriptor.baseLow)
+	lines[#lines + 1] = "  DW " .. Utils.hex16(expandDownDescriptor.accessBaseMid)
+	lines[#lines + 1] = "  DW " .. Utils.hex16(expandDownDescriptor.flagsBaseHigh)
+	lines[#lines + 1] = "GDT_DESC:"
+	lines[#lines + 1] = "  DW GDT_END - GDT - 1"
+	lines[#lines + 1] = "  DW GDT"
+	lines[#lines + 1] = "  DW 0x0000"
+	lines[#lines + 1] = "GDT_END:"
+	lines[#lines + 1] = "IDT:"
+	for _, line in ipairs(Utils.buildIdtEntries(13, idtEntries)) do
+		lines[#lines + 1] = line
+	end
+	lines[#lines + 1] = "IDT_DESC:"
+	lines[#lines + 1] = "  DW IDT_END - IDT - 1"
+	lines[#lines + 1] = "  DW IDT"
+	lines[#lines + 1] = "  DW 0x0000"
+	lines[#lines + 1] = "IDT_END:"
+
+	local kernelSource = table.concat(lines, "\n")
+	return Utils.buildLoadedBootImage(config, "ProtectedModeSegmentValidation", kernelSource, {
+		kernelOrigin = 0x0500,
+		defaultOperand32 = true,
+		bootMessage = "pm segment validation",
+	})
+end
+
 ValidationImages.ResetVectorValidation = {
 	name = "ResetVectorValidation",
 	build = buildResetVectorValidation,
@@ -1107,6 +1585,26 @@ ValidationImages.RtcCmosValidation = {
 ValidationImages.PitProgrammingValidation = {
 	name = "PitProgrammingValidation",
 	build = buildPitProgrammingValidation,
+}
+
+ValidationImages.A20HighRamValidation = {
+	name = "A20HighRamValidation",
+	build = buildA20HighRamValidation,
+}
+
+ValidationImages.DiskDriveSelectionValidation = {
+	name = "DiskDriveSelectionValidation",
+	build = buildDiskDriveSelectionValidation,
+}
+
+ValidationImages.CpuRealModeFidelityValidation = {
+	name = "CpuRealModeFidelityValidation",
+	build = buildCpuRealModeFidelityValidation,
+}
+
+ValidationImages.ProtectedModeSegmentValidation = {
+	name = "ProtectedModeSegmentValidation",
+	build = buildProtectedModeSegmentValidation,
 }
 
 return ValidationImages

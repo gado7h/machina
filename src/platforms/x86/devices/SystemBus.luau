@@ -75,8 +75,12 @@ function SystemBus:isA20Enabled()
 	return self._a20Enabled
 end
 
-local function maskA20(addr)
-	return bit32.band(addr, 0xFFFFF)
+local function physicalAddress(self, addr)
+	local address = (tonumber(addr) or 0) % 0x100000000
+	if self._a20Enabled then
+		return address
+	end
+	return bit32.band(address, bit32.bnot(0x00100000))
 end
 
 -- Device Registration
@@ -229,7 +233,7 @@ function SystemBus:consumeFault()
 end
 
 function SystemBus:memRead(addr)
-	addr = maskA20(addr)
+	addr = physicalAddress(self, addr)
 	self.stats.memReads = self.stats.memReads + 1
 	local m = findMapping(self, addr)
 	if not m then
@@ -251,7 +255,7 @@ function SystemBus:memRead(addr)
 end
 
 function SystemBus:memWrite(addr, value)
-	addr = maskA20(addr)
+	addr = physicalAddress(self, addr)
 	self.stats.memWrites = self.stats.memWrites + 1
 	local m = findMapping(self, addr)
 	if not m then
