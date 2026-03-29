@@ -2026,6 +2026,7 @@ function Cpu80386:_stepInternal()
 		self:setFlag(FLAG_IF, false)
 	elseif opcode == 0xFB then
 		self:setFlag(FLAG_IF, true)
+		self._interruptShadow = 1
 	elseif opcode == 0xFC then
 		self:setFlag(FLAG_DF, false)
 	elseif opcode == 0xFD then
@@ -2072,6 +2073,7 @@ function Cpu80386:_stepInternal()
 		end
 	elseif opcode == 0x17 then
 		self:setSeg(2, operandWidth == 32 and self:pop32() or self:pop16())
+		self._interruptShadow = 1
 	elseif opcode == 0x1E then
 		if operandWidth == 32 then
 			self:push32(self:getSeg(3))
@@ -2092,6 +2094,9 @@ function Cpu80386:_stepInternal()
 			self:_raiseException(VECTOR_UD, 0, "unsupported MOV CS, r/m16")
 		end
 		self:setSeg(decoded.reg, self:_readRM16(decoded))
+		if decoded.reg == 2 then
+			self._interruptShadow = 1
+		end
 	elseif opcode == 0x8C then
 		local decoded = self:_decodeModRMForAddressSize(addressOverride)
 		self:_writeRM16(decoded, self:getSeg(decoded.reg))

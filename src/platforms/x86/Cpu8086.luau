@@ -82,6 +82,7 @@ function Cpu8086.new(bus, config)
 	self._bios = nil
 	self._lastError = nil
 	self._segmentOverride = nil
+	self._interruptShadow = 0
 	self._lastStep = {
 		opcode = nil,
 		cs = 0,
@@ -119,6 +120,7 @@ function Cpu8086:reset()
 	self.halted = false
 	self._lastError = nil
 	self._segmentOverride = nil
+	self._interruptShadow = 0
 	self._lastStep.opcode = nil
 	self._lastStep.cs = self.seg.CS
 	self._lastStep.ip = self.ip
@@ -822,6 +824,10 @@ function Cpu8086:_executeStringOp(opcode, repeatPrefix)
 end
 
 function Cpu8086:_serviceExternalInterrupt()
+	if (self._interruptShadow or 0) > 0 then
+		self._interruptShadow = self._interruptShadow - 1
+		return false
+	end
 	if not self:getFlag(FLAG_IF) then
 		return false
 	end
@@ -910,6 +916,7 @@ function Cpu8086:step()
 		self:setFlag(FLAG_IF, false)
 	elseif opcode == 0xFB then
 		self:setFlag(FLAG_IF, true)
+		self._interruptShadow = 1
 	elseif opcode == 0xFC then
 		self:setFlag(FLAG_DF, false)
 	elseif opcode == 0xFD then
@@ -940,6 +947,7 @@ function Cpu8086:step()
 		self:push16(self:getSeg(2))
 	elseif opcode == 0x17 then
 		self:setSeg(2, self:pop16())
+		self._interruptShadow = 1
 	elseif opcode == 0x1E then
 		self:push16(self:getSeg(3))
 	elseif opcode == 0x1F then
@@ -952,6 +960,9 @@ function Cpu8086:step()
 			error("unsupported MOV CS, r/m16")
 		end
 		self:setSeg(decoded.reg, self:_readRM16(decoded))
+		if decoded.reg == 2 then
+			self._interruptShadow = 1
+		end
 	elseif opcode == 0x8C then
 		local decoded = self:_decodeModRM()
 		self:_writeRM16(decoded, self:getSeg(decoded.reg))

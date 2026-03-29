@@ -1,6 +1,10 @@
 local BiosInterrupts = {}
 BiosInterrupts.__index = BiosInterrupts
 
+local BDA_TIMER_TICKS = 0x046C
+local BDA_TIMER_ROLLOVER = 0x0470
+local BIOS_TICKS_PER_DAY = 0x1800B0
+
 local function scanCodeForChar(ch)
 	if ch == "\n" or ch == "\r" then
 		return 0x1C
@@ -50,6 +54,22 @@ local SEG = {
 	DS = 3,
 }
 
+local function readPhysical32(cpu, address)
+	local b0 = cpu:readPhysical8(address)
+	local b1 = cpu:readPhysical8(address + 1)
+	local b2 = cpu:readPhysical8(address + 2)
+	local b3 = cpu:readPhysical8(address + 3)
+	return b0 + b1 * 0x100 + b2 * 0x10000 + b3 * 0x1000000
+end
+
+local function writePhysical32(cpu, address, value)
+	local v = (tonumber(value) or 0) % 0x100000000
+	cpu:writePhysical8(address, v % 0x100)
+	cpu:writePhysical8(address + 1, math.floor(v / 0x100) % 0x100)
+	cpu:writePhysical8(address + 2, math.floor(v / 0x10000) % 0x100)
+	cpu:writePhysical8(address + 3, math.floor(v / 0x1000000) % 0x100)
+end
+
 function BiosInterrupts.new(machine, runtime, image)
 	local self = setmetatable({}, BiosInterrupts)
 	self.machine = machine
@@ -69,10 +89,58 @@ function BiosInterrupts:_setDiskStatus(cpu, status)
 	cpu:setReg8(REG8.AH, status % 0x100)
 end
 
+function BiosInterrupts:_getBiosTickState(cpu)
+	local ticks = readPhysical32(cpu, BDA_TIMER_TICKS)
+	local rollover = cpu:readPhysical8(BDA_TIMER_ROLLOVER)
+	return ticks, rollover
+end
+
+function BiosInterrupts:_setBiosTickState(cpu, ticks, rollover)
+	writePhysical32(cpu, BDA_TIMER_TICKS, ticks)
+	cpu:writePhysical8(BDA_TIMER_ROLLOVER, rollover)
+end
+
+function BiosInterrupts:_endHardwareInterrupt(vector)
+	local bus = self.machine and self.machine.bus
+	if bus and type(bus.endOfInterrupt) == "function" then
+		bus:endOfInterrupt(vector)
+	end
+end
+
+function BiosInterrupts:_repeatSoftwareInterrupt(cpu, intWidth)
+	if not (cpu and cpu.readMem16 and cpu.writeMem16 and cpu.seg) then
+		return
+	end
+
+	local stackSeg = cpu.seg.SS or 0
+	local stackPtr = cpu:getReg16(REG16.SP)
+	local returnIp = cpu:readMem16(stackSeg, stackPtr)
+	cpu:writeMem16(stackSeg, stackPtr, (returnIp - (tonumber(intWidth) or 2)) % 0x10000)
+end
+
 function BiosInterrupts:_teletype(cpu)
 	local ch = cpu:getReg8(REG8.AL)
-	self.machine.gpu:biosTeletype(ch == 0 and 32 or ch, 0x07)
+	if ch ~= 0 then
+		self.machine.gpu:biosTeletype(ch, 0x07)
+	end
 	self:_setCarry(cpu, false)
+end
+
+function BiosInterrupts:_timerInterrupt(cpu)
+	local ticks, rollover = self:_getBiosTickState(cpu)
+	ticks = ticks + 1
+	if ticks >= BIOS_TICKS_PER_DAY then
+		ticks = ticks - BIOS_TICKS_PER_DAY
+		rollover = ((tonumber(rollover) or 0) + 1) % 0x100
+	end
+	self:_setBiosTickState(cpu, ticks, rollover)
+	self:_endHardwareInterrupt(0x08)
+	return true
+end
+
+function BiosInterrupts:_keyboardHardwareInterrupt(_cpu)
+	self:_endHardwareInterrupt(0x09)
+	return true
 end
 
 function BiosInterrupts:_setVideoMode(cpu)
@@ -145,6 +213,37 @@ function BiosInterrupts:_writeCharAttr(cpu)
 	local page = bit32.band(cpu:getReg8(REG8.BH), 0x0F)
 	if self.machine.gpu.writeCharAttr then
 		self.machine.gpu:writeCharAttr(page, char, attr, count)
+	end
+	self:_setCarry(cpu, false)
+end
+
+function BiosInterrupts:_writeCharOnly(cpu)
+	local char = cpu:getReg8(REG8.AL)
+	local count = cpu:getReg16(REG16.CX)
+	local page = bit32.band(cpu:getReg8(REG8.BH), 0x0F)
+	if self.machine.gpu.writeCharOnly then
+		self.machine.gpu:writeCharOnly(page, char, count)
+	end
+	self:_setCarry(cpu, false)
+end
+
+function BiosInterrupts:_writeString(cpu)
+	local mode = cpu:getReg8(REG8.AL)
+	local page = bit32.band(cpu:getReg8(REG8.BH), 0x0F)
+	local attr = cpu:getReg8(REG8.BL)
+	local count = cpu:getReg16(REG16.CX)
+	local row = cpu:getReg8(REG8.DH)
+	local col = cpu:getReg8(REG8.DL)
+	local updateCursor = bit32.band(mode, 0x01) ~= 0
+	local includeAttributes = bit32.band(mode, 0x02) ~= 0
+	local linear = cpu:linearAddress(cpu.seg.ES, cpu:getReg16(REG16.BP))
+	local bytes = {}
+	local byteCount = math.max(0, count) * (includeAttributes and 2 or 1)
+	for offset = 0, byteCount - 1 do
+		bytes[#bytes + 1] = cpu:readPhysical8(linear + offset)
+	end
+	if self.machine.gpu.biosWriteString then
+		self.machine.gpu:biosWriteString(page, row, col, bytes, attr, updateCursor, includeAttributes)
 	end
 	self:_setCarry(cpu, false)
 end
@@ -494,10 +593,9 @@ function BiosInterrupts:_keyboardInterrupt(cpu)
 			ch = self.machine.keyboard:readChar()
 		end
 		if not ch then
+			-- AH=00 waits for a keystroke; repeat the INT instead of handing a NUL to the guest.
+			self:_repeatSoftwareInterrupt(cpu, 2)
 			self:_setCarry(cpu, false)
-			cpu:setFlag(0x0040, true)
-			cpu:setReg8(REG8.AL, 0)
-			cpu:setReg8(REG8.AH, 0)
 			return true
 		end
 		cpu:setReg8(REG8.AL, biosCharValue(ch))
@@ -638,6 +736,10 @@ function BiosInterrupts:_a20Interrupt(cpu)
 end
 
 function BiosInterrupts:_bootInterrupt(cpu)
+	if self.machine.getBootStage and self.machine:getBootStage() ~= "RUNNING" then
+		self.machine:_reportCpuFault("INT 19h requested during boot")
+		return true
+	end
 	cpu.halted = true
 	local reboot = function()
 		self.machine:reboot()
@@ -651,6 +753,12 @@ function BiosInterrupts:_bootInterrupt(cpu)
 end
 
 function BiosInterrupts:handleInterrupt(cpu, vector)
+	if vector == 0x08 then
+		return self:_timerInterrupt(cpu)
+	end
+	if vector == 0x09 then
+		return self:_keyboardHardwareInterrupt(cpu)
+	end
 	if vector == 0x10 then
 		local service = cpu:getReg8(REG8.AH)
 		if service == 0x0E then
@@ -685,8 +793,16 @@ function BiosInterrupts:handleInterrupt(cpu, vector)
 			self:_writeCharAttr(cpu)
 			return true
 		end
+		if service == 0x0A then
+			self:_writeCharOnly(cpu)
+			return true
+		end
 		if service == 0x0F then
 			self:_getVideoMode(cpu)
+			return true
+		end
+		if service == 0x13 then
+			self:_writeString(cpu)
 			return true
 		end
 		return true

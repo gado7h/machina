@@ -1121,8 +1121,6 @@ local function hostWriteChar(self, ch, attr)
 	elseif charValue == 8 then
 		if overlay.cursorCol > 0 then
 			overlay.cursorCol = overlay.cursorCol - 1
-			local idx = overlay.cursorRow * self.config.TEXT_COLS + overlay.cursorCol
-			overlay.cells[idx] = { char = 32, attr = attr }
 		end
 		return
 	else
@@ -1151,6 +1149,31 @@ local function hostWriteChar(self, ch, attr)
 		end
 		overlay.cursorRow = self.config.TEXT_ROWS - 1
 	end
+end
+
+local function advanceTextCursor(self, row, col, ch, attr)
+	local charValue = (type(ch) == "string" and string.byte(ch, 1)) or ((tonumber(ch) or 32) % 256)
+	if charValue == 13 then
+		col = 0
+	elseif charValue == 10 then
+		row = row + 1
+	elseif charValue == 8 then
+		if col > 0 then
+			col = col - 1
+		end
+	else
+		self:putChar(col, row, charValue, attr)
+		col = col + 1
+		if col >= self.config.TEXT_COLS then
+			col = 0
+			row = row + 1
+		end
+	end
+	if row >= self.config.TEXT_ROWS then
+		self:_scrollUp()
+		row = self.config.TEXT_ROWS - 1
+	end
+	return row, col
 end
 
 function VgaAdapter:_paletteColor(index)
@@ -1364,18 +1387,51 @@ function VgaAdapter:readCharAttr(_page)
 end
 
 function VgaAdapter:writeCharAttr(_page, ch, attr, count)
+	local savedRow = self._cursorRow
+	local savedCol = self._cursorCol
+	local row = savedRow
+	local col = savedCol
 	local repetitions = math.max(0, tonumber(count) or 0)
 	for _ = 1, repetitions do
-		self:putChar(self._cursorCol, self._cursorRow, ch, attr)
-		self._cursorCol = self._cursorCol + 1
-		if self._cursorCol >= self.config.TEXT_COLS then
-			self._cursorCol = 0
-			self._cursorRow = self._cursorRow + 1
+		row, col = advanceTextCursor(self, row, col, ch, attr)
+	end
+	self._cursorRow = savedRow
+	self._cursorCol = savedCol
+	updateCursorRegisters(self)
+	self._dirty = true
+end
+
+function VgaAdapter:writeCharOnly(page, ch, count)
+	local _char, attr = self:readCharAttr(page)
+	self:writeCharAttr(page, ch, attr, count)
+end
+
+function VgaAdapter:biosWriteString(_page, row, col, bytes, attr, updateCursor, includeAttributes)
+	local savedRow = self._cursorRow
+	local savedCol = self._cursorCol
+	local currentRow = clamp(tonumber(row) or savedRow, 0, self.config.TEXT_ROWS - 1)
+	local currentCol = clamp(tonumber(col) or savedCol, 0, self.config.TEXT_COLS - 1)
+	local defaultAttr = (tonumber(attr) or 0x07) % 256
+	local index = 1
+	local length = #bytes
+
+	while index <= length do
+		local charValue = bytes[index] or 0
+		index = index + 1
+		local cellAttr = defaultAttr
+		if includeAttributes then
+			cellAttr = (bytes[index] or defaultAttr) % 256
+			index = index + 1
 		end
-		if self._cursorRow >= self.config.TEXT_ROWS then
-			self:_scrollUp()
-			self._cursorRow = self.config.TEXT_ROWS - 1
-		end
+		currentRow, currentCol = advanceTextCursor(self, currentRow, currentCol, charValue, cellAttr)
+	end
+
+	if updateCursor then
+		self._cursorRow = currentRow
+		self._cursorCol = currentCol
+	else
+		self._cursorRow = savedRow
+		self._cursorCol = savedCol
 	end
 	updateCursorRegisters(self)
 	self._dirty = true
@@ -1721,27 +1777,7 @@ end
 function VgaAdapter:print(str, attr)
 	attr = attr or 0x07
 	for i = 1, #str do
-		local c = string.byte(str, i)
-		if c == 10 then
-			self._cursorRow = self._cursorRow + 1
-		elseif c == 13 then
-			self._cursorCol = 0
-		elseif c == 8 then
-			if self._cursorCol > 0 then
-				self._cursorCol = self._cursorCol - 1
-			end
-		else
-			self:putChar(self._cursorCol, self._cursorRow, c, attr)
-			self._cursorCol = self._cursorCol + 1
-			if self._cursorCol >= self.config.TEXT_COLS then
-				self._cursorCol = 0
-				self._cursorRow = self._cursorRow + 1
-			end
-		end
-		if self._cursorRow >= self.config.TEXT_ROWS then
-			self:_scrollUp()
-			self._cursorRow = self.config.TEXT_ROWS - 1
-		end
+		self._cursorRow, self._cursorCol = advanceTextCursor(self, self._cursorRow, self._cursorCol, string.byte(str, i), attr)
 	end
 	updateCursorRegisters(self)
 	self._dirty = true

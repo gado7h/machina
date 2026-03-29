@@ -125,6 +125,7 @@ function PcSystem.new(config)
 	self._uptimeStart = 0
 	self._cursorTimer = 0
 	self._bootRecord = nil
+	self._bootException = nil
 	return self
 end
 
@@ -268,6 +269,48 @@ function PcSystem:_tickRuntime(dt)
 	end
 end
 
+function PcSystem:_trackBootException(result)
+	if type(result) ~= "string" or not result:match("^EX_%x%x$") then
+		self._bootException = nil
+		return false
+	end
+
+	if self._bootStage == "RUNNING" or self._bootStage == "FAULT" then
+		self._bootException = nil
+		return false
+	end
+
+	local cpuStats = self.cpu and type(self.cpu.getStats) == "function" and self.cpu:getStats() or nil
+	local location = string.format("%04X:%04X", cpuStats and cpuStats.lastCS or 0, cpuStats and cpuStats.lastIP or 0)
+	if
+		self._bootException
+		and self._bootException.vector == result
+		and self._bootException.location == location
+	then
+		self._bootException.count = self._bootException.count + 1
+	else
+		self._bootException = {
+			vector = result,
+			location = location,
+			count = 1,
+		}
+	end
+
+	if self._bootException.count < 8 then
+		return false
+	end
+
+	local details = string.format(
+		"Repeated boot exception %s at %s (%d times)",
+		self._bootException.vector,
+		self._bootException.location,
+		self._bootException.count
+	)
+	self._bootException = nil
+	self:_reportCpuFault(details)
+	return true
+end
+
 function PcSystem:_toggleCursor(dt)
 	self._cursorTimer = self._cursorTimer + dt
 	if self._cursorTimer >= CURSOR_BLINK_PERIOD then
@@ -283,6 +326,10 @@ function PcSystem:_stepCPU(dt)
 		end)
 		if not ok then
 			self:_reportCpuFault(result)
+			return
+		end
+
+		if self:_trackBootException(result) then
 			return
 		end
 
