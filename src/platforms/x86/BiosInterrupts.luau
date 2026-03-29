@@ -175,6 +175,9 @@ function BiosInterrupts:_hasAtaDrive(drive)
 	if drive ~= 0x80 or not self.machine.hdd then
 		return false
 	end
+	if self.machine.hdd.hasMedia then
+		return self.machine.hdd:hasMedia()
+	end
 	local totalSectors = self.machine.hdd.getTotalSectors and self.machine.hdd:getTotalSectors()
 		or self.machine.hdd.totalSectors
 	return (tonumber(totalSectors) or 0) > 0
@@ -183,6 +186,9 @@ end
 function BiosInterrupts:_hasFloppyDrive(drive)
 	if drive ~= 0x00 or not self.machine.fdc then
 		return false
+	end
+	if self.machine.fdc.hasMedia then
+		return self.machine.fdc:hasMedia()
 	end
 	local totalSectors = self.machine.fdc.getTotalSectors and self.machine.fdc:getTotalSectors() or 0
 	return (tonumber(totalSectors) or 0) > 0

@@ -94,6 +94,9 @@ function BootController:startBoot()
 	end
 
 	if self.machine.fdc then
+		if type(self.machine.fdc.clearMedia) == "function" then
+			self.machine.fdc:clearMedia()
+		end
 		if type(self.machine.fdc.loadImage) == "function" then
 			self.machine.fdc:loadImage(sectorsToBytes(self.image.sectors))
 		else
@@ -103,9 +106,15 @@ function BootController:startBoot()
 		end
 	end
 
-	self.machine.hdd._sectors = {}
-	for lba, sector in pairs(self.image.sectors) do
-		self.machine.hdd:writeSector(lba, sector)
+	if self.machine.hdd then
+		if type(self.machine.hdd.clearMedia) == "function" then
+			self.machine.hdd:clearMedia()
+		else
+			self.machine.hdd._sectors = {}
+		end
+		for lba, sector in pairs(self.image.sectors) do
+			self.machine.hdd:writeSector(lba, sector)
+		end
 	end
 
 	self.machine.rom:flash(self.image.romBytes)

@@ -65,6 +65,7 @@ function AtaController.new(config)
 	self._activity = false
 	self._headPos = 0
 	self._bus = nil
+	self._mediaPresent = false
 
 	self._status = bit32.bor(STATUS_DRDY, STATUS_DSC)
 	self._error = 0
@@ -462,6 +463,7 @@ function AtaController:writeSector(lba, data)
 	end
 	self._sectors[lba] = s
 	self._headPos = lba
+	self._mediaPresent = true
 	return true
 end
 
@@ -575,6 +577,12 @@ function AtaController:_initMBR()
 	self._sectors[0] = mbr
 end
 
+function AtaController:clearMedia()
+	self._sectors = {}
+	self._headPos = 0
+	self._mediaPresent = false
+end
+
 function AtaController:readUInt32(sector, offset)
 	local s = self:readSector(sector)
 	local b0 = s[offset + 1] or 0
@@ -630,6 +638,10 @@ end
 
 function AtaController:getTotalSectors()
 	return self.totalSectors
+end
+
+function AtaController:hasMedia()
+	return self._mediaPresent == true
 end
 
 return AtaController

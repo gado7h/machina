@@ -581,7 +581,11 @@ local function runValidationImage(machine, config, imageName, expectedPassText, 
 		end
 
 		if machine.hdd then
-			machine.hdd._sectors = {}
+			if type(machine.hdd.clearMedia) == "function" then
+				machine.hdd:clearMedia()
+			else
+				machine.hdd._sectors = {}
+			end
 			for lba, sector in pairs(image.sectors or {}) do
 				machine.hdd:writeSector(lba, sector)
 			end

@@ -20,7 +20,7 @@ function SystemBus.new(config)
 	self._fault = nil
 	self._lastMemMapping = nil
 	self._defaultDt = defaultTickDt(config)
-	self._a20Enabled = true
+	self._a20Enabled = false
 	self._postCode = 0xFF
 
 	-- Statistics

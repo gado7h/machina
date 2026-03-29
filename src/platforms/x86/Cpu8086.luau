@@ -930,6 +930,20 @@ function Cpu8086:step()
 		self:push16(self:getReg16(opcode - 0x50))
 	elseif opcode >= 0x58 and opcode <= 0x5F then
 		self:setReg16(opcode - 0x58, self:pop16())
+	elseif opcode == 0x06 then
+		self:push16(self:getSeg(0))
+	elseif opcode == 0x07 then
+		self:setSeg(0, self:pop16())
+	elseif opcode == 0x0E then
+		self:push16(self:getSeg(1))
+	elseif opcode == 0x16 then
+		self:push16(self:getSeg(2))
+	elseif opcode == 0x17 then
+		self:setSeg(2, self:pop16())
+	elseif opcode == 0x1E then
+		self:push16(self:getSeg(3))
+	elseif opcode == 0x1F then
+		self:setSeg(3, self:pop16())
 	elseif opcode == 0x68 then
 		self:push16(self:fetch16())
 	elseif opcode == 0x8E then
@@ -1190,7 +1204,7 @@ function Cpu8086:step()
 	elseif opcode == 0xCF then
 		self.ip = self:pop16()
 		self.seg.CS = self:pop16()
-		self.flags = bit32.bor(bit32.band(self:pop16(), 0x0FD5), 0x0002)
+		self.flags = self:pop16()
 	elseif opcode == 0x9E then
 		local ah = self:getReg8(4)
 		local newFlags = bit32.bor(bit32.band(self.flags, 0xFFFFFF00), ah)

@@ -1664,7 +1664,7 @@ function Cpu80386:_returnFar(operandWidth, stackAdjust, isInterruptReturn)
 		local nextIP = operandWidth == 32 and self:pop32() or self:pop16()
 		local nextCS = (operandWidth == 32 and self:pop32() or self:pop16()) % 0x10000
 		if isInterruptReturn then
-			self:_writeFlags(operandWidth, operandWidth == 32 and self:pop32() or self:pop16())
+			self.flags = (operandWidth == 32 and self:pop32() or self:pop16()) % 0x10000
 		end
 		Cpu8086.setSeg(self, 1, nextCS)
 		self:_syncRealModeSegment("CS")
@@ -1880,6 +1880,22 @@ function Cpu80386:_stepInternal()
 			else
 				self:_raiseException(VECTOR_UD, 0, string.format("unsupported 0F 01 group /%d", decoded.reg))
 			end
+		elseif extended == 0xA0 then
+			if operandWidth == 32 then
+				self:push32(self:getSeg(4))
+			else
+				self:push16(self:getSeg(4))
+			end
+		elseif extended == 0xA1 then
+			self:setSeg(4, operandWidth == 32 and self:pop32() or self:pop16())
+		elseif extended == 0xA8 then
+			if operandWidth == 32 then
+				self:push32(self:getSeg(5))
+			else
+				self:push16(self:getSeg(5))
+			end
+		elseif extended == 0xA9 then
+			self:setSeg(5, operandWidth == 32 and self:pop32() or self:pop16())
 		elseif extended == 0xB2 or extended == 0xB4 or extended == 0xB5 then
 			local decoded = self:_decodeModRMForAddressSize(addressOverride)
 			local pointerOffset, selector = self:_readFarPointer(decoded, operandWidth)
@@ -2034,6 +2050,36 @@ function Cpu80386:_stepInternal()
 		else
 			self:setReg16(opcode - 0x58, self:pop16())
 		end
+	elseif opcode == 0x06 then
+		if operandWidth == 32 then
+			self:push32(self:getSeg(0))
+		else
+			self:push16(self:getSeg(0))
+		end
+	elseif opcode == 0x07 then
+		self:setSeg(0, operandWidth == 32 and self:pop32() or self:pop16())
+	elseif opcode == 0x0E then
+		if operandWidth == 32 then
+			self:push32(self:getSeg(1))
+		else
+			self:push16(self:getSeg(1))
+		end
+	elseif opcode == 0x16 then
+		if operandWidth == 32 then
+			self:push32(self:getSeg(2))
+		else
+			self:push16(self:getSeg(2))
+		end
+	elseif opcode == 0x17 then
+		self:setSeg(2, operandWidth == 32 and self:pop32() or self:pop16())
+	elseif opcode == 0x1E then
+		if operandWidth == 32 then
+			self:push32(self:getSeg(3))
+		else
+			self:push16(self:getSeg(3))
+		end
+	elseif opcode == 0x1F then
+		self:setSeg(3, operandWidth == 32 and self:pop32() or self:pop16())
 	elseif opcode == 0x68 then
 		if operandWidth == 32 then
 			self:push32(self:fetch32())

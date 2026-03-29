@@ -58,6 +58,7 @@ function Fdc765.new(config)
 	self._bus = nil
 	self._sectors = {}
 	self._mediaType = MEDIA_1440K
+	self._mediaPresent = false
 
 	self._dor = 0x0C
 	self._msr = MSR_READY
@@ -444,6 +445,7 @@ function Fdc765:writeSector(lba, data)
 	for i = 1, SECTOR_SIZE do
 		self._sectors[offset + i] = (data[i] or 0) % 256
 	end
+	self._mediaPresent = true
 
 	return true
 end
@@ -471,8 +473,15 @@ function Fdc765:loadImage(imageBytes)
 	for i = 1, len do
 		self._sectors[i] = imageBytes[i] % 256
 	end
+	self._mediaPresent = len > 0
 
 	return true
+end
+
+function Fdc765:clearMedia()
+	self._sectors = {}
+	self._mediaPresent = false
+	self._mediaType = MEDIA_1440K
 end
 
 function Fdc765:getTotalSectors()
@@ -481,6 +490,10 @@ end
 
 function Fdc765:getMediaType()
 	return self._mediaType
+end
+
+function Fdc765:hasMedia()
+	return self._mediaPresent == true
 end
 
 function Fdc765:_reset()

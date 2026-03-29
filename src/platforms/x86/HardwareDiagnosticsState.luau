@@ -259,6 +259,7 @@ function State.snapshotMachine(machine)
 		} or nil,
 		hdd = hdd and {
 			_sectors = State.deepCopy(hdd._sectors),
+			_mediaPresent = hdd._mediaPresent,
 			_activity = hdd._activity,
 			_headPos = hdd._headPos,
 			_status = hdd._status,
@@ -316,6 +317,7 @@ function State.restoreMachine(machine, snapshot)
 
 	if machine.hdd and snapshot.hdd then
 		machine.hdd._sectors = State.deepCopy(snapshot.hdd._sectors)
+		machine.hdd._mediaPresent = snapshot.hdd._mediaPresent
 		machine.hdd._activity = snapshot.hdd._activity
 		machine.hdd._headPos = snapshot.hdd._headPos
 		machine.hdd._status = snapshot.hdd._status
